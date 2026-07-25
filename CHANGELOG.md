@@ -5,6 +5,10 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 改进 / Changed
+
+- **Windows MSI 会沿用已有安装目录并创建桌面快捷方式（#293）。** 安装程序会优先读取 MeatShell 记录的目录，并可通过旧版主程序组件位置迁移 v0.6.5-v0.6.7 的自定义安装路径；全新安装仍默认使用 `Program Files`。MSI 安装时还会在当前用户桌面创建 MeatShell 快捷方式，卸载时一并移除。
+
 ### 修复 / Fixed
 
 - **修复新建 Telnet 会话的默认端口（#303）。** 从 SSH 或串口切换到 Telnet 时，端口现在会从 SSH 默认值 `22` 自动调整为 Telnet 标准端口 `23`；切回 SSH 时恢复为 `22`，非默认端口保持不变。
@@ -13,6 +17,10 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **修复 Windows 使用 `Ctrl+Space` 切换输入法后 Ctrl 状态残留（#309）。** 当微软输入法把 Ctrl 松开标记为 `VK_PROCESSKEY` 时，程序现在会根据事件保留的左右 Ctrl 物理键信息向 Slint 补齐对应的松开事件；正常终端 Ctrl 快捷键及其他操作系统不受影响。
 
 ---
+
+### Changed
+
+- **Preserve the existing Windows MSI install location and add a desktop shortcut (#293).** Setup now prefers MeatShell's recorded directory and can migrate custom v0.6.5-v0.6.7 locations from the legacy executable component; clean installs still default to Program Files. MSI installs also create a MeatShell shortcut on the current user's desktop and remove it during uninstall.
 
 ### Fixed
 
