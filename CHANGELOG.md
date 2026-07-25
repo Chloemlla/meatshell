@@ -5,6 +5,24 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 新增 / Added
+
+- **支持使用快捷键循环切换标签页（#294）。** `Ctrl+Tab` 切换到当前分栏的下一个标签页，`Ctrl+Shift+Tab` 切换到上一个，并在首尾循环；macOS 使用物理 Control 键。快捷键面板新增“标签页”分组并列出两项操作。
+
+### 性能 / Performance
+
+- **优化大容量终端回滚历史（#290）。** 终端历史缓冲改用双端队列；超过 100,000 行上限时从队首逐行回收，不再通过 `Vec::drain` 搬移全部剩余记录，持续输出大量内容时的裁剪开销更加稳定。
+
+---
+
+### Added
+
+- **Add keyboard shortcuts for cycling tabs (#294).** `Ctrl+Tab` selects the next tab in the focused pane, while `Ctrl+Shift+Tab` selects the previous one, wrapping at both ends; macOS uses the physical Control key. The shortcuts panel now includes both actions in a dedicated Tabs section.
+
+### Performance
+
+- **Optimize large terminal scrollback histories (#290).** The terminal history buffer now uses a double-ended queue. Once the 100,000-line cap is reached, old rows are reclaimed from the front without shifting every retained row through `Vec::drain`, keeping pruning costs stable during sustained high-volume output.
+
 ## [0.6.7] - 2026-07-25
 
 ### 新增 / Added

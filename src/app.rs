@@ -4222,7 +4222,7 @@ fn wire_session_callbacks(
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),
-                    history: Vec::new(),
+                    history: VecDeque::new(),
                     prev: Vec::new(),
                     view_offset: 0,
                     displayed_text: Vec::new(),
@@ -7244,6 +7244,34 @@ fn wire_tab_callbacks(
     sftp_handles: SftpHandles,
     sftp_last_cwd: SftpLastCwd,
 ) {
+    // Ctrl+Tab / Ctrl+Shift+Tab cycle within the currently focused pane (#294).
+    {
+        let weak = window.as_weak();
+        let layout = layout.clone();
+        let content_size = content_size.clone();
+        let tabs_model = tabs_model.clone();
+        let panes_model = panes_model.clone();
+        let splitters_model = splitters_model.clone();
+        let bufs_cycle = bufs.clone();
+        window.on_cycle_tab(move |reverse: bool| {
+            let next = layout.borrow_mut().cycle_focused_tab(reverse);
+            let Some(id) = next else {
+                return;
+            };
+            if let Some(w) = weak.upgrade() {
+                refresh_panes(
+                    &w,
+                    &layout.borrow(),
+                    content_size.get(),
+                    &tabs_model,
+                    &panes_model,
+                    &splitters_model,
+                );
+                rebuild_tab_display(&w, &bufs_cycle, &id);
+            }
+        });
+    }
+
     // Select a tab inside a pane: make it that pane's active tab and focus the
     // pane. refresh_panes propagates active-tab-id (→ sidebar refresh).
     {
@@ -9189,7 +9217,7 @@ fn wire_key_input(
                 let (rows, cols) = buf.parser.screen().size();
                 buf.parser = vt100::Parser::new(rows, cols, 5000);
                 buf.find_query.clear();
-                buf.history = Vec::new(); // recycle the session scrollback
+                buf.history = VecDeque::new(); // recycle the session scrollback
                 buf.prev = Vec::new();
                 buf.view_offset = 0;
                 buf.sel_anchor = None;
@@ -11556,12 +11584,12 @@ mod selection_tests {
     #[test]
     fn extract_joins_soft_wrapped_rows() {
         let mut buf = make_buf(5, 10, &[], &["x"], 0);
-        buf.history = vec![
+        buf.history = VecDeque::from([
             wrapped_hist_line("0123456789"),
             wrapped_hist_line("abcdefghij"),
             hist_line("klmnop"),
             hist_line("next"),
-        ];
+        ]);
         buf.sel_anchor = Some((0, 0));
         buf.sel_focus = Some((3, 9));
         assert_eq!(
