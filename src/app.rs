@@ -2135,6 +2135,10 @@ pub fn run() -> Result<()> {
         let ev_pending_window_size_restore = pending_window_size_restore.clone();
         let mut last_cursor_logical: Option<(f32, f32)> = None;
         let mut macos_wheel_accum = 0.0_f32;
+        #[cfg(target_os = "windows")]
+        let mut native_ctrl_down = false;
+        #[cfg(target_os = "windows")]
+        let mut pending_ctrl_release = false;
         // Track the inputs that make up WinActivity; recompute on each change.
         let mut focused = true;
         let mut minimized = false;
@@ -2178,6 +2182,32 @@ pub fn run() -> Result<()> {
                 }
             };
             match event {
+                #[cfg(target_os = "windows")]
+                WEvent::ModifiersChanged(modifiers) => {
+                    // Ctrl+Space is handled by the Windows IME and can hide the
+                    // matching Ctrl key-up from Slint. Winit still refreshes the
+                    // physical modifier state before the next keyboard event, so
+                    // remember that transition until we see what key arrives next
+                    // (#309).
+                    if modifier_release_edge(
+                        &mut native_ctrl_down,
+                        modifiers.state().control_key(),
+                    ) {
+                        pending_ctrl_release = true;
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                WEvent::KeyboardInput { event, .. } if pending_ctrl_release => {
+                    use i_slint_backend_winit::winit::event::ElementState;
+                    use i_slint_backend_winit::winit::keyboard::{Key, NamedKey};
+
+                    let is_ctrl_key_up = event.state == ElementState::Released
+                        && matches!(&event.logical_key, Key::Named(NamedKey::Control));
+                    if !is_ctrl_key_up {
+                        dispatch_slint_ctrl_released(slint_window);
+                    }
+                    pending_ctrl_release = false;
+                }
                 #[cfg(target_os = "windows")]
                 WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Disabled) => {
                     // Windows emits Ime::Disabled when a composition ends, including
@@ -10034,6 +10064,18 @@ fn terminal_uses_bracketed_paste(bufs: &TermBuffers, tab_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn modifier_release_edge(was_down: &mut bool, is_down: bool) -> bool {
+    let released = *was_down && !is_down;
+    *was_down = is_down;
+    released
+}
+
+fn dispatch_slint_ctrl_released(window: &slint::Window) {
+    for key in [slint::platform::Key::Control, slint::platform::Key::ControlR] {
+        window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: key.into() });
+    }
+}
+
 fn should_drop_debian_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
     workaround
         && ctrl
@@ -11268,6 +11310,16 @@ fn parent_path(path: &str) -> String {
 #[cfg(test)]
 mod key_tests {
     use super::*;
+
+    #[test]
+    fn modifier_release_edge_fires_once_per_press() {
+        let mut down = false;
+        assert!(!modifier_release_edge(&mut down, false));
+        assert!(!modifier_release_edge(&mut down, true));
+        assert!(!modifier_release_edge(&mut down, true));
+        assert!(modifier_release_edge(&mut down, false));
+        assert!(!modifier_release_edge(&mut down, false));
+    }
 
     #[test]
     fn bare_alt_is_not_forwarded() {

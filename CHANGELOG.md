@@ -9,6 +9,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **修复新建 Telnet 会话的默认端口（#303）。** 从 SSH 或串口切换到 Telnet 时，端口现在会从 SSH 默认值 `22` 自动调整为 Telnet 标准端口 `23`；切回 SSH 时恢复为 `22`，非默认端口保持不变。
 - **修复 AUR 发布工作流校验失败。** 发布步骤现在通过作业环境变量判断所需的 AUR 仓库 Secret 是否完整配置，避免在 `if` 条件中直接引用不受支持的 `secrets` 上下文而导致工作流无法运行。
+- **修复 Windows 使用 `Ctrl+Space` 切换输入法后字母被误识别为 Ctrl 命令（#309）。** 当 Windows 输入法接管快捷键并吞掉 Ctrl 松开事件时，程序现在会根据 Winit 报告的物理修饰键状态，在下一个普通按键进入 Slint 前补齐 Ctrl release；正常的 `Ctrl+C`、`Ctrl+X` 等终端组合键保持不变。
+- **修复手动产物构建的版本校验。** 从分支手动运行 Release 工作流时改为根据 `Cargo.toml` 校验二进制版本，不再把分支名误当成版本号；手动构建仍只上传工作流产物，不创建 GitHub Release。
 
 ---
 
@@ -16,6 +18,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **Use the standard Telnet port for new sessions (#303).** Switching from SSH or Serial to Telnet now changes the SSH default `22` to the standard Telnet port `23`; switching back to SSH restores `22`, while non-default ports are preserved.
 - **Fix AUR publishing workflow validation.** The publishing step now checks the required AUR repository secrets through job environment variables, avoiding the unsupported direct use of the `secrets` context in an `if` condition that prevented the workflow from running.
+- **Fix letters being treated as Ctrl commands after switching the Windows IME with `Ctrl+Space` (#309).** When the Windows IME consumes the shortcut and hides the Ctrl key-up event, the application now uses Winit's physical modifier state to restore the missing Ctrl release before the next ordinary key reaches Slint. Real terminal shortcuts such as `Ctrl+C` and `Ctrl+X` remain unchanged.
+- **Fix version verification for manually dispatched artifact builds.** Release workflow runs started from a branch now verify the binary against the package version in `Cargo.toml` instead of treating the branch name as a version. Manual builds continue to upload workflow artifacts without creating a GitHub Release.
 
 ## [0.6.7] - 2026-07-25
 
