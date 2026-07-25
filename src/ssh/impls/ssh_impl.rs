@@ -168,7 +168,12 @@ fn prompt_setup_echo_end(text: &str, prefix_pos: usize) -> usize {
 fn strip_prompt_setup_echo(text: &mut String, prefix_pos: usize, end_pos: usize) {
     let start = line_start_before(text, prefix_pos);
     let end = include_following_line_break(text, end_pos.min(text.len()));
-    text.replace_range(start..end, "");
+    // The remote PTY has already echoed the hidden setup command and advanced
+    // its cursor through that line. Removing the bytes outright leaves our
+    // local vt100 parser at the old prompt column, so readline's later relative
+    // backspaces repaint history commands beside one another (#289). Reset and
+    // clear the current local row before feeding the final prompt that follows.
+    text.replace_range(start..end, "\r\x1b[2K");
 }
 
 /// Remove a late-echoed prompt setup command when it arrives after the initial
@@ -2794,7 +2799,7 @@ mod prompt_setup_echo_tests {
         let p = text.find(PROMPT_SETUP_PREFIX).unwrap();
         let end = prompt_setup_echo_end(&text, p);
         strip_prompt_setup_echo(&mut text, p, end);
-        assert_eq!(text, "after prompt");
+        assert_eq!(text, "\r\x1b[2Kafter prompt");
     }
 
     #[test]
@@ -2806,7 +2811,7 @@ mod prompt_setup_echo_tests {
         let p = text.find(PROMPT_SETUP_PREFIX).unwrap();
         let osc_end = text.find("prompt").unwrap();
         strip_prompt_setup_echo(&mut text, p, osc_end);
-        assert_eq!(text, "banner\nprompt");
+        assert_eq!(text, "banner\n\r\x1b[2Kprompt");
     }
 
     #[test]
@@ -2816,7 +2821,27 @@ mod prompt_setup_echo_tests {
             PROMPT_SETUP_PREFIX
         );
         assert!(strip_late_prompt_setup_echo(&mut text));
-        assert_eq!(text, "prompt\r\nafter");
+        assert_eq!(text, "prompt\r\n\r\x1b[2Kafter");
+    }
+
+    #[test]
+    fn hidden_setup_echo_resynchronizes_the_prompt_cursor() {
+        let prompt = "root@host:~# ";
+        let mut parser = vt100::Parser::new(4, 80, 0);
+        // The initial prompt is painted immediately before shell integration is
+        // injected. The buffered setup echo must replace, not append to, it.
+        parser.process(prompt.as_bytes());
+        let mut echoed = format!(
+            "{prompt}{} && eval 'body; __ms7'\r\n\u{1b}]7;file://host/root\u{07}{prompt}",
+            PROMPT_SETUP_PREFIX
+        );
+        let prefix = echoed.find(PROMPT_SETUP_PREFIX).unwrap();
+        let osc_end = echoed.rfind(prompt).unwrap();
+        strip_prompt_setup_echo(&mut echoed, prefix, osc_end);
+        parser.process(echoed.as_bytes());
+
+        assert_eq!(parser.screen().contents().lines().next(), Some(prompt));
+        assert_eq!(parser.screen().cursor_position(), (0, prompt.len() as u16));
     }
 }
 

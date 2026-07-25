@@ -9,6 +9,10 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **支持使用快捷键循环切换标签页（#294）。** `Ctrl+Tab` 切换到当前分栏的下一个标签页，`Ctrl+Shift+Tab` 切换到上一个，并在首尾循环；macOS 使用物理 Control 键。快捷键面板新增“标签页”分组并列出两项操作。
 
+### 修复 / Fixed
+
+- **修复 SSH 会话中 Bash 历史命令重绘错位（#289）。** 隐藏 shell integration 初始化命令后会主动复位并清空当前终端行，使本地 VT 光标与远端 PTY 重新同步；在 Debian 等桌面系统中使用上下方向键浏览历史时，提示符和命令不再相互重叠或依次拼接。
+
 ### 性能 / Performance
 
 - **优化大容量终端回滚历史（#290）。** 终端历史缓冲改用双端队列；超过 100,000 行上限时从队首逐行回收，不再通过 `Vec::drain` 搬移全部剩余记录，持续输出大量内容时的裁剪开销更加稳定。
@@ -18,6 +22,10 @@ All notable changes are documented here. 本文件记录所有重要变更。
 ### Added
 
 - **Add keyboard shortcuts for cycling tabs (#294).** `Ctrl+Tab` selects the next tab in the focused pane, while `Ctrl+Shift+Tab` selects the previous one, wrapping at both ends; macOS uses the physical Control key. The shortcuts panel now includes both actions in a dedicated Tabs section.
+
+### Fixed
+
+- **Fix misaligned Bash history repainting in SSH sessions (#289).** After hiding the shell-integration setup command, MeatShell now resets and clears the current terminal row to resynchronize the local VT cursor with the remote PTY. Browsing history with the arrow keys on Debian and other desktops no longer overlaps the prompt or appends recalled commands beside one another.
 
 ### Performance
 
