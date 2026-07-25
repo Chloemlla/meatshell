@@ -488,11 +488,12 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    const PPK_V2_RSA: &str = include_str!("../tests/fixtures/ppk-v2-rsa.ppk");
-    const PPK_V2_RSA_ENCRYPTED: &str = include_str!("../tests/fixtures/ppk-v2-rsa-encrypted.ppk");
-    const PPK_V3_ED25519: &str = include_str!("../tests/fixtures/ppk-v3-ed25519.ppk");
+    const PPK_V2_RSA: &str = include_str!("../../../tests/fixtures/ppk-v2-rsa.ppk");
+    const PPK_V2_RSA_ENCRYPTED: &str =
+        include_str!("../../../tests/fixtures/ppk-v2-rsa-encrypted.ppk");
+    const PPK_V3_ED25519: &str = include_str!("../../../tests/fixtures/ppk-v3-ed25519.ppk");
     const PPK_V3_ECDSA_ENCRYPTED: &str =
-        include_str!("../tests/fixtures/ppk-v3-ecdsa-encrypted.ppk");
+        include_str!("../../../tests/fixtures/ppk-v3-ecdsa-encrypted.ppk");
 
     #[test]
     fn detects_ppk_content() {

@@ -2027,7 +2027,10 @@ mod tests {
             enabled: true,
         });
         assert_eq!(store.output_highlight_rules().len(), 1);
-        assert_eq!(store.output_highlight_rules()[0].pattern, "connection refused");
+        assert_eq!(
+            store.output_highlight_rules()[0].pattern,
+            "connection refused"
+        );
         assert_eq!(store.output_highlight_rules()[0].color, "red");
         store.set_output_highlight_rule_enabled(0, false);
         assert!(!store.output_highlight_rules()[0].enabled);

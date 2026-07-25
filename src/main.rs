@@ -5,22 +5,18 @@
 
 mod app;
 mod config;
-mod errlog;
-mod forward;
 mod i18n;
-mod known_hosts;
-mod local;
-mod panes;
-mod ppk;
-mod proxy;
-mod serial;
+mod layout;
+mod logging;
+mod resource;
+mod session;
 mod sftp;
 mod ssh;
-mod ssh_config;
-mod system;
-mod telnet;
+mod terminal;
+mod tunnel;
+mod ui;
 mod wallpaper;
-mod zmodem;
+mod webdav;
 
 fn main() -> anyhow::Result<()> {
     if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
@@ -97,12 +93,12 @@ fn init_tracing() {
 
     // One file, capped at 50 MiB, auto-overwriting when full (5 MiB was too
     // small to diagnose anything useful).
-    let file_layer = errlog::path()
-        .and_then(|p| errlog::CappedFile::open(p, 50 * 1024 * 1024).ok())
+    let file_layer = logging::path()
+        .and_then(|p| logging::CappedFile::open(p, 50 * 1024 * 1024).ok())
         .map(|cf| {
             fmt::layer()
                 .with_ansi(false)
-                .with_writer(errlog::CappedWriter::new(cf))
+                .with_writer(logging::CappedWriter::new(cf))
                 .with_filter(quiet_noise(EnvFilter::new("warn")))
         });
 

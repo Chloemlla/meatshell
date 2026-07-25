@@ -9,104 +9,15 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Per-terminal state: vt100 parser drives all rendering for both normal
-/// (bash) and alt-screen (vim/nano/htop) modes.
-///
-/// Using vt100 for normal mode too is necessary because readline rewrites the
-/// current input line using `\r` + full-line redraw + `\x1b[K` (erase to EOL)
-/// whenever the cursor moves. A naive append-only buffer would duplicate the
-/// text; vt100 tracks cursor position and overwrites in place correctly.
-struct TermBuffer {
-    parser: vt100::Parser,
-    /// Active find query for this tab ("" = no search).
-    find_query: String,
-    /// Current theme mode — propagated from the global dark-mode toggle.
-    /// Stored here so the event-pump threads can render new output with the
-    /// correct palette without needing a window reference.
-    is_dark: bool,
-    /// Client-side highlighting for plain output. Stored per buffer so render
-    /// workers do not need to borrow the UI/config state.
-    output_highlight: OutputHighlightPreset,
-    custom_highlight_rules: Vec<CompiledOutputRule>,
-    /// Drag selection in ABSOLUTE scrollback coordinates: each endpoint is a
-    /// `(combined_row, col)` where `combined_row` indexes the virtual buffer of
-    /// `history` lines followed by the live screen rows.  Absolute (rather than
-    /// visible-window) coordinates keep the selection pinned to its content
-    /// while the view auto-scrolls during a drag, so a top-to-bottom selection
-    /// across more than one screen of scrollback copies every line (#18).
-    /// `anchor` = where the drag began, `focus` = the moving end.
-    sel_anchor: Option<(usize, u16)>,
-    sel_focus: Option<(usize, u16)>,
-    /// Additional Ctrl-selected ranges. The last range is the active range;
-    /// Shift extends it from its anchor while Ctrl adds another range.
-    sel_ranges: Vec<((usize, u16), (usize, u16))>,
-    /// Session scrollback: lines that have scrolled off the top (oldest first).
-    history: Vec<Line>,
-    /// Previous frame's grid lines, for scroll-off detection.
-    prev: Vec<Line>,
-    /// Scrollback view offset in lines (0 = live bottom).
-    view_offset: usize,
-    /// Plain text of the rows currently displayed (drives find + selection).
-    displayed_text: Vec<String>,
-    /// CSI-scanner state for rewriting HVP (`ESC [ … f`) into CUP (`ESC [ … H`).
-    /// vt100 0.15 only implements the `H` final byte, not the equivalent `f`
-    /// that btop/htop use for cursor positioning — without this rewrite their
-    /// absolute-positioned full-screen output collapses into a scrolling mess.
-    /// Kept here so a sequence split across read chunks is still translated.
-    csi_state: CsiState,
-    /// Capped copy of the (post-HVP-rewrite) byte stream fed to vt100, so a window
-    /// resize can replay it at the new width and reflow already-printed output to
-    /// match — the way FinalShell rewraps on resize (#169). Only the most recent
-    /// `RAW_CAP` bytes are kept; scrollback older than that won't reflow.
-    raw: std::collections::VecDeque<u8>,
-}
-
 /// How much of the byte stream we retain per tab for resize-reflow (#169).
-const RAW_CAP: usize = 2 * 1024 * 1024;
+pub(crate) const RAW_CAP: usize = 2 * 1024 * 1024;
 
 /// Max bytes merged into one Output event before starting a fresh chunk (#209).
 /// Keeps a single UI callback from spending hundreds of ms in vt100 ingest.
 const OUTPUT_MERGE_BYTE_CAP: usize = 64 * 1024;
-
-/// Minimal CSI-final-byte rewriter state (persists across read chunks).
-#[derive(Clone, Copy, PartialEq)]
-enum CsiState {
-    /// Normal text.
-    Normal,
-    /// Saw ESC (0x1b), waiting to see if it starts a CSI (`[`).
-    Esc,
-    /// Inside a CSI sequence (after `ESC [`), scanning params/intermediates.
-    Csi,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutputHighlightPreset {
-    Off,
-    Log,
-    DevOps,
-}
-
-impl OutputHighlightPreset {
-    fn from_settings(enabled: bool, preset: &str) -> Self {
-        if !enabled {
-            Self::Off
-        } else if preset == "devops" {
-            Self::DevOps
-        } else {
-            Self::Log
-        }
-    }
-}
-
-#[derive(Clone)]
-struct CompiledOutputRule {
-    matcher: regex::Regex,
-    whole_line: bool,
-    ansi_index: u8,
-}
 
 fn compile_output_rules(rules: &[OutputHighlightRule]) -> Vec<CompiledOutputRule> {
     rules
@@ -145,32 +56,6 @@ fn highlight_color_index(color: &str) -> u8 {
 /// Max UI renders per second for a tab under sustained output (#209).
 const RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 
-/// Per-tab terminal buffer — each tab has its own lock so a burst of output on
-/// one session (e.g. `unzip` listing thousands of files) doesn't block keyboard
-/// input on another (#209).
-type TermBufferHandle = Arc<Mutex<TermBuffer>>;
-type TermBuffers = Arc<Mutex<HashMap<String, TermBufferHandle>>>;
-
-/// Coalesces render requests so a firehose of output schedules at most one UI
-/// flush at a time per tab, throttled to ~30 fps (#209).
-struct TabRenderGate {
-    scheduled: AtomicBool,
-    pending: AtomicBool,
-    last_render: Mutex<std::time::Instant>,
-}
-
-impl TabRenderGate {
-    fn new() -> Self {
-        Self {
-            scheduled: AtomicBool::new(false),
-            pending: AtomicBool::new(false),
-            last_render: Mutex::new(std::time::Instant::now() - RENDER_MIN_INTERVAL),
-        }
-    }
-}
-
-type RenderGates = Arc<Mutex<HashMap<String, Arc<TabRenderGate>>>>;
-
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     bufs.lock().unwrap().get(tab_id).cloned()
 }
@@ -200,34 +85,23 @@ use crate::config::{
     AuthMethod, ConfigStore, OutputHighlightRule, Secret, Session, SessionKind,
 };
 use crate::i18n::t;
-use crate::sftp::{spawn_sftp, SftpHandle};
+use crate::layout::{LogicalRect, TerminalWheelHit};
+use crate::resource::{
+    LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
+};
+use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
+use crate::sftp::{spawn_sftp, SftpHandles, SftpLastCwd};
 use crate::ssh::{
     format_mtime, format_size, spawn_session, test_session_auth, ProcInfo, SessionCommand,
     SessionEvent, SessionHandle, SystemDetails,
 };
-use crate::system::{format_bytes_per_sec, format_mem, SystemSampler, SystemSnapshot};
-
-#[derive(Clone, Default)]
-struct LocalHardwareInfo {
-    os: String,
-    kernel: String,
-    kernel_version: String,
-    arch: String,
-    hostname: String,
-    cpu_name: String,
-    cpu_vendor: String,
-    cpu_cores: String,
-    cpu_frequency: String,
-    gpus: Vec<LocalGpuInfo>,
-}
-
-#[derive(Clone, Default)]
-struct LocalGpuInfo {
-    name: String,
-    vendor: String,
-    driver: String,
-    memory: String,
-}
+use crate::terminal::{
+    CompiledOutputRule, CsiState, HistSpan, Line, OutputHighlightPreset, RenderGates, TabRenderGate,
+    TermBuffer, TermBufferHandle, TermBuffers,
+};
+use crate::resource::system::{format_bytes_per_sec, format_mem, SystemSampler, SystemSnapshot};
+use crate::ui::*;
+use crate::webdav::WebDavAcceptAnyCertVerifier;
 
 fn tab_title_len(title: &str) -> i32 {
     title
@@ -237,52 +111,10 @@ fn tab_title_len(title: &str) -> i32 {
         .min(i32::MAX as usize) as i32
 }
 
-type SftpHandles = Arc<Mutex<HashMap<String, SftpHandle>>>;
-/// Per-tab flag: once the user explicitly navigates via the SFTP tree or
-/// toolbar, stop auto-syncing to the terminal's `cd` path.
-/// Per-tab last cwd the SFTP panel followed (from OSC 7). Used to ignore the
-/// OSC 7 every prompt re-emits at an unchanged directory; manual SFTP
-/// navigation REMOVES the entry so the very next OSC 7 — same directory or
-/// not — snaps the panel back to the shell's cwd (cd-follow never goes stale).
-type SftpLastCwd = Arc<Mutex<HashMap<String, String>>>;
-
-/// Per-tab connection status + latest remote resource sample, used to drive the
-/// sidebar for whichever tab is active.  `Arc<Mutex>` because the SSH event-pump
-/// threads update it before bouncing to the UI thread.
-#[derive(Clone, Default)]
-struct TabStatus {
-    host: String,       // "root@192.168.100.2"
-    user: String,       // effective SSH login user, for process ownership checks
-    session_id: String, // saved-session id, used to reconnect in place (#79)
-    state: u8,          // 0 = connecting, 1 = connected, 2 = disconnected
-    cpu: f32,           // 0.0..1.0
-    mem_used_kib: u64,
-    mem_total_kib: u64,
-    swap_used_kib: u64,
-    swap_total_kib: u64,
-    /// Latest per-interface rates: (name, rx_bps, tx_bps), busiest first.
-    net: Vec<(String, u64, u64)>,
-    /// Which interface drives the top sparkline (empty = auto = busiest).
-    selected_iface: String,
-    /// Ring buffer of the selected interface's total (rx+tx) bytes/sec.
-    net_hist: Vec<f32>,
-    /// Per-filesystem (mount, available_bytes, total_bytes).
-    disks: Vec<(String, u64, u64)>,
-    /// Top remote processes by CPU, for the process monitor popup (#23).
-    procs: Vec<ProcInfo>,
-    /// Detailed resource rows for the detached system-information window.
-    sys: SystemDetails,
-}
-type TabStatuses = Arc<Mutex<HashMap<String, TabStatus>>>;
-/// Last local-machine sample (shown on the welcome tab).
-type LocalSnap = Arc<Mutex<SystemSnapshot>>;
 
 fn should_block_close(exit_confirmed: bool, has_live_sessions: bool) -> bool {
     !exit_confirmed && has_live_sessions
 }
-
-// Slint generates types into this scope.
-slint::include_modules!();
 
 /// Tab ids currently shown in a pane (`term.id == pane.active-id` in Slint).
 fn visible_tab_ids(win: &AppWindow) -> HashSet<String> {
@@ -1641,10 +1473,10 @@ pub fn run() -> Result<()> {
     // In welcome-as-sidebar mode the session list lives in a left panel, so the
     // layout starts empty (no "welcome" tab); otherwise it owns the welcome tab.
     let welcome_sidebar = store.borrow().welcome_as_sidebar();
-    let layout: Rc<RefCell<crate::panes::Layout>> = Rc::new(RefCell::new(if welcome_sidebar {
-        crate::panes::Layout::new(Vec::new(), String::new())
+    let layout: Rc<RefCell<crate::layout::Layout>> = Rc::new(RefCell::new(if welcome_sidebar {
+        crate::layout::Layout::new(Vec::new(), String::new())
     } else {
-        crate::panes::Layout::new(vec!["welcome".into()], "welcome".into())
+        crate::layout::Layout::new(vec!["welcome".into()], "welcome".into())
     }));
     let content_size: Rc<std::cell::Cell<(f32, f32)>> =
         Rc::new(std::cell::Cell::new((1200.0, 800.0)));
@@ -2783,13 +2615,6 @@ fn handle_macos_terminal_wheel(
     true
 }
 
-struct TerminalWheelHit {
-    tab_id: String,
-    is_alt: bool,
-    col: i32,
-    row: i32,
-}
-
 fn terminal_wheel_hit(
     win: &AppWindow,
     bufs: &TermBuffers,
@@ -2861,14 +2686,6 @@ fn shrink_edge(x: &mut f32, y: &mut f32, w: &mut f32, h: &mut f32, dock: &str, a
         "bottom" => *h = (*h - amount).max(0.0),
         _ => {}
     }
-}
-
-#[derive(Clone, Copy)]
-struct LogicalRect {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
 }
 
 fn contains_logical(rect: LogicalRect, x: f32, y: f32) -> bool {
@@ -3469,7 +3286,7 @@ fn wire_session_callbacks(
     sessions_model: Rc<VecModel<SessionInfo>>,
     tabs_model: Rc<VecModel<TabInfo>>,
     terminals_model: Rc<VecModel<TerminalState>>,
-    layout: Rc<RefCell<crate::panes::Layout>>,
+    layout: Rc<RefCell<crate::layout::Layout>>,
     content_size: Rc<std::cell::Cell<(f32, f32)>>,
     panes_model: Rc<VecModel<PaneInfo>>,
     splitters_model: Rc<VecModel<SplitterInfo>>,
@@ -3542,7 +3359,7 @@ fn wire_session_callbacks(
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         window.on_import_ssh_config(move || {
-            let hosts = crate::ssh_config::parse_default();
+            let hosts = crate::ssh::ssh_config::parse_default();
             let mut added = 0usize;
             if hosts.is_empty() {
                 if let Some(w) = weak.upgrade() {
@@ -4416,7 +4233,10 @@ fn wire_session_callbacks(
             render_gates
                 .lock()
                 .unwrap()
-                .insert(tab_id.clone(), Arc::new(TabRenderGate::new()));
+                .insert(
+                    tab_id.clone(),
+                    Arc::new(TabRenderGate::new(RENDER_MIN_INTERVAL)),
+                );
             // No followed-cwd yet: the first OSC 7 always triggers a follow.
             sftp_last_cwd.lock().unwrap().remove(&tab_id);
             // Add the new tab to the focused pane and re-flatten (this also sets
@@ -4485,30 +4305,6 @@ fn wire_session_callbacks(
     }
 }
 
-type NetHist = Arc<Mutex<Vec<f32>>>;
-
-/// Shared connection dependencies for `start_session_in_tab`. All fields are
-/// cheap clones (Arc / Weak / Rc), so connect and in-place reconnect can both
-/// build one and spawn workers for a tab (#79).
-struct ConnectCtx {
-    weak: slint::Weak<AppWindow>,
-    runtime: Arc<Runtime>,
-    handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
-    sftp_handles: SftpHandles,
-    sftp_last_cwd: SftpLastCwd,
-    bufs: TermBuffers,
-    render_gates: RenderGates,
-    tab_statuses: TabStatuses,
-    local_snap: LocalSnap,
-    local_net_hist: NetHist,
-    last_term_size: Arc<Mutex<(u32, u32)>>,
-    /// Interface setting: SFTP panel follows the terminal's cd (OSC 7).
-    sftp_follow_cd: Arc<std::sync::atomic::AtomicBool>,
-    /// Config store, so a session's jump host (#211) can be resolved by id at
-    /// connect time on the UI thread.
-    store: Rc<RefCell<ConfigStore>>,
-}
-
 /// Resolve a session's configured SSH jump host to the saved session it points
 /// at, ignoring a missing / dangling / self reference (#211).
 fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Option<Session> {
@@ -4539,19 +4335,19 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
             initial_cols,
             initial_rows,
         ),
-        SessionKind::Serial => crate::serial::spawn_serial_session(
+        SessionKind::Serial => crate::terminal::serial::spawn_serial_session(
             ctx.runtime.handle(),
             tab_id.to_string(),
             session.clone(),
         ),
-        SessionKind::Telnet => crate::telnet::spawn_telnet_session(
+        SessionKind::Telnet => crate::terminal::telnet::spawn_telnet_session(
             ctx.runtime.handle(),
             tab_id.to_string(),
             session.clone(),
             initial_cols,
             initial_rows,
         ),
-        SessionKind::Local => crate::local::spawn_local_session(
+        SessionKind::Local => crate::terminal::local::spawn_local_session(
             ctx.runtime.handle(),
             tab_id.to_string(),
             session.clone(),
@@ -5947,7 +5743,7 @@ fn history_view_model(store: &ConfigStore, query: &str) -> ModelRc<SharedString>
 /// index is *not* a grid column. `prefix[i]` is the starting grid column of
 /// char `i`; `prefix[chars.len()]` is the line's total cell width. Zero-width
 /// chars (combining marks) share their base char's column (#132).
-fn cell_prefix(chars: &[char]) -> Vec<usize> {
+pub(crate) fn cell_prefix(chars: &[char]) -> Vec<usize> {
     use unicode_width::UnicodeWidthChar;
     let mut prefix = Vec::with_capacity(chars.len() + 1);
     let mut acc = 0usize;
@@ -5962,7 +5758,7 @@ fn cell_prefix(chars: &[char]) -> Vec<usize> {
 /// First char index whose cell span contains grid column `target` — i.e. the
 /// char a selection STARTING at that column should begin on. Clamps to the end
 /// of the line when `target` is past the content (#132).
-fn char_at_cell_start(prefix: &[usize], target: usize) -> usize {
+pub(crate) fn char_at_cell_start(prefix: &[usize], target: usize) -> usize {
     let n = prefix.len().saturating_sub(1); // chars.len()
     for i in 0..n {
         if prefix[i] <= target && target < prefix[i + 1] {
@@ -5976,7 +5772,7 @@ fn char_at_cell_start(prefix: &[usize], target: usize) -> usize {
 /// a selection ENDING (inclusive) at that column. Trailing zero-width marks on
 /// the last glyph are kept because their start column is not strictly greater
 /// than `target` (#132).
-fn char_after_cell_end(prefix: &[usize], target: usize) -> usize {
+pub(crate) fn char_after_cell_end(prefix: &[usize], target: usize) -> usize {
     let n = prefix.len().saturating_sub(1); // chars.len()
     for i in 0..n {
         if prefix[i] > target {
@@ -6922,20 +6718,6 @@ thread_local! {
 // Host-key confirmation (#109-5)
 // ---------------------------------------------------------------------------
 
-/// One queued host-key prompt. Multiple connections to the *same* host:port
-/// (e.g. the shell and its SFTP channel racing on first connect) collapse into
-/// a single dialog whose answer fans out to every waiting `responder`.
-struct PendingHostKey {
-    host: String,
-    port: u16,
-    changed: bool,
-    title: String,
-    message: String,
-    detail: String,
-    confirm_label: String,
-    responders: Vec<crate::ssh::HostKeyResponder>,
-}
-
 thread_local! {
     /// Prompts awaiting a decision; the front one is shown. Lives on the Slint
     /// event-loop thread (all access is from there).
@@ -7072,18 +6854,6 @@ fn resolve_front_hostkey(win: &AppWindow, accept: bool) {
 // Connect-time credential prompt (#110)
 // ---------------------------------------------------------------------------
 
-/// One queued credential prompt. Connections to the same session (shell + its
-/// SFTP channel) collapse into a single dialog whose answer fans out to each
-/// waiting responder.
-struct PendingCred {
-    session_id: String,
-    host: String,
-    user: String,
-    need_user: bool,
-    need_password: bool,
-    responders: Vec<crate::ssh::CredentialResponder>,
-}
-
 thread_local! {
     static CRED_QUEUE: RefCell<VecDeque<PendingCred>> = RefCell::new(VecDeque::new());
     /// session id → the answer given this run (`None` = cancelled), so a second
@@ -7210,17 +6980,6 @@ fn persist_credentials(
 // MFA / keyboard-interactive prompt (#86-MFA)
 // ---------------------------------------------------------------------------
 
-/// One queued MFA challenge. Concurrent connections for the same session (the
-/// shell and its SFTP channel) that hit the same prompt collapse into a single
-/// dialog whose answer fans out to every waiting `responder`.
-struct PendingMfa {
-    session_id: String,
-    host: String,
-    prompt: String,
-    echo: bool,
-    responders: Vec<crate::ssh::MfaResponder>,
-}
-
 thread_local! {
     static MFA_QUEUE: RefCell<VecDeque<PendingMfa>> = RefCell::new(VecDeque::new());
 }
@@ -7336,7 +7095,7 @@ fn update_terminal_row(
 
 fn refresh_panes(
     window: &AppWindow,
-    layout: &crate::panes::Layout,
+    layout: &crate::layout::Layout,
     content: (f32, f32),
     tabs_model: &VecModel<TabInfo>,
     panes_model: &VecModel<PaneInfo>,
@@ -7430,7 +7189,7 @@ fn refresh_panes(
 /// outside every pane. The 30% edge bands trigger a split; the tab strip and
 /// middle drop into the pane's tab group.
 fn drag_target(
-    layout: &crate::panes::Layout,
+    layout: &crate::layout::Layout,
     content: (f32, f32),
     x: f32,
     y: f32,
@@ -7475,7 +7234,7 @@ fn wire_tab_callbacks(
     window: &AppWindow,
     tabs_model: Rc<VecModel<TabInfo>>,
     terminals_model: Rc<VecModel<TerminalState>>,
-    layout: Rc<RefCell<crate::panes::Layout>>,
+    layout: Rc<RefCell<crate::layout::Layout>>,
     content_size: Rc<std::cell::Cell<(f32, f32)>>,
     panes_model: Rc<VecModel<PaneInfo>>,
     splitters_model: Rc<VecModel<SplitterInfo>>,
@@ -7771,10 +7530,10 @@ fn wire_tab_callbacks(
                         return;
                     }
                     let (d, before) = match dir.as_str() {
-                        "left" => (crate::panes::Dir::Horizontal, true),
-                        "right" => (crate::panes::Dir::Horizontal, false),
-                        "up" => (crate::panes::Dir::Vertical, true),
-                        _ => (crate::panes::Dir::Vertical, false), // "down"
+                        "left" => (crate::layout::Dir::Horizontal, true),
+                        "right" => (crate::layout::Dir::Horizontal, false),
+                        "up" => (crate::layout::Dir::Vertical, true),
+                        _ => (crate::layout::Dir::Vertical, false), // "down"
                     };
                     lay.split(pane_id as u64, d, &tab_id, before);
                 }
@@ -7859,16 +7618,16 @@ fn wire_tab_callbacks(
                 let src = lay.leaf_of_tab(&tab_id);
                 match zone {
                     "left" => {
-                        lay.split(pane, crate::panes::Dir::Horizontal, &tab_id, true);
+                        lay.split(pane, crate::layout::Dir::Horizontal, &tab_id, true);
                     }
                     "right" => {
-                        lay.split(pane, crate::panes::Dir::Horizontal, &tab_id, false);
+                        lay.split(pane, crate::layout::Dir::Horizontal, &tab_id, false);
                     }
                     "up" => {
-                        lay.split(pane, crate::panes::Dir::Vertical, &tab_id, true);
+                        lay.split(pane, crate::layout::Dir::Vertical, &tab_id, true);
                     }
                     "down" => {
-                        lay.split(pane, crate::panes::Dir::Vertical, &tab_id, false);
+                        lay.split(pane, crate::layout::Dir::Vertical, &tab_id, false);
                     }
                     "tabstrip" => {
                         if src != Some(pane) {
@@ -9809,62 +9568,6 @@ fn webdav_auth_req(mut req: ureq::Request, auth: Option<&str>) -> ureq::Request 
     req
 }
 
-#[derive(Debug)]
-struct WebDavAcceptAnyCertVerifier;
-
-impl ureq::rustls::client::danger::ServerCertVerifier for WebDavAcceptAnyCertVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[ureq::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &ureq::rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: ureq::rustls::pki_types::UnixTime,
-    ) -> std::result::Result<ureq::rustls::client::danger::ServerCertVerified, ureq::rustls::Error>
-    {
-        Ok(ureq::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        ureq::rustls::client::danger::HandshakeSignatureValid,
-        ureq::rustls::Error,
-    > {
-        Ok(ureq::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &ureq::rustls::pki_types::CertificateDer<'_>,
-        _dss: &ureq::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        ureq::rustls::client::danger::HandshakeSignatureValid,
-        ureq::rustls::Error,
-    > {
-        Ok(ureq::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<ureq::rustls::SignatureScheme> {
-        use ureq::rustls::SignatureScheme;
-        vec![
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ED25519,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-        ]
-    }
-}
-
 fn webdav_agent(accept_invalid_certs: bool) -> ureq::Agent {
     let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(20));
     if accept_invalid_certs {
@@ -10543,40 +10246,8 @@ fn c0_letter_key_down(cp: u32) -> bool {
     unsafe { (GetKeyState(vk) as u16) & 0x8000 != 0 }
 }
 
-/// A coloured, cursor-annotated snapshot ready for the Slint terminal grid.
-struct BuiltScreen {
-    spans: Vec<TermSpan>,
-    cursor_row: i32,
-    cursor_col: i32,
-    rows_used: i32,
-    is_alt: bool,
-    /// Scrollback depth (max view_offset = history length) and the current
-    /// offset (0 = live bottom), for the terminal scrollbar (#103).
-    scroll_max: i32,
-    scroll_offset: i32,
-}
-
-/// One coloured run within a line (its grid row is assigned at render time).
-/// Colours are stored as raw vt100::Color so the palette (dark vs. light)
-/// can be applied at render time rather than at history-capture time.
-/// This lets a theme switch retroactively recolour the entire scrollback.
-#[derive(Clone)]
-struct HistSpan {
-    text: String,
-    fg: vt100::Color,
-    bg: vt100::Color,
-    bold: bool,
-    inverse: bool,
-    col: i32,
-    cells: i32,
-}
-
-/// A rendered line: plain text (one char per cell, for find/selection), style runs,
-/// and whether the row was soft-wrapped by the terminal width.
-type Line = (String, Vec<HistSpan>, bool);
-
 /// Per-session scrollback cap (recycled on clear / tab close).
-const MAX_HISTORY: usize = 100_000;
+pub(crate) const MAX_HISTORY: usize = 100_000;
 
 /// Build one screen row into `(plain_text, coloured_runs)`.  `plain` carries one
 /// char per cell (space for blanks) so a char index equals the grid column.
@@ -10616,7 +10287,7 @@ fn cell_attrs(
     }
 }
 
-fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
+pub(crate) fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
     let mut plain = String::with_capacity(cols as usize);
     let mut runs: Vec<HistSpan> = Vec::new();
     let mut c = 0u16;
@@ -10683,7 +10354,7 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
 /// terminal run. Uppercase standalone levels cover conventional text logs;
 /// lowercase values are accepted only in a structured `level=...` / JSON field
 /// to avoid colouring ordinary prose that happens to contain words like "error".
-fn highlight_plain_output(
+pub(crate) fn highlight_plain_output(
     runs: Vec<HistSpan>,
     preset: OutputHighlightPreset,
     custom_rules: &[CompiledOutputRule],
@@ -11028,7 +10699,7 @@ fn ascii_word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
 /// Detect how many lines scrolled off the top between two screen snapshots by
 /// finding the vertical shift `k` that best aligns `prev` onto `curr` (longest
 /// top-anchored run of equal plain-text lines).  `k` lines left the top.
-fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
+pub(crate) fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
     let mut best_k = 0usize;
     let mut best_len = 0usize;
     for k in 0..prev.len() {
@@ -11044,489 +10715,7 @@ fn detect_scroll(prev: &[Line], curr: &[Line]) -> usize {
     best_k
 }
 
-impl TermBuffer {
-    // ---- Absolute-coordinate selection helpers (#18 follow-up) -------------
-    //
-    // The "combined" buffer is `history` (oldest first) followed by the live
-    // screen rows.  A visible window of `rows` rows looks at a slice of it whose
-    // top index depends on whether we're at the live bottom or scrolled up.
 
-    /// Live screen rows plus the count of non-blank ones at the top.
-    fn live_rows(&self) -> (Vec<Line>, usize) {
-        let s = self.parser.screen();
-        let (rows, cols) = s.size();
-        let live: Vec<Line> = (0..rows).map(|r| build_row(s, r, cols)).collect();
-        let used = live
-            .iter()
-            .rposition(|(_, runs, _)| !runs.is_empty())
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        (live, used)
-    }
-
-    /// Absolute combined-row index of the top visible row for the current view.
-    fn view_top_abs(&self, _live_used: usize) -> usize {
-        let rows = self.parser.screen().size().0 as usize;
-        let hist_len = self.history.len();
-        if self.view_offset == 0 {
-            // Live view: visible row 0 is live screen row 0 = combined[hist_len].
-            hist_len
-        } else {
-            // Include the screen's full row count (trailing blanks too) so this
-            // mapping matches render()'s scroll window — keeping the live and
-            // scrolled views continuous after a shrink/grow (#119-followup).
-            let combined_len = hist_len + rows;
-            combined_len.saturating_sub(rows + self.view_offset)
-        }
-    }
-
-    /// Map a visible row (0..rows) to its absolute combined-row index.
-    fn vis_to_abs(&self, vis_row: u16) -> usize {
-        let (_, live_used) = self.live_rows();
-        self.view_top_abs(live_used) + vis_row as usize
-    }
-
-    /// Highlight rectangles for the current selection, clipped to the visible
-    /// window of the current view.
-    fn selection_rects_visible(&self, cols: u16) -> Vec<TermMatch> {
-        let ranges = if self.sel_ranges.is_empty() {
-            match (self.sel_anchor, self.sel_focus) {
-                (Some(anchor), Some(focus)) => vec![(anchor, focus)],
-                _ => Vec::new(),
-            }
-        } else {
-            self.sel_ranges.clone()
-        };
-        if ranges.is_empty() {
-            return Vec::new();
-        }
-        let (_, live_used) = self.live_rows();
-        let top = self.view_top_abs(live_used);
-        let rows = self.parser.screen().size().0;
-        let mut out = Vec::new();
-        for ((ar, ac), (fr, fc)) in ranges {
-            let (lo_r, lo_c, hi_r, hi_c) = if (ar, ac) <= (fr, fc) {
-                (ar, ac, fr, fc)
-            } else {
-                (fr, fc, ar, ac)
-            };
-            if (lo_r, lo_c) == (hi_r, hi_c) {
-                continue;
-            }
-            for vis in 0..rows {
-                let abs = top + vis as usize;
-                if abs < lo_r || abs > hi_r {
-                    continue;
-                }
-                let (c0, c1) = if abs == lo_r && abs == hi_r {
-                    (lo_c.min(hi_c), lo_c.max(hi_c))
-                } else if abs == lo_r {
-                    (lo_c, cols.saturating_sub(1))
-                } else if abs == hi_r {
-                    (0, hi_c)
-                } else {
-                    (0, cols.saturating_sub(1))
-                };
-                out.push(TermMatch {
-                    row: vis as i32,
-                    col: c0 as i32,
-                    len: (c1.saturating_sub(c0) + 1) as i32,
-                });
-            }
-        }
-        out
-    }
-
-    /// If the current find query is outside the visible window, jump to the
-    /// first matching row in scrollback/live content so old serial output can be
-    /// found without manually scrolling back first (#233).
-    fn scroll_to_first_find_match(&mut self, query: &str) -> bool {
-        if query.is_empty() || self.parser.screen().alternate_screen() {
-            return false;
-        }
-        let q = query.to_lowercase();
-        let (live, _) = self.live_rows();
-        let rows = self.parser.screen().size().0 as usize;
-        let hist_len = self.history.len();
-        let combined_len = hist_len + live.len();
-        let Some(match_idx) = self
-            .history
-            .iter()
-            .map(|line| &line.0)
-            .chain(live.iter().map(|line| &line.0))
-            .position(|line| line.to_lowercase().contains(&q))
-        else {
-            return false;
-        };
-        let top = match_idx.min(combined_len.saturating_sub(rows));
-        let new_offset = combined_len.saturating_sub(rows + top);
-        if self.view_offset == new_offset {
-            return false;
-        }
-        self.view_offset = new_offset;
-        true
-    }
-
-    /// Extract the selected text from the combined buffer (whole selection,
-    /// even the parts currently scrolled out of view).
-    fn extract_selection_text(&self) -> String {
-        let ranges = if self.sel_ranges.is_empty() {
-            match (self.sel_anchor, self.sel_focus) {
-                (Some(anchor), Some(focus)) => vec![(anchor, focus)],
-                _ => Vec::new(),
-            }
-        } else {
-            self.sel_ranges.clone()
-        };
-        if ranges.is_empty() {
-            return String::new();
-        }
-        ranges
-            .iter()
-            .map(|&(anchor, focus)| self.extract_range_text(anchor, focus))
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn extract_range_text(
-        &self,
-        (ar, ac): (usize, u16),
-        (fr, fc): (usize, u16),
-    ) -> String {
-        let (lo_r, lo_c, hi_r, hi_c) = if (ar, ac) <= (fr, fc) {
-            (ar, ac, fr, fc)
-        } else {
-            (fr, fc, ar, ac)
-        };
-        let (live, live_used) = self.live_rows();
-        let hist_len = self.history.len();
-        let combined_len = hist_len + live_used;
-        // Clamp into real content so a focus parked on a blank row below the
-        // prompt doesn't emit trailing empty lines.
-        let hi_r = hi_r.min(combined_len.saturating_sub(1));
-        let mut out = String::new();
-        for r in lo_r..=hi_r {
-            let line: &str = if r < hist_len {
-                &self.history[r].0
-            } else if r - hist_len < live.len() {
-                &live[r - hist_len].0
-            } else {
-                ""
-            };
-            let chars: Vec<char> = line.chars().collect();
-            // `c0`/`c1` are GRID COLUMNS (inclusive). The plain text keeps one
-            // char per glyph, so wide (CJK) glyphs make char index != column;
-            // map columns → char indices via the cell prefix so the copied text
-            // doesn't drift by the number of wide glyphs before it (#132).
-            let (c0, c1) = if r == lo_r && r == hi_r {
-                (lo_c.min(hi_c), lo_c.max(hi_c))
-            } else if r == lo_r {
-                (lo_c, u16::MAX)
-            } else if r == hi_r {
-                (0, hi_c)
-            } else {
-                (0, u16::MAX)
-            };
-            let prefix = cell_prefix(&chars);
-            let start = char_at_cell_start(&prefix, c0 as usize);
-            let end = char_after_cell_end(&prefix, c1 as usize);
-            let seg: String = if start < end {
-                chars[start..end].iter().collect()
-            } else {
-                String::new()
-            };
-            out.push_str(seg.trim_end());
-            let wrapped = if r < hist_len {
-                self.history[r].2
-            } else if r - hist_len < live.len() {
-                live[r - hist_len].2
-            } else {
-                false
-            };
-            if r != hi_r && !wrapped {
-                out.push('\n');
-            }
-        }
-        out
-    }
-
-    /// Feed bytes to vt100 and capture scrolled-off lines into history.
-    ///
-    /// We detect scroll by diffing the screen before/after a `process`, which
-    /// can only recover up to one screen of shift per call.  A single large
-    /// burst can scroll many screens at once, so we split the input at newline
-    /// boundaries into batches of at most ~half a screen of lines and capture
-    /// after each — that way no batch ever scrolls more than the diff can see,
-    /// and nothing is lost.  (Splitting only on `\n` is safe: VT escape
-    /// sequences never contain a newline.)
-    fn ingest(&mut self, input: &[u8]) {
-        // Rewrite HVP (`ESC [ … f`) → CUP (`ESC [ … H`) so vt100 (which only
-        // implements `H`) honours btop/htop's absolute cursor positioning.
-        let bytes = self.rewrite_hvp(input);
-        // Retain the (post-rewrite) stream, capped, so a resize can replay it at
-        // the new width and reflow already-printed output (#169).
-        self.raw.extend(bytes.iter().copied());
-        self.cap_raw();
-        self.feed_batched(&bytes);
-    }
-
-    /// Feed a (already HVP-rewritten) byte slice to vt100 in newline-bounded
-    /// batches, capturing scrolled-off lines into history after each (see the
-    /// `ingest` doc comment). Does NOT touch `self.raw`, so it is reused by both
-    /// live ingest and resize-reflow replay.
-    fn feed_batched(&mut self, bytes: &[u8]) {
-        let rows = self.parser.screen().size().0 as usize;
-        let batch_lines = (rows / 2).max(1);
-        let mut start = 0usize;
-        let mut nl = 0usize;
-        for i in 0..bytes.len() {
-            if bytes[i] == b'\n' {
-                nl += 1;
-                if nl >= batch_lines {
-                    self.ingest_chunk(&bytes[start..=i]);
-                    start = i + 1;
-                    nl = 0;
-                }
-            }
-        }
-        if start < bytes.len() {
-            self.ingest_chunk(&bytes[start..]);
-        }
-    }
-
-    /// Trim the retained stream to `RAW_CAP`, dropping from the front up to the
-    /// next line boundary so a replay never starts mid-escape / mid-wrapped-line.
-    fn cap_raw(&mut self) {
-        if self.raw.len() <= RAW_CAP {
-            return;
-        }
-        let overflow = self.raw.len() - RAW_CAP;
-        self.raw.drain(0..overflow);
-        while let Some(&b) = self.raw.front() {
-            self.raw.pop_front();
-            if b == b'\n' {
-                break;
-            }
-        }
-    }
-
-    /// Resize-reflow (#169): rebuild the screen + scrollback at a new width by
-    /// replaying the retained byte stream through a fresh parser. vt100 itself
-    /// can't reflow (`set_size` just truncates/pads each row), and we only keep
-    /// rendered grid rows in `history`, so replaying the raw stream is what lets
-    /// long lines rewrap to the new width like FinalShell. Used only on the normal
-    /// screen — alt-screen programs (tmux/vim) get a SIGWINCH redraw from the
-    /// remote instead.
-    fn reflow(&mut self, new_rows: u16, new_cols: u16) {
-        let stream: Vec<u8> = self.raw.iter().copied().collect();
-        self.parser = vt100::Parser::new(new_rows, new_cols, 5000);
-        self.history.clear();
-        self.prev.clear();
-        self.view_offset = 0;
-        // Scrollback line count changes, so absolute selection coords no longer map.
-        self.sel_anchor = None;
-        self.sel_focus = None;
-        self.sel_ranges.clear();
-        self.feed_batched(&stream);
-    }
-
-    /// Translate every CSI sequence terminated by `f` (HVP) into the identical
-    /// sequence terminated by `H` (CUP).  The scanner state persists across
-    /// calls, so a sequence split across read chunks is still handled.  Only the
-    /// final byte of a CSI sequence is ever touched; text bytes pass through.
-    fn rewrite_hvp(&mut self, input: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(input.len());
-        for &b in input {
-            match self.csi_state {
-                CsiState::Normal => {
-                    if b == 0x1b {
-                        self.csi_state = CsiState::Esc;
-                    }
-                    out.push(b);
-                }
-                CsiState::Esc => {
-                    if b == b'[' {
-                        self.csi_state = CsiState::Csi;
-                    } else {
-                        // Not a CSI (could be another ESC, OSC, etc.).  Re-arm on
-                        // a fresh ESC, otherwise fall back to normal text.
-                        self.csi_state = if b == 0x1b {
-                            CsiState::Esc
-                        } else {
-                            CsiState::Normal
-                        };
-                    }
-                    out.push(b);
-                }
-                CsiState::Csi => {
-                    // Final bytes are 0x40..=0x7e; params/intermediates are
-                    // 0x20..=0x3f.  Rewrite an `f` final into `H`.
-                    if (0x40..=0x7e).contains(&b) {
-                        out.push(if b == b'f' { b'H' } else { b });
-                        self.csi_state = CsiState::Normal;
-                    } else {
-                        out.push(b);
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// Process one bounded batch and capture any lines that scrolled off the top
-    /// (skipped for alt-screen programs like vim/nano).
-    fn ingest_chunk(&mut self, bytes: &[u8]) {
-        // Detect full-screen-clear sequences *before* processing so we can
-        // suppress history for programs that redraw without alt-screen (e.g.
-        // btop configured with `alt-screen = false`).
-        // We look for \033[H (cursor-home) and \033[2J / \033[J (erase display)
-        // as indicators that the program is doing a full-screen refresh.
-        let has_cursor_home = bytes.windows(3).any(|w| w == b"\x1b[H");
-        let has_erase_display =
-            bytes.windows(4).any(|w| w == b"\x1b[2J") || bytes.windows(3).any(|w| w == b"\x1b[J");
-        let is_fullscreen_refresh = has_cursor_home && has_erase_display;
-
-        self.parser.process(bytes);
-        let (is_alt, rows, cols) = {
-            let s = self.parser.screen();
-            let (r, c) = s.size();
-            (s.alternate_screen(), r, c)
-        };
-        if is_alt {
-            // Snap to live view whenever we're on the alt screen — this
-            // prevents old history (accumulated before alt-screen was entered)
-            // from mixing with the full-screen program's output after a scroll.
-            self.view_offset = 0;
-            self.prev.clear();
-            return;
-        }
-        if is_fullscreen_refresh {
-            // Non-alt-screen full-screen refresh (btop, htop with alt disabled…).
-            // Don't capture lines into history; they'd mix with the next frame.
-            self.view_offset = 0;
-            self.prev.clear();
-            return;
-        }
-        let curr: Vec<Line> = {
-            let s = self.parser.screen();
-            (0..rows).map(|r| build_row(s, r, cols)).collect()
-        };
-        if !self.prev.is_empty() {
-            let k = detect_scroll(&self.prev, &curr);
-            for line in self.prev.iter().take(k) {
-                self.history.push(line.clone());
-            }
-            if self.history.len() > MAX_HISTORY {
-                let drop = self.history.len() - MAX_HISTORY;
-                self.history.drain(0..drop);
-            }
-        }
-        self.prev = curr;
-    }
-
-    /// Render the terminal grid for the current scrollback `view_offset`
-    /// (0 = live).  Caches the displayed plain text for find/selection.
-    fn render(&mut self) -> BuiltScreen {
-        let (is_alt, rows, cols, cur_row, cur_col) = {
-            let s = self.parser.screen();
-            let (r, c) = s.size();
-            let (cr, cc) = s.cursor_position();
-            (s.alternate_screen(), r, c, cr, cc)
-        };
-
-        // --- Live view (also alt-screen): render the current grid -----------
-        if is_alt || self.view_offset == 0 {
-            let mut spans = Vec::new();
-            let mut displayed = Vec::with_capacity(rows as usize);
-            let mut last_content = 0i32;
-            let s = self.parser.screen();
-            for r in 0..rows {
-                let (plain, runs, _wrapped) = build_row(s, r, cols);
-                let runs = if is_alt {
-                    runs
-                } else {
-                    highlight_plain_output(
-                        runs,
-                        self.output_highlight,
-                        &self.custom_highlight_rules,
-                    )
-                };
-                if !runs.is_empty() {
-                    last_content = r as i32;
-                }
-                for hs in runs {
-                    spans.extend(render_term_span(&hs, r as i32, self.is_dark));
-                }
-                displayed.push(plain.trim_end().to_string());
-            }
-            self.displayed_text = displayed;
-            let rows_used = if is_alt {
-                rows as i32
-            } else {
-                last_content + 1
-            };
-            return BuiltScreen {
-                spans,
-                cursor_row: cur_row as i32,
-                cursor_col: cur_col as i32,
-                rows_used,
-                is_alt,
-                scroll_max: if is_alt { 0 } else { self.history.len() as i32 },
-                scroll_offset: 0,
-            };
-        }
-
-        // --- Scrolled view: window into history ++ live content -------------
-        let live: Vec<Line> = {
-            let s = self.parser.screen();
-            (0..rows).map(|r| build_row(s, r, cols)).collect()
-        };
-        let hist_len = self.history.len();
-        // Include the screen's trailing blank rows in the scroll range so this
-        // scrolled view stays continuous with the live view (view_offset 0).
-        // Trimming to only the used rows made the two views misalign after a
-        // shrink-then-grow (dragging the SFTP panel over the terminal and back),
-        // so scrolling back jumped at the bottom instead of moving line-by-line
-        // (#119-followup).
-        let combined_len = hist_len + live.len();
-        let win = rows as usize;
-        let start = combined_len.saturating_sub(win + self.view_offset);
-        let end = (start + win).min(combined_len);
-
-        let mut spans = Vec::new();
-        let mut displayed = Vec::with_capacity(win);
-        for (d, idx) in (start..end).enumerate() {
-            let line: &Line = if idx < hist_len {
-                &self.history[idx]
-            } else {
-                &live[idx - hist_len]
-            };
-            let runs = highlight_plain_output(
-                line.1.clone(),
-                self.output_highlight,
-                &self.custom_highlight_rules,
-            );
-            for hs in &runs {
-                spans.extend(render_term_span(hs, d as i32, self.is_dark));
-            }
-            displayed.push(line.0.trim_end().to_string());
-        }
-        while displayed.len() < win {
-            displayed.push(String::new());
-        }
-        self.displayed_text = displayed;
-        BuiltScreen {
-            spans,
-            cursor_row: -1, // hide the live cursor while viewing history
-            cursor_col: 0,
-            rows_used: win as i32,
-            is_alt: false,
-            scroll_max: self.history.len() as i32,
-            scroll_offset: self.view_offset as i32,
-        }
-    }
-}
 
 /// Switch long prompts to the large, scrollable paste-review surface before a
 /// compact confirmation card can grow enough to cover its own action buttons.
@@ -11598,7 +10787,7 @@ fn twemoji_image(grapheme: &str) -> Option<slint::Image> {
 /// Ordinary graphemes remain grouped into large Text spans; emoji with a
 /// Twemoji asset become image spans so color survives Slint's monochrome font
 /// rasterizers. Columns still come from terminal cells, not image pixels.
-fn render_term_span(span: &HistSpan, row: i32, is_dark: bool) -> Vec<TermSpan> {
+pub(crate) fn render_term_span(span: &HistSpan, row: i32, is_dark: bool) -> Vec<TermSpan> {
     use unicode_segmentation::UnicodeSegmentation as _;
     use unicode_width::UnicodeWidthStr as _;
 

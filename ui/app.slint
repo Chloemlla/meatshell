@@ -1393,7 +1393,9 @@ export component AppWindow inherits Window {
                     tab-selected(id) => { root.pane-tab-selected(pane.id, id); }
                     tab-closed(id) => { root.pane-tab-closed(pane.id, id); }
                     new-tab() => { root.pane-new-tab(pane.id); }
-                    tab-reorder(from, dir) => { root.pane-tab-reorder(pane.id, from, dir); }
+                    tab-reorder(from-index, direction) => {
+                        root.pane-tab-reorder(pane.id, from-index, direction);
+                    }
                     tab-split(id, dir) => { root.pane-split(pane.id, id, dir); }
                     merge-pane() => { root.pane-merge(pane.id); }
                     tab-duplicate(id) => { root.tab-duplicate(id); }

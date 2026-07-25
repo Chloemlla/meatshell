@@ -198,7 +198,11 @@ async fn run_serial(
             SessionCommand::KillProcess { reply, .. } => {
                 let _ = reply.send(crate::ssh::ProcessKillResult {
                     success: false,
-                    message: t("串口不支持远程进程操作", "Remote process control is unavailable for serial sessions").into(),
+                    message: t(
+                        "串口不支持远程进程操作",
+                        "Remote process control is unavailable for serial sessions",
+                    )
+                    .into(),
                 });
             }
             SessionCommand::Close => break,

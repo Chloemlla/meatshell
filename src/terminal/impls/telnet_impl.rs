@@ -1,6 +1,6 @@
 //! Telnet session worker (issue #17).
 //!
-//! Like [`crate::serial`], this mirrors [`crate::ssh::spawn_session`]'s public
+//! Like [`crate::terminal::serial`], this mirrors [`crate::ssh::spawn_session`]'s public
 //! surface so the terminal UI is reused unchanged. Telnet is just a TCP byte
 //! stream with in-band option negotiation (RFC 854/855), so the worker:
 //!
@@ -118,15 +118,15 @@ async fn run_telnet(
     )));
 
     // Direct, or tunnel through a SOCKS5 / HTTP proxy (reuses issue #7 plumbing).
-    let stream = match crate::proxy::resolve(&session.proxy) {
+    let stream = match crate::ssh::proxy::resolve(&session.proxy) {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
                 t("经代理连接", "via proxy"),
-                crate::proxy::describe(&p),
+                crate::ssh::proxy::describe(&p),
                 addr
             )));
-            crate::proxy::connect(&p, &host, port)
+            crate::ssh::proxy::connect(&p, &host, port)
                 .await
                 .with_context(|| format!("proxy connect to {addr} failed"))?
         }

@@ -139,11 +139,7 @@ async fn run_local(
             SessionCommand::RawInput(bytes) => {
                 tracing::debug!("local pty write len={} bytes", bytes.len());
                 let mut guard = writer.lock().unwrap();
-                if guard
-                    .write_all(&bytes)
-                    .and_then(|_| guard.flush())
-                    .is_err()
-                {
+                if guard.write_all(&bytes).and_then(|_| guard.flush()).is_err() {
                     let _ = events.send(SessionEvent::Closed(t("写入失败", "write failed").into()));
                     break;
                 }
@@ -160,7 +156,11 @@ async fn run_local(
             SessionCommand::KillProcess { reply, .. } => {
                 let _ = reply.send(crate::ssh::ProcessKillResult {
                     success: false,
-                    message: t("本地终端不支持远程进程操作", "Remote process control is unavailable for local terminals").into(),
+                    message: t(
+                        "本地终端不支持远程进程操作",
+                        "Remote process control is unavailable for local terminals",
+                    )
+                    .into(),
                 });
             }
             SessionCommand::Close => {

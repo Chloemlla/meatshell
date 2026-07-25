@@ -227,14 +227,14 @@ fn decode_custom(path: &str) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
 /// built-in (the procedural built-ins are drawn in code; this one is a real
 /// image). The asset is pre-compressed to 2560×1440 (#new-user-defaults).
 fn decode_miku() -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    const BYTES: &[u8] = include_bytes!("../assets/miku.jpg");
+    const BYTES: &[u8] = include_bytes!("../../../assets/miku.jpg");
     Some(to_buffer(image::load_from_memory(BYTES).ok()?.to_rgba8()))
 }
 
 /// The bundled default wallpaper (#231), embedded so packaged builds do not
 /// depend on an external asset file at runtime.
 fn decode_ms() -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    const BYTES: &[u8] = include_bytes!("../assets/ms.jpg");
+    const BYTES: &[u8] = include_bytes!("../../../assets/ms.jpg");
     Some(to_buffer(image::load_from_memory(BYTES).ok()?.to_rgba8()))
 }
 

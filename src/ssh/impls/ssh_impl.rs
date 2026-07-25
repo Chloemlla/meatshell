@@ -54,8 +54,8 @@ pub(crate) fn load_session_private_key(session: &Session, pass: &str) -> Result<
     let pass = if pass.is_empty() { None } else { Some(pass) };
     let inline = session.private_key_inline.as_str().trim();
     if !inline.is_empty() {
-        if crate::ppk::is_ppk(inline.as_bytes()) {
-            return crate::ppk::decode_ppk(inline.as_bytes(), pass.unwrap_or_default())
+        if crate::ssh::ppk::is_ppk(inline.as_bytes()) {
+            return crate::ssh::ppk::decode_ppk(inline.as_bytes(), pass.unwrap_or_default())
                 .context("failed to parse pasted PuTTY private key");
         }
         return decode_secret_key(inline, pass).context("failed to parse pasted private key");
@@ -81,7 +81,7 @@ pub(crate) fn load_session_private_key(session: &Session, pass: &str) -> Result<
     {
         let raw = std::fs::read(&key_path)
             .with_context(|| format!("failed to read PuTTY key {key_path}"))?;
-        return crate::ppk::decode_ppk(&raw, pass.unwrap_or_default())
+        return crate::ssh::ppk::decode_ppk(&raw, pass.unwrap_or_default())
             .with_context(|| format!("failed to load PuTTY key {key_path}"));
     }
     load_secret_key(Path::new(&key_path), pass)
@@ -135,10 +135,7 @@ fn contains_zmodem_init(data: &[u8]) -> bool {
 }
 
 fn line_start_before(text: &str, pos: usize) -> usize {
-    text[..pos]
-        .rfind(['\r', '\n'])
-        .map(|i| i + 1)
-        .unwrap_or(0)
+    text[..pos].rfind(['\r', '\n']).map(|i| i + 1).unwrap_or(0)
 }
 
 fn include_following_line_break(text: &str, mut pos: usize) -> usize {
@@ -159,10 +156,7 @@ fn include_following_line_break(text: &str, mut pos: usize) -> usize {
 
 fn prompt_setup_echo_end(text: &str, prefix_pos: usize) -> usize {
     if let Some(rel) = text[prefix_pos..].find(PROMPT_SETUP_SUFFIX) {
-        return include_following_line_break(
-            text,
-            prefix_pos + rel + PROMPT_SETUP_SUFFIX.len(),
-        );
+        return include_following_line_break(text, prefix_pos + rel + PROMPT_SETUP_SUFFIX.len());
     }
     let line_end = text[prefix_pos..]
         .find(['\r', '\n'])
@@ -619,7 +613,9 @@ impl SessionHandle {
     }
 
     pub fn add_tunnel(&self, id: String, forward: PortForward) {
-        let _ = self.commands.send(SessionCommand::AddTunnel { id, forward });
+        let _ = self
+            .commands
+            .send(SessionCommand::AddTunnel { id, forward });
     }
 
     pub fn stop_tunnel(&self, id: String) {
@@ -657,9 +653,7 @@ async fn kill_remote_process(
     let operation_stage = stage.clone();
     let operation = async move {
         let started = std::time::Instant::now();
-        tracing::warn!(
-            "[PROC_KILL] pid={pid} privileged={privileged} stage=open-channel begin"
-        );
+        tracing::warn!("[PROC_KILL] pid={pid} privileged={privileged} stage=open-channel begin");
         let mut channel = handle
             .channel_open_session()
             .await
@@ -694,7 +688,10 @@ async fn kill_remote_process(
             started.elapsed().as_millis()
         );
         if !privileged {
-            channel.eof().await.context("finish process-control input")?;
+            channel
+                .eof()
+                .await
+                .context("finish process-control input")?;
         }
 
         let mut response = String::new();
@@ -728,7 +725,9 @@ async fn kill_remote_process(
                 // ExitStatus is the authoritative completion result. Some SSH
                 // servers keep a PTY channel open and never promptly follow it
                 // with Close, so waiting beyond this point causes a false timeout.
-                ChannelMsg::ExitStatus { exit_status: status } => {
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => {
                     operation_stage.store(6, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!(
                         "[PROC_KILL] pid={pid} stage=exit-status status={status} elapsed_ms={}",
@@ -750,9 +749,7 @@ async fn kill_remote_process(
                         root_password.as_ref().map(|secret| secret.as_str()),
                     );
                     if !safe.is_empty() {
-                        tracing::warn!(
-                            "[PROC_KILL] pid={pid} stage=remote-output text={safe:?}"
-                        );
+                        tracing::warn!("[PROC_KILL] pid={pid} stage=remote-output text={safe:?}");
                     }
                     if response.len() < 1024 {
                         response.push_str(&text);
@@ -798,18 +795,23 @@ async fn kill_remote_process(
         },
         Ok(Err(err)) => ProcessKillResult {
             success: false,
-            message: format!("{}: {err}", t("结束进程失败", "Failed to terminate process")),
+            message: format!(
+                "{}: {err}",
+                t("结束进程失败", "Failed to terminate process")
+            ),
         },
         Err(_) => {
-            let stage = process_control_stage_name(
-                stage.load(std::sync::atomic::Ordering::Relaxed),
-            );
+            let stage =
+                process_control_stage_name(stage.load(std::sync::atomic::Ordering::Relaxed));
             tracing::warn!("[PROC_KILL] pid={pid} result=timeout stage={stage}");
             ProcessKillResult {
                 success: false,
                 message: format!(
                     "{} ({stage})",
-                    t("结束进程超时，诊断已写入 error.log", "Timed out; diagnostics were written to error.log")
+                    t(
+                        "结束进程超时，诊断已写入 error.log",
+                        "Timed out; diagnostics were written to error.log"
+                    )
                 ),
             }
         }
@@ -994,7 +996,7 @@ fn start_runtime_forward(
 ) -> RuntimeForward {
     let info = tunnel_info(id, &forward, true, t("运行中", "running"));
     let task = match forward.kind.as_str() {
-        "local" => Some(crate::forward::spawn_local(
+        "local" => Some(crate::tunnel::spawn_local(
             handle,
             info.bind_addr.clone(),
             info.bind_port,
@@ -1002,7 +1004,7 @@ fn start_runtime_forward(
             info.host_port,
             events.clone(),
         )),
-        "dynamic" => Some(crate::forward::spawn_dynamic(
+        "dynamic" => Some(crate::tunnel::spawn_dynamic(
             handle,
             info.bind_addr.clone(),
             info.bind_port,
@@ -1061,15 +1063,15 @@ async fn connect_ssh(
     }
 
     // Connect directly, or tunnel through a SOCKS5 / HTTP proxy (issue #7).
-    let handle = match crate::proxy::resolve(&session.proxy) {
+    let handle = match crate::ssh::proxy::resolve(&session.proxy) {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
                 t("经代理连接", "via proxy"),
-                crate::proxy::describe(&p),
+                crate::ssh::proxy::describe(&p),
                 addr
             )));
-            let stream = crate::proxy::connect(&p, &session.host, session.port)
+            let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
                 .await
                 .with_context(|| format!("proxy connect to {} failed", addr))?;
             client::connect_stream(config, stream, handler)
@@ -1136,18 +1138,16 @@ pub(crate) async fn authenticate_session(
             }
             ok
         }
-        AuthMethod::KeyboardInteractive => {
-            keyboard_interactive_auth(
-                handle,
-                &user,
-                password.as_str(),
-                &session.id,
-                &session.host,
-                events,
-            )
-            .await
-            .context("keyboard-interactive auth failed")?
-        }
+        AuthMethod::KeyboardInteractive => keyboard_interactive_auth(
+            handle,
+            &user,
+            password.as_str(),
+            &session.id,
+            &session.host,
+            events,
+        )
+        .await
+        .context("keyboard-interactive auth failed")?,
         AuthMethod::Key => {
             // An encrypted private key needs its passphrase; we reuse the
             // session's password field for it (empty = unencrypted key) (#90).
@@ -1536,7 +1536,12 @@ async fn run_session(
     // tasks can share it (russh's Handle isn't Clone, but its methods are &self).
     let mut runtime_forwards: std::collections::HashMap<String, RuntimeForward> =
         std::collections::HashMap::new();
-    for (idx, f) in session.forwards.iter().enumerate().filter(|(_, f)| f.kind == "remote") {
+    for (idx, f) in session
+        .forwards
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.kind == "remote")
+    {
         let bind = if f.bind_addr.trim().is_empty() {
             "127.0.0.1".to_string()
         } else {
@@ -1772,7 +1777,7 @@ async fn run_session(
                             .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2));
                         if !zmodem_cooldown && contains_zmodem_init(&data) {
                             let result =
-                                crate::zmodem::receive(&mut channel, &data, &events).await;
+                                crate::terminal::zmodem::receive(&mut channel, &data, &events).await;
                             zmodem_done_at = Some(std::time::Instant::now());
                             match result {
                                 Ok(leftover) => {
@@ -2359,19 +2364,34 @@ fn build_system_details(
 
     SystemDetails {
         overview: vec![
-            (t("操作系统", "Operating system").to_string(), sys_value(sys, "OS")),
-            (t("内核版本", "Kernel version").to_string(), sys_value(sys, "KERNEL_RELEASE")),
-            (t("主机名称", "Hostname").to_string(), sys_value(sys, "HOSTNAME")),
+            (
+                t("操作系统", "Operating system").to_string(),
+                sys_value(sys, "OS"),
+            ),
+            (
+                t("内核版本", "Kernel version").to_string(),
+                sys_value(sys, "KERNEL_RELEASE"),
+            ),
+            (
+                t("主机名称", "Hostname").to_string(),
+                sys_value(sys, "HOSTNAME"),
+            ),
             (t("IP", "IP").to_string(), sys_value(sys, "IPS")),
             (t("负载", "Load").to_string(), sys_value(sys, "LOAD")),
             (t("内核", "Kernel").to_string(), sys_value(sys, "KERNEL")),
-            (t("硬件架构", "Architecture").to_string(), sys_value(sys, "ARCH")),
+            (
+                t("硬件架构", "Architecture").to_string(),
+                sys_value(sys, "ARCH"),
+            ),
             (t("连接", "Connection").to_string(), sys_value(sys, "IPS")),
             (t("运行", "Uptime").to_string(), sys_value(sys, "UPTIME")),
         ],
         cpu_info: vec![
             (t("名称", "Name").to_string(), cpu_model),
-            (t("核心数", "Cores").to_string(), sys_value(sys, "CPU_CORES")),
+            (
+                t("核心数", "Cores").to_string(),
+                sys_value(sys, "CPU_CORES"),
+            ),
             (t("频率", "Frequency").to_string(), "-".to_string()),
             (t("缓存", "Cache").to_string(), sys_value(sys, "CPU_CACHE")),
             ("BogoMips".to_string(), sys_value(sys, "CPU_BOGO")),
@@ -2382,7 +2402,10 @@ fn build_system_details(
             (t("总计", "Total").to_string(), kib_size(mem_total)),
             (t("已使用", "Used").to_string(), kib_size(mem_used)),
             (t("剩余", "Free").to_string(), kib_size(mem_avail)),
-            (t("已用", "Usage").to_string(), percent_text(mem_used, mem_total)),
+            (
+                t("已用", "Usage").to_string(),
+                percent_text(mem_used, mem_total),
+            ),
             (t("缓冲", "Buffers").to_string(), kib_size(mem_buffers)),
             (t("缓存", "Cached").to_string(), kib_size(mem_cached)),
         ],
@@ -2390,7 +2413,10 @@ fn build_system_details(
             (t("总计", "Total").to_string(), kib_size(swap_total)),
             (t("已使用", "Used").to_string(), kib_size(swap_used)),
             (t("剩余", "Free").to_string(), kib_size(swap_free)),
-            (t("已用", "Usage").to_string(), percent_text(swap_used, swap_total)),
+            (
+                t("已用", "Usage").to_string(),
+                percent_text(swap_used, swap_total),
+            ),
         ],
         networks: net_counters
             .iter()
@@ -2617,8 +2643,8 @@ pub(crate) async fn verify_host_key(
     key: &PublicKey,
     events: &UnboundedSender<SessionEvent>,
 ) -> bool {
-    use crate::known_hosts::HostKeyStatus;
-    match crate::known_hosts::verify(host, port, key) {
+    use crate::ssh::known_hosts::HostKeyStatus;
+    match crate::ssh::known_hosts::verify(host, port, key) {
         HostKeyStatus::Match => true,
         status => {
             let changed = status == HostKeyStatus::Changed;
@@ -2627,7 +2653,7 @@ pub(crate) async fn verify_host_key(
                 host: host.to_string(),
                 port,
                 key_type: key.algorithm().to_string(),
-                fingerprint: crate::known_hosts::fingerprint(key),
+                fingerprint: crate::ssh::known_hosts::fingerprint(key),
                 changed,
                 responder: HostKeyResponder::new(tx),
             });
@@ -2636,7 +2662,7 @@ pub(crate) async fn verify_host_key(
             }
             match rx.await {
                 Ok(true) => {
-                    if let Err(e) = crate::known_hosts::remember(host, port, key) {
+                    if let Err(e) = crate::ssh::known_hosts::remember(host, port, key) {
                         tracing::warn!("could not save host key for {host}:{port}: {e:#}");
                     }
                     true
@@ -2875,7 +2901,11 @@ mod monitor_hardening_tests {
         let mut at = Instant::now();
         let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
         match event {
-            super::SessionEvent::ResourceStats { current_user, procs, .. } => {
+            super::SessionEvent::ResourceStats {
+                current_user,
+                procs,
+                ..
+            } => {
                 assert_eq!(current_user, "alice");
                 assert_eq!(procs[0].user, "alice");
             }
@@ -2906,7 +2936,10 @@ mod monitor_hardening_tests {
         match event {
             super::SessionEvent::ResourceStats { sys, .. } => {
                 let sys = sys.expect("delayed sample should include details");
-                assert!(sys.overview.iter().any(|(_, value)| value == "Debian GNU/Linux 12"));
+                assert!(sys
+                    .overview
+                    .iter()
+                    .any(|(_, value)| value == "Debian GNU/Linux 12"));
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -2927,9 +2960,7 @@ mod monitor_hardening_tests {
 
 #[cfg(test)]
 mod process_control_tests {
-    use super::{
-        looks_like_sudo_password_prompt, process_control_log_text, process_kill_command,
-    };
+    use super::{looks_like_sudo_password_prompt, process_control_log_text, process_kill_command};
 
     #[test]
     fn own_process_uses_plain_term_signal() {
@@ -2953,7 +2984,8 @@ mod process_control_tests {
 
     #[test]
     fn diagnostic_output_redacts_password_and_controls() {
-        let safe = process_control_log_text("Password:\r\nsecret-value\x1b[0m", Some("secret-value"));
+        let safe =
+            process_control_log_text("Password:\r\nsecret-value\x1b[0m", Some("secret-value"));
         assert!(!safe.contains("secret-value"));
         assert!(safe.contains("[REDACTED]"));
         assert!(!safe.contains('\r'));

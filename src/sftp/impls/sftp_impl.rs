@@ -369,9 +369,9 @@ async fn run_sftp(
         }
         None => {
             _jump_keepalive = None;
-            match crate::proxy::resolve(&session.proxy) {
+            match crate::ssh::proxy::resolve(&session.proxy) {
                 Some(p) => {
-                    let stream = crate::proxy::connect(&p, &session.host, session.port)
+                    let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
                         .await
                         .with_context(|| format!("sftp proxy connect {} failed", addr))?;
                     client::connect_stream(config.clone(), stream, sftp_handler(&session, &events))
@@ -425,13 +425,14 @@ async fn run_sftp(
                     }
                     None => {
                         _jump_keepalive = None;
-                        match crate::proxy::resolve(&session.proxy) {
+                        match crate::ssh::proxy::resolve(&session.proxy) {
                             Some(p) => {
-                                let stream = crate::proxy::connect(&p, &session.host, session.port)
-                                    .await
-                                    .with_context(|| {
-                                        format!("sftp proxy reconnect {} failed", addr)
-                                    })?;
+                                let stream =
+                                    crate::ssh::proxy::connect(&p, &session.host, session.port)
+                                        .await
+                                        .with_context(|| {
+                                            format!("sftp proxy reconnect {} failed", addr)
+                                        })?;
                                 client::connect_stream(
                                     config.clone(),
                                     stream,
