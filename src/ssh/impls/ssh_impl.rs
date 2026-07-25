@@ -122,6 +122,8 @@ const ZMODEM_CANCEL: [u8; 16] = [
 
 const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
 const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
+const PROMPT_SETUP_HISTORY_MARKER: &str = "__MEATSHELL_INTERNAL_SETUP_1";
+const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MEATSHELL_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; __ms7'";
 
 /// Detect the start of a ZMODEM transfer (sz/rz) in a raw channel chunk.
 ///
@@ -189,6 +191,14 @@ fn strip_late_prompt_setup_echo(text: &mut String) -> bool {
     };
     let end = prefix_pos + rel_end + PROMPT_SETUP_SUFFIX.len();
     strip_prompt_setup_echo(text, prefix_pos, end);
+    true
+}
+
+fn strip_pending_prompt_setup_echo(text: &mut String, pending: &mut bool) -> bool {
+    if !*pending || !strip_late_prompt_setup_echo(text) {
+        return false;
+    }
+    *pending = false;
     true
 }
 
@@ -1456,6 +1466,11 @@ async fn run_session(
     // Buffers output while `suppress_echo` so the (long) echoed setup line can be
     // stripped even when it splits across reads (#98).
     let mut echo_buf = String::new();
+    // `strip_late_prompt_setup_echo` must only run while an initial setup echo
+    // can genuinely still be in flight. Leaving it enabled for the whole SSH
+    // session makes recalling an accidentally saved setup command clear normal
+    // terminal rows (#289).
+    let mut late_prompt_echo_pending = false;
     // After a ZMODEM transfer finishes we briefly ignore ZMODEM detection so the
     // sender's lingering close frames can't spawn a spurious second receive (#76).
     let mut zmodem_done_at: Option<std::time::Instant> = None;
@@ -1492,7 +1507,6 @@ async fn run_session(
     // The echoed setup line is discarded by anchoring on the OSC 7 it produces
     // (see the suppress block below), so it doesn't matter that the long line
     // wraps — we never substring-match it.
-    const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; __cl=\"$(fc -ln -1 2>/dev/null)\"; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; __ms7'";
     let prompt_setup = format!(" {}\r", PROMPT_BODY);
     // --- Remote resource monitor (separate exec channel) ----------------
     // A tiny remote loop streams /proc/stat + /proc/meminfo every 2s; we parse
@@ -1767,6 +1781,12 @@ async fn run_session(
                 if let Some(p) = buf.find(PROMPT_SETUP_PREFIX) {
                     let end = prompt_setup_echo_end(&buf, p);
                     strip_prompt_setup_echo(&mut buf, p, end);
+                    late_prompt_echo_pending = false;
+                } else {
+                    // Nothing identifiable arrived before the deadline. Allow
+                    // one later setup echo to be removed, then permanently
+                    // disable the special-case stripping for this session.
+                    late_prompt_echo_pending = true;
                 }
                 if !buf.is_empty() {
                     let _ = events.send(SessionEvent::Output(buf));
@@ -1873,6 +1893,8 @@ async fn run_session(
                             });
                             if let Some((cmd_pos, osc_end, cwd)) = landed {
                                 suppress_echo = false;
+                                suppress_deadline = None;
+                                late_prompt_echo_pending = false;
                                 tracing::debug!("OSC7 cwd={:?}", cwd);
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
                                 let mut buf = std::mem::take(&mut echo_buf);
@@ -1880,7 +1902,16 @@ async fn run_session(
                                 buf
                             } else if echo_buf.len() >= ECHO_BUF_CAP {
                                 suppress_echo = false;
-                                std::mem::take(&mut echo_buf)
+                                suppress_deadline = None;
+                                let mut buf = std::mem::take(&mut echo_buf);
+                                if let Some(p) = buf.find(PROMPT_SETUP_PREFIX) {
+                                    let end = prompt_setup_echo_end(&buf, p);
+                                    strip_prompt_setup_echo(&mut buf, p, end);
+                                    late_prompt_echo_pending = false;
+                                } else {
+                                    late_prompt_echo_pending = true;
+                                }
+                                buf
                             } else {
                                 continue; // keep buffering; show nothing yet
                             }
@@ -1891,9 +1922,10 @@ async fn run_session(
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
                             }
                             let mut clean = chunk;
-                            if prompt_injected {
-                                strip_late_prompt_setup_echo(&mut clean);
-                            }
+                            strip_pending_prompt_setup_echo(
+                                &mut clean,
+                                &mut late_prompt_echo_pending,
+                            );
                             clean
                         };
 
@@ -2786,9 +2818,20 @@ fn _assert_handle_send() {
 #[cfg(test)]
 mod prompt_setup_echo_tests {
     use super::{
-        prompt_setup_echo_end, strip_late_prompt_setup_echo, strip_prompt_setup_echo,
-        PROMPT_SETUP_PREFIX,
+        prompt_setup_echo_end, strip_late_prompt_setup_echo, strip_pending_prompt_setup_echo,
+        strip_prompt_setup_echo, PROMPT_BODY, PROMPT_SETUP_HISTORY_MARKER, PROMPT_SETUP_PREFIX,
     };
+
+    #[test]
+    fn bash_setup_removes_current_and_stale_history_entries() {
+        assert!(PROMPT_BODY.contains(PROMPT_SETUP_HISTORY_MARKER));
+        assert!(PROMPT_BODY.contains("history 2>/dev/null"));
+        assert!(PROMPT_BODY.contains("__ms7()"));
+        assert!(PROMPT_BODY.contains("history -d \"$__mn\""));
+        // Re-prime command capture only after deleting the setup entry, so the
+        // previous real user command does not get reported as newly executed.
+        assert!(PROMPT_BODY.find("history -d").unwrap() < PROMPT_BODY.rfind("__cl=").unwrap());
+    }
 
     #[test]
     fn strips_oh_my_zsh_echo_without_newline() {
@@ -2822,6 +2865,27 @@ mod prompt_setup_echo_tests {
         );
         assert!(strip_late_prompt_setup_echo(&mut text));
         assert_eq!(text, "prompt\r\n\r\x1b[2Kafter");
+    }
+
+    #[test]
+    fn late_setup_filter_disables_itself_after_one_match() {
+        let echoed = format!(
+            "prompt\r\n{} && eval 'body; __ms7'\r\nafter",
+            PROMPT_SETUP_PREFIX
+        );
+        let mut pending = true;
+        let mut first = echoed.clone();
+        assert!(strip_pending_prompt_setup_echo(&mut first, &mut pending));
+        assert!(!pending);
+
+        // A later readline recall can contain the same private setup text. It
+        // must reach the terminal untouched instead of clearing visible rows.
+        let mut recalled = echoed.clone();
+        assert!(!strip_pending_prompt_setup_echo(
+            &mut recalled,
+            &mut pending
+        ));
+        assert_eq!(recalled, echoed);
     }
 
     #[test]

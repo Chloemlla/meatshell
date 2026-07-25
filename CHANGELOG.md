@@ -11,6 +11,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 修复 / Fixed
 
+- **修复 SSH 内部初始化命令污染远端历史（#289）。** Shell integration 初始化完成后会主动清理当前初始化项及旧版本残留，不再依赖远端是否启用 `HISTCONTROL=ignorespace`；迟到回显过滤也只在连接初始化阶段生效，切换标签页后按上键不会再召回内部命令、清空终端行或破坏首屏内容。
 - **修复 SSH 会话中 Bash 历史命令重绘错位（#289）。** 隐藏 shell integration 初始化命令后会主动复位并清空当前终端行，使本地 VT 光标与远端 PTY 重新同步；在 Debian 等桌面系统中使用上下方向键浏览历史时，提示符和命令不再相互重叠或依次拼接。
 
 ### 性能 / Performance
@@ -25,6 +26,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Fixed
 
+- **Prevent SSH shell setup from polluting remote history (#289).** Shell integration now removes both its current initialization entry and leftovers from older versions from Bash history instead of relying on the remote `HISTCONTROL=ignorespace` setting. Late-echo filtering is limited to connection setup, so pressing Up after switching tabs no longer recalls internal commands, clears terminal rows, or damages the initial screen.
 - **Fix misaligned Bash history repainting in SSH sessions (#289).** After hiding the shell-integration setup command, MeatShell now resets and clears the current terminal row to resynchronize the local VT cursor with the remote PTY. Browsing history with the arrow keys on Debian and other desktops no longer overlaps the prompt or appends recalled commands beside one another.
 
 ### Performance
