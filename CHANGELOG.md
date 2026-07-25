@@ -5,6 +5,16 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 新增 / Added
+
+- **Windows 支持选择界面渲染器（#280）。** “设置 → 界面 → 渲染”新增自动、GPU 与软件三种模式；自动模式直接使用 Slint 的渲染器初始化与软件回退机制，不额外扫描显卡或启动检测窗口。现有安装继续默认使用软件渲染以保留高分屏、虚拟机和远程桌面的兼容性，设置将在下次启动时生效，`SLINT_BACKEND` 环境变量仍可用于诊断覆盖。
+
+---
+
+### Added
+
+- **Add selectable UI renderers on Windows (#280).** Settings → Interface → Rendering now offers Automatic, GPU, and Software modes. Automatic relies directly on Slint's renderer initialization and software fallback without scanning the GPU or opening a probe window. Existing installations keep software rendering as the compatibility default for high-DPI displays, virtual machines, and remote desktops. Changes apply on the next launch, while `SLINT_BACKEND` remains available as a diagnostic override.
+
 
 ## [0.6.6] - 2026-07-23
 

@@ -353,6 +353,8 @@ component WallpaperSwatch inherits Rectangle {
 // The settings content (nav + pages). Embedded in AppWindow's modal overlay.
 export component InterfacePanel inherits Rectangle {
     in property <bool> lang-en;
+    in property <bool> is-windows;
+    in-out property <string> renderer-mode: "software";
     in property <[string]> term-fonts;
     in property <string> term-font-family;
     in property <length> term-font-size;
@@ -391,6 +393,7 @@ export component InterfacePanel inherits Rectangle {
     property <bool> new-rule-case-sensitive;
     property <bool> new-rule-whole-line;
     property <string> new-rule-color: "red";
+    property <bool> renderer-restart-required;
     property <bool> wp-is-custom:
         root.current-wallpaper != "" && root.current-wallpaper != "builtin:light"
         && root.current-wallpaper != "builtin:dark" && root.current-wallpaper != "builtin:tech"
@@ -407,6 +410,7 @@ export component InterfacePanel inherits Rectangle {
     callback set-output-highlight-rule-enabled(int, bool);
     callback set-ui-scale(int);
     callback set-panel-font(int);   // settings-panel font scale, percent
+    callback set-renderer-mode(string);
     callback set-sftp-follow-cd(bool);
     callback set-collapse-sidebar-default(bool);
     callback set-collapse-sftp-default(bool);
@@ -441,6 +445,11 @@ export component InterfacePanel inherits Rectangle {
                     icon: "\u{E167}"; label: root.lang-en ? "Font" : "字体";
                     active: root.ifd-page == "font";
                     clicked => { root.ifd-page = "font"; }
+                }
+                if root.is-windows : NavItem {
+                    icon: "\u{E1B1}"; label: root.lang-en ? "Rendering" : "渲染";
+                    active: root.ifd-page == "renderer";
+                    clicked => { root.ifd-page = "renderer"; }
                 }
                 NavItem {
                     icon: "\u{E8D4}"; label: root.lang-en ? "Output" : "输出高亮";
@@ -1068,6 +1077,65 @@ export component InterfacePanel inherits Rectangle {
                             width: 34px;
                         }
                     }
+                }
+            }
+
+            // --- Windows renderer page (#280) -------------------------
+            if root.ifd-page == "renderer" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 0;
+                alignment: start;
+
+                SectionHeader { text: root.lang-en ? "RENDERING" : "渲染"; height: 24px; }
+                SettingRow {
+                    label: root.lang-en ? "Renderer" : "渲染器";
+                    desc: root.lang-en
+                        ? "Auto tries GPU acceleration and lets Slint fall back to software. Software is best for VMs and compatibility."
+                        : "自动模式会尝试 GPU 加速，并由 Slint 在初始化失败时回退到软件渲染；虚拟机或兼容性优先时请选择软件。";
+                    show-divider: false;
+                    ComboBox {
+                        width: 150px;
+                        model: root.lang-en
+                            ? ["Automatic", "GPU", "Software"]
+                            : ["自动", "GPU", "软件"];
+                        current-value: root.renderer-mode == "auto"
+                            ? (root.lang-en ? "Automatic" : "自动")
+                            : root.renderer-mode == "gpu"
+                                ? "GPU"
+                                : (root.lang-en ? "Software" : "软件");
+                        selected(v) => {
+                            if ((v == "Automatic" || v == "自动")
+                                    && root.renderer-mode != "auto") {
+                                root.renderer-mode = "auto";
+                                root.set-renderer-mode("auto");
+                                root.renderer-restart-required = true;
+                            } else if (v == "GPU" && root.renderer-mode != "gpu") {
+                                root.renderer-mode = "gpu";
+                                root.set-renderer-mode("gpu");
+                                root.renderer-restart-required = true;
+                            } else if ((v == "Software" || v == "软件")
+                                    && root.renderer-mode != "software") {
+                                root.renderer-mode = "software";
+                                root.set-renderer-mode("software");
+                                root.renderer-restart-required = true;
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 10px; }
+                Text {
+                    text: root.renderer-restart-required
+                        ? (root.lang-en
+                            ? "Restart MeatShell to apply the renderer change."
+                            : "重启 MeatShell 后渲染器设置才会生效。")
+                        : (root.lang-en
+                            ? "Software remains the compatibility default for existing installations."
+                            : "现有安装继续默认使用兼容性更好的软件渲染。");
+                    color: root.renderer-restart-required ? Theme.accent : Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
                 }
             }
 

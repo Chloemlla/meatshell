@@ -431,6 +431,9 @@ export component AppWindow inherits Window {
     in-out property <bool> window-focused <=> Theme.window-focused;
     // macOS flag — Rust sets it so shortcuts switch to Cmd (⌘) there (#158).
     in-out property <bool> is-mac <=> Theme.is-mac;
+    in property <bool> is-windows: false;
+    in-out property <string> renderer-mode: "software";
+    callback set-renderer-mode(string);                    // applies next launch (#280)
     // Wallpaper / immersive theming — Rust drives these from the wallpaper module.
     in-out property <image> wallpaper-img <=> Theme.wallpaper;
     in-out property <bool> wallpaper-active <=> Theme.wallpaper-active;
@@ -3880,6 +3883,8 @@ export component AppWindow inherits Window {
                 InterfacePanel {
                     vertical-stretch: 1;
                     lang-en: root.lang-en;
+                    is-windows: root.is-windows;
+                    renderer-mode <=> root.renderer-mode;
                     term-fonts: root.term-fonts;
                     term-font-family: root.term-font-family;
                     term-font-size: root.term-font-size;
@@ -3932,6 +3937,7 @@ export component AppWindow inherits Window {
                     }
                     set-ui-scale(v) => { root.set-ui-scale(v); }
                     set-panel-font(v) => { root.set-panel-font(v); }
+                    set-renderer-mode(v) => { root.set-renderer-mode(v); }
                     set-sftp-follow-cd(v) => { root.set-sftp-follow-cd(v); }
                     set-collapse-sidebar-default(v) => { root.set-collapse-sidebar-default(v); }
                     set-collapse-sftp-default(v) => { root.set-collapse-sftp-default(v); }

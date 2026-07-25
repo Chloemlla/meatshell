@@ -624,6 +624,10 @@ pub struct ConfigFile {
     /// Theme preference: "system" (default) | "dark" | "light".
     #[serde(default)]
     pub theme_pref: String,
+    /// Windows renderer preference: software (compatibility default), auto
+    /// (let Slint try GPU and fall back), or gpu (force FemtoVG/OpenGL) (#280).
+    #[serde(default)]
+    pub renderer_mode: String,
     /// Terminal font family. Empty = the built-in default ("Meatshell Mono").
     #[serde(default)]
     pub font_family: String,
@@ -1040,6 +1044,24 @@ impl ConfigStore {
 
     pub fn set_theme_pref(&mut self, pref: String) {
         self.cache.theme_pref = pref;
+    }
+
+    /// Windows renderer preference. Missing and invalid values deliberately use
+    /// software so upgrades preserve the high-DPI/VM compatibility from #224.
+    pub fn renderer_mode(&self) -> &str {
+        match self.cache.renderer_mode.as_str() {
+            "auto" => "auto",
+            "gpu" => "gpu",
+            _ => "software",
+        }
+    }
+
+    pub fn set_renderer_mode(&mut self, mode: String) {
+        self.cache.renderer_mode = match mode.as_str() {
+            "auto" => "auto".into(),
+            "gpu" => "gpu".into(),
+            _ => "software".into(),
+        };
     }
 
     /// Terminal font family ("" = built-in default).
@@ -1866,6 +1888,22 @@ mod tests {
 
         store.cache = serde_json::from_str("{}").expect("legacy config must deserialize");
         assert_eq!(store.terminal_cursor_style(), "block");
+    }
+
+    #[test]
+    fn renderer_mode_preserves_compatibility_default_and_validates() {
+        let mut store = temp_store();
+        assert_eq!(store.renderer_mode(), "software");
+
+        store.set_renderer_mode("auto".into());
+        assert_eq!(store.renderer_mode(), "auto");
+        store.set_renderer_mode("gpu".into());
+        assert_eq!(store.renderer_mode(), "gpu");
+        store.set_renderer_mode("unexpected".into());
+        assert_eq!(store.renderer_mode(), "software");
+
+        store.cache = serde_json::from_str("{}").expect("legacy config must deserialize");
+        assert_eq!(store.renderer_mode(), "software");
     }
 
     #[test]

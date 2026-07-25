@@ -467,15 +467,38 @@ fn apply_window_chrome(window: &slint::Window) {
 fn apply_window_chrome(_window: &slint::Window) {}
 
 #[cfg(windows)]
-fn setup_windows_platform() {
+fn setup_windows_platform(renderer_mode: &str) {
     use i_slint_backend_winit::winit::platform::windows::WindowAttributesExtWindows;
 
     let mut builder = i_slint_backend_winit::Backend::builder();
-    if let Ok(backend) = std::env::var("SLINT_BACKEND") {
-        if let Some(renderer) = backend.strip_prefix("winit-").filter(|s| !s.is_empty()) {
-            builder = builder.with_renderer_name(renderer.to_owned());
-        }
+    let configured_renderer = match renderer_mode {
+        "gpu" => Some("femtovg".to_owned()),
+        "software" => Some("software".to_owned()),
+        _ => None,
+    };
+    // Any explicit environment value wins, including plain "winit" (automatic
+    // renderer selection). This keeps the existing diagnostic escape hatch.
+    let env_backend = std::env::var("SLINT_BACKEND").ok();
+    let renderer = match env_backend.as_deref() {
+        Some(backend) => backend
+            .strip_prefix("winit-")
+            .filter(|renderer| !renderer.is_empty())
+            .map(str::to_owned),
+        None => configured_renderer,
+    };
+    if let Some(renderer) = renderer.as_ref() {
+        builder = builder.with_renderer_name(renderer.clone());
     }
+    tracing::info!(
+        renderer_mode,
+        renderer = renderer.as_deref().unwrap_or("auto"),
+        source = if env_backend.is_some() {
+            "SLINT_BACKEND"
+        } else {
+            "settings"
+        },
+        "initializing Windows renderer"
+    );
     let backend = builder
         .with_window_attributes_hook(|attrs| {
             attrs
@@ -722,11 +745,16 @@ fn setup_macos_platform() {
 }
 
 pub fn run() -> Result<()> {
+    // Load the renderer preference before creating any Slint window. Reuse the
+    // same store for the rest of the app so startup does not read the config
+    // twice merely to select a backend (#280).
+    let config = ConfigStore::load().context("failed to load config")?;
+
     // Windows frameless-window attributes must be fixed before the first Slint
     // window is created; doing it afterwards leaves some Win10 machines with an
     // invisible frame that shifts mouse hit testing (#193).
     #[cfg(windows)]
-    setup_windows_platform();
+    setup_windows_platform(config.renderer_mode());
 
     // Immersive native title bar on macOS (must precede the first window).
     #[cfg(target_os = "macos")]
@@ -734,9 +762,7 @@ pub fn run() -> Result<()> {
 
     // --- Runtime + store -------------------------------------------------
     let runtime = Arc::new(Runtime::new().context("failed to start tokio runtime")?);
-    let store = Rc::new(RefCell::new(
-        ConfigStore::load().context("failed to load config")?,
-    ));
+    let store = Rc::new(RefCell::new(config));
     // Reachable from the Slint-thread event handler for recording terminal
     // commands into history (#113).
     HISTORY_STORE.with(|s| *s.borrow_mut() = Some(store.clone()));
@@ -960,6 +986,7 @@ pub fn run() -> Result<()> {
     // On macOS, app shortcuts use Cmd (⌘) so physical Ctrl stays free for the
     // shell (#158); on Windows/Linux they stay Ctrl-based.
     window.set_is_mac(cfg!(target_os = "macos"));
+    window.set_is_windows(cfg!(windows));
 
     // Apply the saved terminal font (Interface settings). An empty family keeps
     // the built-in default; the size always applies (defaults to 13).
@@ -981,6 +1008,7 @@ pub fn run() -> Result<()> {
         window.set_output_highlight_rules(output_highlight_rule_model(&s));
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
         window.set_panel_font(s.panel_font() as f32 / 100.0); // settings-panel font scale
+        window.set_renderer_mode(s.renderer_mode().into());
     }
 
     // Apply the saved immersive wallpaper (overrides dark/light when set; a
@@ -1130,6 +1158,16 @@ pub fn run() -> Result<()> {
         window.on_set_update_check_enabled(move |v| {
             let mut s = store.borrow_mut();
             s.set_update_check_enabled(v);
+            let _ = s.save();
+        });
+    }
+    {
+        // Renderer selection is consumed before the first native window exists,
+        // so persist it now and apply it on the next launch (#280).
+        let store = store.clone();
+        window.on_set_renderer_mode(move |mode: SharedString| {
+            let mut s = store.borrow_mut();
+            s.set_renderer_mode(mode.to_string());
             let _ = s.save();
         });
     }
