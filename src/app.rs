@@ -2136,9 +2136,7 @@ pub fn run() -> Result<()> {
         let mut last_cursor_logical: Option<(f32, f32)> = None;
         let mut macos_wheel_accum = 0.0_f32;
         #[cfg(target_os = "windows")]
-        let mut native_ctrl_down = false;
-        #[cfg(target_os = "windows")]
-        let mut pending_ctrl_release = false;
+        let mut slint_ctrl_keys_down = 0u8;
         // Track the inputs that make up WinActivity; recompute on each change.
         let mut focused = true;
         let mut minimized = false;
@@ -2183,30 +2181,39 @@ pub fn run() -> Result<()> {
             };
             match event {
                 #[cfg(target_os = "windows")]
-                WEvent::ModifiersChanged(modifiers) => {
-                    // Ctrl+Space is handled by the Windows IME and can hide the
-                    // matching Ctrl key-up from Slint. Winit still refreshes the
-                    // physical modifier state before the next keyboard event, so
-                    // remember that transition until we see what key arrives next
-                    // (#309).
-                    if modifier_release_edge(
-                        &mut native_ctrl_down,
-                        modifiers.state().control_key(),
-                    ) {
-                        pending_ctrl_release = true;
-                    }
-                }
-                #[cfg(target_os = "windows")]
-                WEvent::KeyboardInput { event, .. } if pending_ctrl_release => {
+                WEvent::KeyboardInput { event, .. } => {
                     use i_slint_backend_winit::winit::event::ElementState;
-                    use i_slint_backend_winit::winit::keyboard::{Key, NamedKey};
+                    use i_slint_backend_winit::winit::keyboard::{Key, KeyLocation, NamedKey};
 
-                    let is_ctrl_key_up = event.state == ElementState::Released
-                        && matches!(&event.logical_key, Key::Named(NamedKey::Control));
-                    if !is_ctrl_key_up {
+                    let is_pressed = event.state == ElementState::Pressed;
+                    let is_ctrl_event =
+                        matches!(&event.logical_key, Key::Named(NamedKey::Control));
+                    let physical_ctrl_down = windows_ctrl_physically_down();
+
+                    // Ctrl+Space can make the Windows IME consume Ctrl-up. Winit's
+                    // ModifiersChanged uses the message-queue state, which stays
+                    // stale in that case. Query the asynchronous left/right Ctrl
+                    // state and repair Slint before it handles the next key (#309).
+                    if should_restore_ctrl_release(
+                        slint_ctrl_keys_down != 0,
+                        physical_ctrl_down,
+                        is_ctrl_event,
+                        is_pressed,
+                    ) {
                         dispatch_slint_ctrl_released(slint_window);
+                        slint_ctrl_keys_down = 0;
                     }
-                    pending_ctrl_release = false;
+
+                    if is_ctrl_event {
+                        // Keep both sides independently: if one release is swallowed,
+                        // a later release from the other side must not hide it.
+                        let key_bit = match event.location {
+                            KeyLocation::Left => 0b001,
+                            KeyLocation::Right => 0b010,
+                            _ => 0b100,
+                        };
+                        set_ctrl_key_state(&mut slint_ctrl_keys_down, key_bit, is_pressed);
+                    }
                 }
                 #[cfg(target_os = "windows")]
                 WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Disabled) => {
@@ -10064,12 +10071,40 @@ fn terminal_uses_bracketed_paste(bufs: &TermBuffers, tab_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn modifier_release_edge(was_down: &mut bool, is_down: bool) -> bool {
-    let released = *was_down && !is_down;
-    *was_down = is_down;
-    released
+#[cfg(any(target_os = "windows", test))]
+fn should_restore_ctrl_release(
+    slint_ctrl_down: bool,
+    physical_ctrl_down: bool,
+    is_ctrl_event: bool,
+    is_pressed: bool,
+) -> bool {
+    slint_ctrl_down && !physical_ctrl_down && !is_ctrl_event && is_pressed
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn set_ctrl_key_state(keys_down: &mut u8, key_bit: u8, is_pressed: bool) {
+    if is_pressed {
+        *keys_down |= key_bit;
+    } else {
+        *keys_down &= !key_bit;
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_ctrl_physically_down() -> bool {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(vkey: i32) -> i16;
+    }
+
+    const VK_LCONTROL: i32 = 0xA2;
+    const VK_RCONTROL: i32 = 0xA3;
+    [VK_LCONTROL, VK_RCONTROL]
+        .into_iter()
+        .any(|vkey| unsafe { (GetAsyncKeyState(vkey) as u16) & 0x8000 != 0 })
+}
+
+#[cfg(target_os = "windows")]
 fn dispatch_slint_ctrl_released(window: &slint::Window) {
     for key in [slint::platform::Key::Control, slint::platform::Key::ControlR] {
         window.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: key.into() });
@@ -11312,13 +11347,27 @@ mod key_tests {
     use super::*;
 
     #[test]
-    fn modifier_release_edge_fires_once_per_press() {
-        let mut down = false;
-        assert!(!modifier_release_edge(&mut down, false));
-        assert!(!modifier_release_edge(&mut down, true));
-        assert!(!modifier_release_edge(&mut down, true));
-        assert!(modifier_release_edge(&mut down, false));
-        assert!(!modifier_release_edge(&mut down, false));
+    fn stale_ctrl_is_restored_before_an_ordinary_key_press() {
+        assert!(should_restore_ctrl_release(true, false, false, true));
+        assert!(!should_restore_ctrl_release(false, false, false, true));
+        assert!(!should_restore_ctrl_release(true, true, false, true));
+        assert!(!should_restore_ctrl_release(true, false, true, false));
+        assert!(!should_restore_ctrl_release(true, false, false, false));
+    }
+
+    #[test]
+    fn releasing_one_ctrl_keeps_the_other_tracked() {
+        let mut keys_down = 0;
+        set_ctrl_key_state(&mut keys_down, 0b001, true);
+        set_ctrl_key_state(&mut keys_down, 0b010, true);
+        set_ctrl_key_state(&mut keys_down, 0b010, false);
+        assert_eq!(keys_down, 0b001);
+        assert!(should_restore_ctrl_release(
+            keys_down != 0,
+            false,
+            false,
+            true
+        ));
     }
 
     #[test]
