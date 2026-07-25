@@ -5,13 +5,15 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-07-25
+
 ### 新增 / Added
 
 - **Windows 支持选择界面渲染器（#280）。** “设置 → 界面 → 渲染”新增自动、GPU 与软件三种模式；自动模式直接使用 Slint 的渲染器初始化与软件回退机制，不额外扫描显卡或启动检测窗口。现有安装继续默认使用软件渲染以保留高分屏、虚拟机和远程桌面的兼容性，设置将在下次启动时生效，`SLINT_BACKEND` 环境变量仍可用于诊断覆盖。
 
 ### 改进 / Changed
 
-- **按业务模块拆分应用结构体。** 将原本散落在 `app.rs` 中的终端、会话、资源、SFTP、布局与 WebDAV 类型迁移到 `src/structs/<业务>/<业务>_struct.rs`，由分层 `mod.rs` 统一导出；需要引用 Slint 生成类型的结构改用泛型，避免业务结构反向依赖应用协调器，同时保持 RustRover 对 `AppWindow` 等生成类型的正确索引，便于后续按功能定位和维护。
+- **按业务功能重组源码目录。** 除 `main.rs` 与 `app.rs` 外，配置、终端、SSH、SFTP、布局、资源监控等 Rust 模块均迁入 `src/<功能>/` 业务包；数据结构放入 `struct/`，实现放入 `impls/`，并由各包的 `mod.rs` 提供统一入口，减少根目录文件和跨模块维护成本。
 
 ---
 
@@ -21,7 +23,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Changed
 
-- **Split application structs into business modules.** Terminal, session, resource, SFTP, layout, and WebDAV types formerly scattered through `app.rs` now live under `src/structs/<feature>/<feature>_struct.rs` and are exported through layered `mod.rs` files. Structs that reference Slint-generated types use generics, preventing a dependency back on the application coordinator while keeping RustRover indexing for generated types intact.
+- **Reorganize source files into feature-oriented packages.** Rust modules other than `main.rs` and `app.rs` now live under `src/<feature>/`, covering configuration, terminal, SSH, SFTP, layout, resource monitoring, and other features. Data structures live in `struct/`, implementations in `impls/`, and each package exposes a focused `mod.rs` facade.
 
 
 ## [0.6.6] - 2026-07-23
