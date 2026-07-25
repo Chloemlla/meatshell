@@ -2179,6 +2179,29 @@ pub fn run() -> Result<()> {
             };
             match event {
                 #[cfg(target_os = "windows")]
+                WEvent::KeyboardInput { event, .. } => {
+                    // Microsoft IME can relabel a Ctrl key-up as Process while
+                    // retaining the physical Ctrl scan code. Slint drops Process,
+                    // so deliver the missing modifier release directly.
+                    if let Some(side) = windows_process_ctrl_release(
+                        event.state,
+                        &event.logical_key,
+                        &event.physical_key,
+                    ) {
+                        let key = match side {
+                            CtrlKeySide::Left => slint::platform::Key::Control,
+                            CtrlKeySide::Right => slint::platform::Key::ControlR,
+                        };
+                        slint_window.dispatch_event(
+                            slint::platform::WindowEvent::KeyReleased { text: key.into() },
+                        );
+                        tracing::debug!(
+                            "restored Windows IME Process-key Ctrl release side={side:?}"
+                        );
+                        return EventResult::PreventDefault;
+                    }
+                }
+                #[cfg(target_os = "windows")]
                 WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Disabled) => {
                     // Windows emits Ime::Disabled when a composition ends, including
                     // while switching between Chinese and English input methods. The
@@ -10034,6 +10057,33 @@ fn terminal_uses_bracketed_paste(bufs: &TermBuffers, tab_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CtrlKeySide {
+    Left,
+    Right,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_process_ctrl_release(
+    state: i_slint_backend_winit::winit::event::ElementState,
+    logical_key: &i_slint_backend_winit::winit::keyboard::Key,
+    physical_key: &i_slint_backend_winit::winit::keyboard::PhysicalKey,
+) -> Option<CtrlKeySide> {
+    use i_slint_backend_winit::winit::event::ElementState;
+    use i_slint_backend_winit::winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+
+    if state != ElementState::Released || !matches!(logical_key, Key::Named(NamedKey::Process)) {
+        return None;
+    }
+
+    match physical_key {
+        PhysicalKey::Code(KeyCode::ControlLeft) => Some(CtrlKeySide::Left),
+        PhysicalKey::Code(KeyCode::ControlRight) => Some(CtrlKeySide::Right),
+        _ => None,
+    }
+}
+
 fn should_drop_debian_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
     workaround
         && ctrl
@@ -11268,6 +11318,59 @@ fn parent_path(path: &str) -> String {
 #[cfg(test)]
 mod key_tests {
     use super::*;
+
+    #[test]
+    fn windows_process_key_ctrl_release_keeps_physical_side() {
+        use i_slint_backend_winit::winit::event::ElementState;
+        use i_slint_backend_winit::winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+
+        let process = Key::Named(NamedKey::Process);
+        assert_eq!(
+            windows_process_ctrl_release(
+                ElementState::Released,
+                &process,
+                &PhysicalKey::Code(KeyCode::ControlLeft),
+            ),
+            Some(CtrlKeySide::Left)
+        );
+        assert_eq!(
+            windows_process_ctrl_release(
+                ElementState::Released,
+                &process,
+                &PhysicalKey::Code(KeyCode::ControlRight),
+            ),
+            Some(CtrlKeySide::Right)
+        );
+    }
+
+    #[test]
+    fn windows_process_key_recovery_ignores_other_key_events() {
+        use i_slint_backend_winit::winit::event::ElementState;
+        use i_slint_backend_winit::winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+
+        let process = Key::Named(NamedKey::Process);
+        let left_ctrl = PhysicalKey::Code(KeyCode::ControlLeft);
+        assert_eq!(
+            windows_process_ctrl_release(ElementState::Pressed, &process, &left_ctrl),
+            None
+        );
+        assert_eq!(
+            windows_process_ctrl_release(
+                ElementState::Released,
+                &Key::Named(NamedKey::Control),
+                &left_ctrl,
+            ),
+            None
+        );
+        assert_eq!(
+            windows_process_ctrl_release(
+                ElementState::Released,
+                &process,
+                &PhysicalKey::Code(KeyCode::KeyC),
+            ),
+            None
+        );
+    }
 
     #[test]
     fn bare_alt_is_not_forwarded() {
