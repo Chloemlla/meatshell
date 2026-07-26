@@ -323,9 +323,11 @@ fn default_wallpaper() -> String {
 }
 
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
-pub const DEFAULTS_REV: u32 = 2;
+pub const DEFAULTS_REV: u32 = 3;
 
-const DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
+const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
+const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY;
+const DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.15;
 const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSPARENCY;
 
 fn normalize_hex_color(value: &str) -> Option<String> {
@@ -338,7 +340,7 @@ fn normalize_hex_color(value: &str) -> Option<String> {
 
 /// A brand-new config (no file yet, or the old one was corrupt). Seeds the
 /// new-user default layout (#new-user-defaults): ms wallpaper, welcome page as
-/// a left sidebar, resource panel docked right, 38% wallpaper transparency, and
+/// a left sidebar, resource panel docked right, 15% wallpaper transparency, and
 /// marks the migration done so it isn't re-applied.
 fn fresh_config() -> ConfigFile {
     ConfigFile {
@@ -366,7 +368,7 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
         if cfg.wallpaper == "builtin:tech" {
             cfg.wallpaper = "builtin:miku".to_string();
         }
-        // Overlay still unset (0 = "use the 0.86 default") -> v0.5 default.
+        // Overlay still unset -> current default.
         if cfg.wallpaper_overlay <= 0.0 {
             cfg.wallpaper_overlay = DEFAULT_WALLPAPER_OVERLAY;
         }
@@ -382,7 +384,14 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     // rev 2: settings show wallpaper transparency, while rev 1 accidentally
     // stored the default as panel alpha 0.38, so it displayed as ~62%.
     if cfg.defaults_rev < 2
-        && (cfg.wallpaper_overlay - DEFAULT_WALLPAPER_TRANSPARENCY).abs() < 0.005
+        && (cfg.wallpaper_overlay - PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY).abs() < 0.005
+    {
+        cfg.wallpaper_overlay = DEFAULT_WALLPAPER_OVERLAY;
+    }
+    // rev 3: reduce the default transparency from 38% to 15%. Only advance
+    // users still on the previous default; preserve every custom slider value.
+    if cfg.defaults_rev < 3
+        && (cfg.wallpaper_overlay - PREVIOUS_DEFAULT_WALLPAPER_OVERLAY).abs() < 0.005
     {
         cfg.wallpaper_overlay = DEFAULT_WALLPAPER_OVERLAY;
     }
@@ -764,8 +773,8 @@ pub struct ConfigFile {
     /// None means the user has not explicitly collapsed/expanded it yet.
     #[serde(default)]
     pub welcome_collapsed: Option<bool>,
-    /// Frosted-panel opacity over a wallpaper (0.40–1.00); user-adjustable via the
-    /// Interface › Wallpaper opacity slider. 0 = use the 0.86 default (v0.5).
+    /// Frosted-panel opacity over a wallpaper (0.30–1.00); user-adjustable via the
+    /// Interface › Wallpaper opacity slider. 0 = use the current default.
     #[serde(default)]
     pub wallpaper_overlay: f32,
     /// Settings-panel font scale, percent (80–160). 0 = 100% default (v0.5).
@@ -1465,7 +1474,7 @@ impl ConfigStore {
         let a = self.cache.wallpaper_overlay;
         // Floor lowered 0.40 -> 0.30 so more see-through panels are reachable.
         if a <= 0.0 {
-            0.86
+            DEFAULT_WALLPAPER_OVERLAY
         } else {
             a.clamp(0.30, 1.0)
         }
@@ -1984,7 +1993,9 @@ mod tests {
     #[test]
     fn wallpaper_defaults_to_ms_but_keeps_explicit_choice() {
         // Fresh install (no file).
-        assert_eq!(fresh_config().wallpaper, "builtin:ms");
+        let fresh = fresh_config();
+        assert_eq!(fresh.wallpaper, "builtin:ms");
+        assert!((fresh.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
         // User upgrading from before the feature: JSON without the key.
         let cfg: ConfigFile = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.wallpaper, "builtin:tech");
@@ -2002,6 +2013,25 @@ mod tests {
         };
         assert!(!migrate_defaults(&mut cfg));
         assert_eq!(cfg.wallpaper, "builtin:miku");
+    }
+
+    #[test]
+    fn wallpaper_transparency_default_migrates_without_overwriting_custom_value() {
+        let mut old_default = ConfigFile {
+            wallpaper_overlay: PREVIOUS_DEFAULT_WALLPAPER_OVERLAY,
+            defaults_rev: 2,
+            ..ConfigFile::default()
+        };
+        assert!(migrate_defaults(&mut old_default));
+        assert!((old_default.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
+
+        let mut custom = ConfigFile {
+            wallpaper_overlay: 0.70,
+            defaults_rev: 2,
+            ..ConfigFile::default()
+        };
+        assert!(migrate_defaults(&mut custom));
+        assert!((custom.wallpaper_overlay - 0.70).abs() < f32::EPSILON);
     }
 
     #[test]
