@@ -5,6 +5,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-07-26
+
 ### 改进 / Changed
 
 - **Windows MSI 会沿用已有安装目录并创建桌面快捷方式（#293）。** 安装程序会优先读取 MeatShell 记录的目录，并可通过旧版主程序组件位置迁移 v0.6.5-v0.6.7 的自定义安装路径；全新安装仍默认使用 `Program Files`。MSI 安装时还会在当前用户桌面创建 MeatShell 快捷方式，卸载时一并移除。
