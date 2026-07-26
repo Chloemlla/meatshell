@@ -31,6 +31,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 新增 / Added
 
+- **macOS 支持在设置中选择界面渲染器。** “设置 → 界面 → 渲染”现在在 macOS 上提供 FemtoVG 和 Skia 两种后端，遇到文字缺失或显示异常时可以直接切换，重启 MeatShell 后生效；`SLINT_BACKEND` 环境变量仍优先于界面设置。
 - **支持使用快捷键循环切换标签页（#294）。** `Ctrl+Tab` 切换到当前分栏的下一个标签页，`Ctrl+Shift+Tab` 切换到上一个，并在首尾循环；macOS 使用物理 Control 键。快捷键面板新增“标签页”分组并列出两项操作。
 
 ### 修复 / Fixed
@@ -46,6 +47,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Added
 
+- **Select the UI renderer from Settings on macOS.** Settings → Interface → Rendering now offers the FemtoVG and Skia backends on macOS, allowing users to switch when text is missing or rendered incorrectly. Changes apply after restarting MeatShell, and `SLINT_BACKEND` continues to override the saved setting.
 - **Add keyboard shortcuts for cycling tabs (#294).** `Ctrl+Tab` selects the next tab in the focused pane, while `Ctrl+Shift+Tab` selects the previous one, wrapping at both ends; macOS uses the physical Control key. The shortcuts panel now includes both actions in a dedicated Tabs section.
 
 ### Fixed
