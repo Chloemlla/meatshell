@@ -9287,13 +9287,13 @@ fn wire_key_input(
                 tracing::info!("[KEY_DIAG] Backspace PASSED all filters → sent to PTY");
             }
 
-            if should_drop_debian_bare_ctrl_marker(
+            if should_drop_bare_ctrl_marker(
                 key.as_str(),
                 ctrl,
-                debian_ctrl_marker_workaround_enabled(),
+                bare_ctrl_marker_workaround_enabled(),
             ) {
                 tracing::debug!(
-                    "send_key: dropped Debian/Slint bare Ctrl modifier marker {}",
+                    "send_key: dropped Slint bare Ctrl modifier marker {}",
                     redact_key(key.as_str())
                 );
                 return;
@@ -10372,14 +10372,14 @@ fn windows_process_ctrl_release(
     }
 }
 
-fn should_drop_debian_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
+fn should_drop_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
     workaround
         && ctrl
         && matches!(key.chars().collect::<Vec<_>>().as_slice(), ['\u{0011}'] | ['\u{0016}'])
 }
 
 #[cfg(target_os = "linux")]
-fn debian_ctrl_marker_workaround_enabled() -> bool {
+fn bare_ctrl_marker_workaround_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         let Ok(release) = std::fs::read_to_string("/etc/os-release") else {
@@ -10399,8 +10399,17 @@ fn debian_ctrl_marker_workaround_enabled() -> bool {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
-fn debian_ctrl_marker_workaround_enabled() -> bool {
+// Slint reports the physical Control key through the `meta` modifier on macOS,
+// but its key text is still the Control/ControlR marker (U+0011/U+0016). If the
+// marker reaches the PTY before the following letter, nano acts on Ctrl+Q and
+// Ctrl+X appears to open search instead of exiting (#312).
+#[cfg(target_os = "macos")]
+fn bare_ctrl_marker_workaround_enabled() -> bool {
+    true
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn bare_ctrl_marker_workaround_enabled() -> bool {
     false
 }
 
@@ -10473,9 +10482,9 @@ fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u
     // command" bug.
     //
     // Keep ctrl=true C0 values here: some Linux/macOS builds encode real
-    // Ctrl+P..Ctrl+X directly as 0x10..=0x18. Debian's bare Ctrl markers are
-    // filtered at the event boundary, where the distro-specific workaround is
-    // available (#274).
+    // Ctrl+P..Ctrl+X directly as 0x10..=0x18. Bare Ctrl/CtrlR markers are
+    // filtered at the event boundary only on affected platforms, preserving
+    // real control characters and the existing Windows behaviour (#274/#312).
     if let Some(c) = key.chars().next() {
         let cp = c as u32;
         if key.chars().count() == 1 {
@@ -11687,24 +11696,24 @@ mod key_tests {
     #[test]
     fn ctrl_letter_c0_still_passes() {
         // A real Ctrl+R encoded as the C0 byte 0x12 with ctrl=true must still be
-        // forwarded; the #274 fix filters only bare Ctrl/CtrlR markers.
+        // forwarded; the #274/#312 fix filters only bare Ctrl/CtrlR markers.
         assert_eq!(key_to_pty_bytes("\u{0012}", true, false, false), vec![0x12]);
         // Ctrl+X as C0 0x18.
         assert_eq!(key_to_pty_bytes("\u{0018}", true, false, false), vec![0x18]);
     }
 
     #[test]
-    fn debian_bare_ctrl_markers_do_not_reach_nano() {
-        // Slint on Debian emits these before the actual Ctrl+letter event.
-        assert!(should_drop_debian_bare_ctrl_marker("\u{0011}", true, true));
-        assert!(should_drop_debian_bare_ctrl_marker("\u{0016}", true, true));
+    fn platform_bare_ctrl_markers_do_not_reach_nano() {
+        // Slint on Debian and macOS emits these before the actual Ctrl+letter event.
+        assert!(should_drop_bare_ctrl_marker("\u{0011}", true, true));
+        assert!(should_drop_bare_ctrl_marker("\u{0016}", true, true));
         // Other platforms retain their existing direct-C0 behaviour.
-        assert!(!should_drop_debian_bare_ctrl_marker(
+        assert!(!should_drop_bare_ctrl_marker(
             "\u{0011}",
             true,
             false
         ));
-        assert!(!should_drop_debian_bare_ctrl_marker("x", true, true));
+        assert!(!should_drop_bare_ctrl_marker("x", true, true));
         // The following Ctrl+X must still become CAN (0x18), which nano uses
         // for Exit.
         assert_eq!(key_to_pty_bytes("x", true, false, false), vec![0x18]);
