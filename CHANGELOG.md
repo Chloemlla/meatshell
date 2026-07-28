@@ -5,6 +5,16 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 修复 / Fixed
+
+- **改善超大终端输出的渐进显示与响应性（#311）。** 持续输出现在按累计字节预算、在完整输出块边界提交 UI 快照，并用可等待的请求代次消除丢失通知和重复渲染；当事件积压过大或夹有连接状态事件时会优先追赶队列，避免节奏等待造成内存增长或延迟 `Connected` / `Closed`。隐藏标签、标签关闭及事件循环退出均不会让输出泵固定空等。
+
+---
+
+### Fixed
+
+- **Improve progressive rendering and responsiveness under very large terminal output (#311).** Sustained output now commits UI snapshots at complete output-chunk boundaries after a cumulative byte budget, while generation-based wait tickets eliminate lost notifications and redundant renders. A large event backlog or pending connection-state event switches to catch-up mode so pacing cannot inflate memory use or delay `Connected` / `Closed`; hidden tabs, tab closure, and event-loop shutdown no longer cause repeated timeout waits.
+
 ### 改进 / Changed
 
 - **快速连接分组默认收起并记住展开状态。** 首次启动时快速连接中的系统与会话目录保持收起；用户展开或收起目录后会立即保存该状态，刷新会话列表及重启应用后仍保持原样。

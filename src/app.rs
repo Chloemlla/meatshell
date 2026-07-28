@@ -9,7 +9,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// How much of the byte stream we retain per tab for resize-reflow (#169).
@@ -18,6 +17,17 @@ pub(crate) const RAW_CAP: usize = 2 * 1024 * 1024;
 /// Max bytes merged into one Output event before starting a fresh chunk (#209).
 /// Keeps a single UI callback from spending hundreds of ms in vt100 ingest.
 const OUTPUT_MERGE_BYTE_CAP: usize = 64 * 1024;
+
+/// Output parsed between UI-flush checkpoints during sustained traffic.
+const INGEST_FRAME_BUDGET: usize = 64 * 1024;
+
+/// A busy or closing UI must never block a session pump indefinitely.
+const UI_FLUSH_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Do not deliberately pace a pump while a large unbounded-channel backlog is
+/// already present. It catches up first, then paces the tail of the stream.
+const PACED_LOCAL_BACKLOG_LIMIT: usize = 1024 * 1024;
+const PACED_QUEUE_EVENT_LIMIT: usize = 256;
 
 fn compile_output_rules(rules: &[OutputHighlightRule]) -> Vec<CompiledOutputRule> {
     rules
@@ -76,6 +86,102 @@ fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) {
     }
 }
 
+fn record_ingested_chunk(chunk_len: usize, ingested_since_checkpoint: &mut usize) -> bool {
+    debug_assert!(*ingested_since_checkpoint < INGEST_FRAME_BUDGET);
+    if chunk_len == 0 {
+        return false;
+    }
+
+    let remaining = INGEST_FRAME_BUDGET - *ingested_since_checkpoint;
+    if chunk_len < remaining {
+        *ingested_since_checkpoint += chunk_len;
+        false
+    } else {
+        *ingested_since_checkpoint = (chunk_len - remaining) % INGEST_FRAME_BUDGET;
+        true
+    }
+}
+
+fn event_requires_immediate_ui(event: &SessionEvent) -> bool {
+    matches!(
+        event,
+        SessionEvent::Connected
+            | SessionEvent::Closed(_)
+            | SessionEvent::HostKeyPrompt { .. }
+            | SessionEvent::CredentialPrompt { .. }
+            | SessionEvent::MfaPrompt { .. }
+    )
+}
+
+#[cfg(test)]
+mod ingest_frame_tests {
+    use super::{event_requires_immediate_ui, record_ingested_chunk, INGEST_FRAME_BUDGET};
+    use crate::ssh::SessionEvent;
+
+    fn count_requests(chunk_lengths: &[usize]) -> (usize, usize) {
+        let mut since_checkpoint = 0usize;
+        let mut requests = 0usize;
+        let mut dirty_since_request = false;
+        for &chunk_len in chunk_lengths {
+            dirty_since_request = true;
+            if record_ingested_chunk(chunk_len, &mut since_checkpoint) {
+                requests += 1;
+                dirty_since_request = false;
+            }
+        }
+        if dirty_since_request {
+            requests += 1;
+        }
+        (requests, since_checkpoint)
+    }
+
+    #[test]
+    fn exact_frame_budget_chunks_do_not_add_an_empty_tail_request() {
+        let (requests, remainder) = count_requests(&[INGEST_FRAME_BUDGET, INGEST_FRAME_BUDGET]);
+        assert_eq!(requests, 2);
+        assert_eq!(remainder, 0);
+    }
+
+    #[test]
+    fn a_partial_tail_gets_one_final_request() {
+        let (requests, remainder) = count_requests(&[INGEST_FRAME_BUDGET, INGEST_FRAME_BUDGET, 1]);
+        assert_eq!(requests, 3);
+        assert_eq!(remainder, 1);
+    }
+
+    #[test]
+    fn checkpoint_budget_carries_across_input_events() {
+        let mut since_checkpoint = 0usize;
+        assert!(!record_ingested_chunk(
+            INGEST_FRAME_BUDGET - 1,
+            &mut since_checkpoint
+        ));
+        assert!(record_ingested_chunk(1, &mut since_checkpoint));
+        assert_eq!(since_checkpoint, 0);
+    }
+
+    #[test]
+    fn an_oversized_output_event_stays_one_atomic_checkpoint() {
+        let (requests, remainder) = count_requests(&[INGEST_FRAME_BUDGET * 2 + 1]);
+        assert_eq!(requests, 1);
+        assert_eq!(remainder, 1);
+    }
+
+    #[test]
+    fn routine_shell_metadata_does_not_disable_tail_pacing() {
+        assert!(!event_requires_immediate_ui(&SessionEvent::CommandRan(
+            "tail -n 1000000 app.log".into()
+        )));
+        assert!(!event_requires_immediate_ui(&SessionEvent::CwdChanged(
+            "/var/log".into()
+        )));
+        assert!(event_requires_immediate_ui(&SessionEvent::Connected));
+        assert!(event_requires_immediate_ui(&SessionEvent::Closed(
+            "connection lost".into()
+        )));
+    }
+}
+
 use anyhow::{Context, Result};
 use i_slint_backend_winit::WinitWindowAccessor;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -131,32 +237,80 @@ fn visible_tab_ids(win: &AppWindow) -> HashSet<String> {
     out
 }
 
+struct TabRenderTicket {
+    gate: Arc<TabRenderGate>,
+    generation: u64,
+}
+
+fn register_tab_render_request(
+    tab_id: &str,
+    gates: &RenderGates,
+) -> Option<(Arc<TabRenderGate>, TabRenderTicket, bool)> {
+    let gate = {
+        let map = gates.lock().unwrap();
+        map.get(tab_id).cloned()
+    }?;
+    let (generation, should_schedule) = gate.request()?;
+    let ticket = TabRenderTicket {
+        gate: gate.clone(),
+        generation,
+    };
+    Some((gate, ticket, should_schedule))
+}
+
 fn request_tab_render(
     weak: slint::Weak<AppWindow>,
     tab_id: &str,
     bufs: &TermBuffers,
     gates: &RenderGates,
-) {
-    let gate = {
-        let m = gates.lock().unwrap();
-        m.get(tab_id).cloned()
-    };
-    let Some(gate) = gate else { return };
-    gate.pending.store(true, Ordering::Release);
-    if gate.scheduled.swap(true, Ordering::AcqRel) {
-        return;
+) -> Option<TabRenderTicket> {
+    let (gate, ticket, should_schedule) = register_tab_render_request(tab_id, gates)?;
+    if !should_schedule {
+        return Some(ticket);
     }
 
     let weak2 = weak.clone();
     let tid = tab_id.to_string();
     let bufs2 = bufs.clone();
-    let gates2 = gates.clone();
+    let gate2 = gate.clone();
     // Always bounce through the event loop from pump / worker threads.
     // Never call invoke_from_event_loop from inside a UI callback — that
     // deadlocks Slint (opening a second tab then froze the whole app).
-    let _ = slint::invoke_from_event_loop(move || {
-        run_coalesced_tab_render(&weak2, &tid, &bufs2, &gates2);
-    });
+    if slint::invoke_from_event_loop(move || {
+        run_coalesced_tab_render(&weak2, &tid, &bufs2, gate2);
+    })
+    .is_err()
+    {
+        // The event loop is gone. Wake any pump waiting on this ticket and
+        // reject future requests instead of leaving the gate scheduled forever.
+        gate.close();
+    }
+    Some(ticket)
+}
+
+/// UI-thread variant for synthetic Output events. It shares the same gate but
+/// enters the throttle directly because invoking Slint from its own callback
+/// can deadlock.
+fn request_tab_render_from_ui(
+    weak: slint::Weak<AppWindow>,
+    tab_id: &str,
+    bufs: &TermBuffers,
+    gates: &RenderGates,
+) {
+    let Some((gate, _, should_schedule)) = register_tab_render_request(tab_id, gates) else {
+        return;
+    };
+    if should_schedule {
+        run_coalesced_tab_render(&weak, tab_id, bufs, gate);
+    }
+}
+
+fn wait_for_ui_flush(ticket: Option<TabRenderTicket>) {
+    if let Some(ticket) = ticket {
+        let _ = ticket
+            .gate
+            .wait_for(ticket.generation, UI_FLUSH_ACK_TIMEOUT);
+    }
 }
 
 /// UI-thread entry: honour the throttle, then render. Timer must be created
@@ -165,59 +319,56 @@ fn run_coalesced_tab_render(
     weak: &slint::Weak<AppWindow>,
     tab_id: &str,
     bufs: &TermBuffers,
-    gates: &RenderGates,
+    gate: Arc<TabRenderGate>,
 ) {
-    let gate = {
-        let m = gates.lock().unwrap();
-        m.get(tab_id).cloned()
-    };
-    let Some(gate) = gate else { return };
-
-    let delay = {
-        let last = *gate.last_render.lock().unwrap();
-        RENDER_MIN_INTERVAL.saturating_sub(last.elapsed())
-    };
+    let delay = gate.flush_delay(RENDER_MIN_INTERVAL);
 
     let weak2 = weak.clone();
     let tid = tab_id.to_string();
     let bufs2 = bufs.clone();
-    let gates2 = gates.clone();
 
     if delay.is_zero() {
-        do_tab_render_flush(&weak2, &tid, &bufs2, &gates2);
+        do_tab_render_flush(&weak2, &tid, &bufs2, gate);
     } else {
         slint::Timer::single_shot(delay, move || {
-            do_tab_render_flush(&weak2, &tid, &bufs2, &gates2);
+            do_tab_render_flush(&weak2, &tid, &bufs2, gate);
         });
     }
 }
 
-/// UI-thread only: push the vt100 screen into Slint, then reschedule if more
-/// output arrived while we were rendering (#209).
+/// UI-thread only: commit the vt100 snapshot to Slint's model, then reschedule
+/// if output arrived after this snapshot began. `request_redraw` is asynchronous,
+/// so completion acknowledges a model flush rather than GPU presentation.
 fn do_tab_render_flush(
     weak: &slint::Weak<AppWindow>,
     tab_id: &str,
     bufs: &TermBuffers,
-    gates: &RenderGates,
+    gate: Arc<TabRenderGate>,
 ) {
-    let gate = {
-        let m = gates.lock().unwrap();
-        m.get(tab_id).cloned()
+    let Some(through) = gate.begin_flush() else {
+        return;
     };
-    let Some(gate) = gate else { return };
-    gate.scheduled.store(false, Ordering::Release);
 
-    if let Some(win) = weak.upgrade() {
+    let visible = if let Some(win) = weak.upgrade() {
         if visible_tab_ids(&win).contains(tab_id) {
             rebuild_tab_display(&win, bufs, tab_id);
-            *gate.last_render.lock().unwrap() = std::time::Instant::now();
+            true
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
-    if gate.pending.swap(false, Ordering::AcqRel) {
-        if !gate.scheduled.swap(true, Ordering::AcqRel) {
-            run_coalesced_tab_render(weak, tab_id, bufs, gates);
-        }
+    if gate.finish_flush(through, visible) {
+        let weak2 = weak.clone();
+        let tid = tab_id.to_string();
+        let bufs2 = bufs.clone();
+        // Defer the continuation to avoid recursive flushes for hidden tabs,
+        // whose last-visible timestamp intentionally does not throttle them.
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            run_coalesced_tab_render(&weak2, &tid, &bufs2, gate);
+        });
     }
 }
 
@@ -4469,6 +4620,9 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
             let mut cwd_debounce: Option<tokio::task::JoinHandle<()>> = None;
             // Reusable scratch so a fast firehose doesn't reallocate every batch.
             let mut drained: Vec<SessionEvent> = Vec::new();
+            // This survives drain batches, so a stream of small events cannot
+            // evade the frame checkpoint merely because of thread timing.
+            let mut ingested_since_checkpoint = 0usize;
             loop {
                 // Block for the first event, then sweep up everything else that's
                 // already queued. A burst — e.g. `tail -f` on a busy log (#171) —
@@ -4562,22 +4716,58 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
                     continue;
                 }
 
-                // Ingest terminal output on this pump thread (not the UI thread)
-                // so a firehose can't block keyboard input or repaints (#209).
-                let mut had_output = false;
+                // Ingest terminal output on this pump thread (not the UI thread).
+                // Keep each Output event atomic: TermBuffer detects full-screen
+                // redraw sequences within one ingest call, so artificial byte
+                // splits could corrupt scrollback when they bisect such a refresh.
+                let mut remaining_output_bytes: usize = ui_batch
+                    .iter()
+                    .map(|event| match event {
+                        SessionEvent::Output(chunk) => chunk.len(),
+                        _ => 0,
+                    })
+                    .sum();
+                let has_immediate_ui_events =
+                    ui_batch.iter().any(event_requires_immediate_ui);
+                let mut dirty_since_request = false;
                 let mut ui_only: Vec<SessionEvent> = Vec::with_capacity(ui_batch.len());
                 for evt in ui_batch {
                     match evt {
                         SessionEvent::Output(chunk) => {
+                            let chunk_len = chunk.len();
                             ingest_terminal_output(&bufs_thread, &tab_id_pump, chunk.as_bytes());
-                            had_output = true;
+                            remaining_output_bytes =
+                                remaining_output_bytes.saturating_sub(chunk_len);
+                            dirty_since_request = true;
+
+                            if record_ingested_chunk(chunk_len, &mut ingested_since_checkpoint) {
+                                let ticket = request_tab_render(
+                                    weak_inner.clone(),
+                                    &tab_id_pump,
+                                    &bufs_thread,
+                                    &render_gates_pump,
+                                );
+                                dirty_since_request = false;
+
+                                // The event channel is intentionally unbounded
+                                // today. Waiting while a large backlog exists would
+                                // only move bytes from the terminal buffer into that
+                                // channel and inflate memory, so catch up first and
+                                // pace once the stream's tail is within reach.
+                                if !has_immediate_ui_events
+                                    && remaining_output_bytes <= PACED_LOCAL_BACKLOG_LIMIT
+                                    && shell_rx.len() <= PACED_QUEUE_EVENT_LIMIT
+                                {
+                                    wait_for_ui_flush(ticket);
+                                }
+                            }
                         }
                         other => ui_only.push(other),
                     }
                 }
 
-                if had_output {
-                    request_tab_render(
+                if dirty_since_request {
+                    let _ = request_tab_render(
                         weak_inner.clone(),
                         &tab_id_pump,
                         &bufs_thread,
@@ -6456,7 +6646,7 @@ fn apply_session_event_to_window(
             // Synthetic Output (disconnect hint, editor error, …) — rare, already
             // on the UI thread. Live shell output is ingested on the pump thread.
             ingest_terminal_output(bufs, tab_id, chunk.as_bytes());
-            run_coalesced_tab_render(&win.as_weak(), tab_id, bufs, gates);
+            request_tab_render_from_ui(win.as_weak(), tab_id, bufs, gates);
         }
         SessionEvent::Connected => {
             update_tab(&|t| t.connected = true);
@@ -7467,8 +7657,10 @@ fn wire_tab_callbacks(
                 sftp.close();
             }
             sftp_last_cwd.lock().unwrap().remove(&id);
+            if let Some(gate) = render_gates.lock().unwrap().remove(&id) {
+                gate.close();
+            }
             bufs.lock().unwrap().remove(&id);
-            render_gates.lock().unwrap().remove(&id);
 
             // Remove from tabs + terminals models.
             let mut idx = None;
