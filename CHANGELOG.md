@@ -5,6 +5,24 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 改进 / Changed
+
+- **快速连接分组默认收起并记住展开状态。** 首次启动时快速连接中的系统与会话目录保持收起；用户展开或收起目录后会立即保存该状态，刷新会话列表及重启应用后仍保持原样。
+
+### 性能 / Performance
+
+- **提升终端鼠标拖选文字的响应速度。** 拖动选区时只刷新轻量选区图层，不再为每次鼠标移动重新生成整块终端文本与样式，长回滚记录下也能即时显示选中内容。
+
+---
+
+### Changed
+
+- **Default Quick Connect groups to collapsed and remember their state.** System and session folders start collapsed, while later expand/collapse choices are saved immediately and survive session-list refreshes and application restarts.
+
+### Performance
+
+- **Improve terminal text-selection responsiveness.** Dragging now refreshes only the lightweight selection overlay instead of rebuilding all terminal text and styling for every mouse movement, keeping selection immediate with long scrollback histories.
+
 ## [0.6.8] - 2026-07-26
 
 ### 改进 / Changed

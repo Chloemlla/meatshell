@@ -3108,6 +3108,12 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
     // last), then by name within each group, and tag the first row of every
     // group with a header so the welcome list can render a folder heading (#41).
     let sessions = store.sessions();
+    let collapsed_groups = store.collapsed_session_groups();
+    let group_is_collapsed = |group: &str| {
+        collapsed_groups
+            .map(|groups| groups.iter().any(|collapsed| collapsed == group))
+            .unwrap_or(true)
+    };
 
     // Ordered list of display groups:
     //  - "default" only when there are ungrouped sessions (group == "")
@@ -3146,7 +3152,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
         last_used: "".into(),
         group: group.into(),
         group_header: group.into(),
-        collapsed: false,
+        collapsed: group_is_collapsed(group),
     };
 
     let mut rows: Vec<SessionInfo> = Vec::new();
@@ -3161,7 +3167,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
             last_used: "".into(),
             group: "system".into(),
             group_header: if i == 0 { "system".into() } else { "".into() },
-            collapsed: true,
+            collapsed: group_is_collapsed("system"),
         });
     }
     for group in &display_groups {
@@ -3194,7 +3200,7 @@ fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<SessionInfo>) {
                     } else {
                         "".into()
                     },
-                    collapsed: false,
+                    collapsed: group_is_collapsed(group),
                 });
             }
         }
@@ -3702,6 +3708,7 @@ fn wire_session_callbacks(
     // so the open/closed state stays put until the list is actually rebuilt.
     {
         let weak = window.as_weak();
+        let store = store.clone();
         let sessions_model = sessions_model.clone();
         window.on_toggle_group(move |group: SharedString| {
             use slint::Model as _;
@@ -3723,6 +3730,13 @@ fn wire_session_callbacks(
                         row.collapsed = new_state;
                         sessions_model.set_row_data(i, row);
                     }
+                }
+            }
+            {
+                let mut store = store.borrow_mut();
+                store.set_session_group_collapsed(&target, new_state);
+                if let Err(err) = store.save() {
+                    tracing::warn!("failed to save Quick Connect folder state: {err:#}");
                 }
             }
             if let Some(w) = weak.upgrade() {
@@ -5938,6 +5952,24 @@ fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
         row.selection = sm.clone();
         row.scroll_max = smax;
         row.scroll_offset = soff;
+    });
+    win.window().request_redraw();
+}
+
+/// Refresh only the lightweight selection overlay. Dragging used to call
+/// `rebuild_tab_display` for every mouse-move event, reparsing and rebuilding
+/// all terminal spans even though the underlying screen had not changed.
+fn refresh_terminal_selection(win: &AppWindow, bufs: &TermBuffers, tab_id: &str) {
+    let selection = with_term_buf(bufs, tab_id, |buf| {
+        let cols = buf.parser.screen().size().1;
+        buf.selection_rects_visible(cols)
+    });
+    let Some(selection) = selection else {
+        return;
+    };
+    let model = ModelRc::from(Rc::new(VecModel::from(selection)));
+    set_terminal_row(win, tab_id, move |row| {
+        row.selection = model.clone();
     });
     win.window().request_redraw();
 }
@@ -9449,7 +9481,7 @@ fn wire_key_input(
                 buf.sel_focus = Some(focus);
             });
             if let Some(win) = weak.upgrade() {
-                rebuild_tab_display(&win, &bufs_sel, &tid);
+                refresh_terminal_selection(&win, &bufs_sel, &tid);
             }
         });
     }
@@ -9471,7 +9503,7 @@ fn wire_key_input(
                 }
             });
             if let Some(win) = weak.upgrade() {
-                rebuild_tab_display(&win, &bufs_sel, &tid);
+                refresh_terminal_selection(&win, &bufs_sel, &tid);
             }
         });
     }
@@ -9503,7 +9535,7 @@ fn wire_key_input(
                 _ => {}
             }
             if let Some(win) = weak.upgrade() {
-                rebuild_tab_display(&win, &bufs_sel, &tid);
+                refresh_terminal_selection(&win, &bufs_sel, &tid);
             }
         });
     }

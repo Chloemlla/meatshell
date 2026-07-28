@@ -675,6 +675,11 @@ pub struct ConfigFile {
     /// not stored here.
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Quick Connect folders that were collapsed when the UI was last used.
+    /// `None` is a legacy/new config and starts with every folder collapsed;
+    /// `Some([])` means the user explicitly expanded every folder.
+    #[serde(default)]
+    pub collapsed_session_groups: Option<Vec<String>>,
     /// Stored inverted ("don't follow") so both serde and the Default derive
     /// yield `false` = the feature defaults to ON: the SFTP panel follows the
     /// terminal's cd (OSC 7) unless the user opts out in Interface settings.
@@ -1637,6 +1642,46 @@ impl ConfigStore {
         &self.cache.groups
     }
 
+    pub fn collapsed_session_groups(&self) -> Option<&[String]> {
+        self.cache.collapsed_session_groups.as_deref()
+    }
+
+    /// Remember a Quick Connect folder's open/closed state. On the first
+    /// interaction, materialise the default-collapsed state for every existing
+    /// folder so expanding one folder does not accidentally expand the rest.
+    pub fn set_session_group_collapsed(&mut self, name: &str, collapsed: bool) {
+        if self.cache.collapsed_session_groups.is_none() {
+            let mut groups = vec!["system".to_string()];
+            if self
+                .cache
+                .sessions
+                .iter()
+                .any(|session| session.group.is_empty())
+            {
+                groups.push("default".to_string());
+            }
+            groups.extend(self.cache.groups.iter().cloned());
+            groups.extend(
+                self.cache
+                    .sessions
+                    .iter()
+                    .filter(|session| !session.group.is_empty())
+                    .map(|session| session.group.clone()),
+            );
+            groups.sort();
+            groups.dedup();
+            self.cache.collapsed_session_groups = Some(groups);
+        }
+
+        let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
+        groups.retain(|group| group != name);
+        if collapsed {
+            groups.push(name.to_string());
+            groups.sort();
+            groups.dedup();
+        }
+    }
+
     /// Create an empty group. Ignores blank names, the reserved "default", and
     /// duplicates.
     pub fn add_group(&mut self, name: String) {
@@ -1645,7 +1690,12 @@ impl ConfigStore {
             return;
         }
         if !self.cache.groups.iter().any(|g| g == &n) {
-            self.cache.groups.push(n);
+            self.cache.groups.push(n.clone());
+            if let Some(groups) = &mut self.cache.collapsed_session_groups {
+                groups.push(n);
+                groups.sort();
+                groups.dedup();
+            }
         }
     }
 
@@ -1653,6 +1703,9 @@ impl ConfigStore {
     /// only offers delete on empty groups, but we clear sessions defensively.
     pub fn remove_group(&mut self, name: &str) {
         self.cache.groups.retain(|g| g != name);
+        if let Some(groups) = &mut self.cache.collapsed_session_groups {
+            groups.retain(|group| group != name);
+        }
         for s in &mut self.cache.sessions {
             if s.group == name {
                 s.group.clear();
@@ -1675,6 +1728,15 @@ impl ConfigStore {
             if s.group == old {
                 s.group = n.clone();
             }
+        }
+        if let Some(groups) = &mut self.cache.collapsed_session_groups {
+            for group in groups.iter_mut() {
+                if group == old {
+                    *group = n.clone();
+                }
+            }
+            groups.sort();
+            groups.dedup();
         }
         self.cache.groups.sort();
         self.cache.groups.dedup();
@@ -1933,6 +1995,31 @@ mod tests {
 
         store.cache = serde_json::from_str("{}").expect("legacy config must deserialize");
         assert_eq!(store.renderer_mode(), "software");
+    }
+
+    #[test]
+    fn quick_connect_groups_default_collapsed_and_remember_expansion() {
+        let mut store = temp_store();
+        store.cache.groups = vec!["production".into(), "staging".into()];
+        store.cache.sessions.push(Session {
+            group: "production".into(),
+            ..sample_session("server")
+        });
+
+        assert!(store.collapsed_session_groups().is_none());
+        store.set_session_group_collapsed("production", false);
+
+        let collapsed = store.collapsed_session_groups().unwrap();
+        assert!(!collapsed.iter().any(|group| group == "production"));
+        assert!(collapsed.iter().any(|group| group == "staging"));
+        assert!(collapsed.iter().any(|group| group == "system"));
+
+        store.set_session_group_collapsed("production", true);
+        assert!(store
+            .collapsed_session_groups()
+            .unwrap()
+            .iter()
+            .any(|group| group == "production"));
     }
 
     #[test]
