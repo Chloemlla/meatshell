@@ -1,6 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::ui::TermSpan;
 
@@ -46,11 +45,32 @@ pub(crate) struct CompiledOutputRule {
 pub(crate) type TermBufferHandle = Arc<Mutex<TermBuffer>>;
 pub(crate) type TermBuffers = Arc<Mutex<HashMap<String, TermBufferHandle>>>;
 
-/// Coalesces render requests for one terminal tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenderWaitResult {
+    Settled,
+    Closed,
+    TimedOut,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RenderGatePhase {
+    Idle,
+    Scheduled,
+    Flushing,
+}
+
+pub(super) struct RenderGateState {
+    pub(super) requested: u64,
+    pub(super) settled: u64,
+    pub(super) phase: RenderGatePhase,
+    pub(super) closed: bool,
+    pub(super) last_visible_flush: std::time::Instant,
+}
+
+/// Coalesces and acknowledges UI snapshot flushes for one terminal tab.
 pub(crate) struct TabRenderGate {
-    pub(crate) scheduled: AtomicBool,
-    pub(crate) pending: AtomicBool,
-    pub(crate) last_render: Mutex<std::time::Instant>,
+    pub(super) state: Mutex<RenderGateState>,
+    pub(super) settled_cv: Condvar,
 }
 
 pub(crate) type RenderGates = Arc<Mutex<HashMap<String, Arc<TabRenderGate>>>>;
