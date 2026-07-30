@@ -1,8 +1,8 @@
-use crate::app::{
+use crate::terminal::{
     build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll,
-    highlight_plain_output, render_term_span, MAX_HISTORY, RAW_CAP,
+    highlight_plain_output, render_term_span, BuiltScreen, CsiState, Line, TermBuffer, MAX_HISTORY,
+    RAW_CAP,
 };
-use crate::terminal::{BuiltScreen, CsiState, Line, TermBuffer};
 use crate::ui::TermMatch;
 impl TermBuffer {
     // ---- Absolute-coordinate selection helpers (#18 follow-up) -------------

@@ -1,6 +1,6 @@
-#[path = "struct/layout_struct.rs"]
-mod layout_struct;
-#[path = "impls/panes_impl.rs"]
-mod panes_impl;
+#[path = "impls/panes.rs"]
+mod panes;
+#[path = "struct/types.rs"]
+mod types;
 
-pub(crate) use layout_struct::{Dir, Layout, LogicalRect, TerminalWheelHit};
+pub(crate) use types::{Dir, Layout, LogicalRect, TerminalWheelHit};

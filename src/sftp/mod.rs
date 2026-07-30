@@ -1,7 +1,7 @@
-#[path = "impls/sftp_impl.rs"]
-mod sftp_impl;
-#[path = "struct/sftp_struct.rs"]
-mod sftp_struct;
+#[path = "impls/sftp.rs"]
+mod sftp;
+#[path = "struct/types.rs"]
+mod types;
 
-pub(crate) use sftp_impl::*;
-pub(crate) use sftp_struct::{SftpHandles, SftpLastCwd};
+pub(crate) use sftp::*;
+pub(crate) use types::{SftpHandles, SftpLastCwd};

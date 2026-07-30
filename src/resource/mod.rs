@@ -1,8 +1,8 @@
-#[path = "struct/resource_struct.rs"]
-mod resource_struct;
-#[path = "impls/system_impl.rs"]
+#[path = "impls/system.rs"]
 pub(crate) mod system;
+#[path = "struct/types.rs"]
+mod types;
 
-pub(crate) use resource_struct::{
+pub(crate) use types::{
     LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
 };

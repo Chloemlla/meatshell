@@ -1,4 +1,4 @@
-#[path = "impls/config_impl.rs"]
-mod config_impl;
+#[path = "impls/config.rs"]
+mod config;
 
-pub(crate) use config_impl::*;
+pub(crate) use config::*;

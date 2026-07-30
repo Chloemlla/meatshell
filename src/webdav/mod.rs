@@ -1,6 +1,6 @@
-#[path = "impls/certificate_verifier_impl.rs"]
-mod certificate_verifier_impl;
-#[path = "struct/webdav_struct.rs"]
-mod webdav_struct;
+#[path = "impls/certificate_verifier.rs"]
+mod certificate_verifier;
+#[path = "struct/types.rs"]
+mod types;
 
-pub(crate) use webdav_struct::WebDavAcceptAnyCertVerifier;
+pub(crate) use types::WebDavAcceptAnyCertVerifier;

@@ -1,12 +1,12 @@
-#[path = "impls/known_hosts_impl.rs"]
+#[path = "impls/known_hosts.rs"]
 pub(crate) mod known_hosts;
-#[path = "impls/ppk_impl.rs"]
+#[path = "impls/ppk.rs"]
 pub(crate) mod ppk;
-#[path = "impls/proxy_impl.rs"]
+#[path = "impls/proxy.rs"]
 pub(crate) mod proxy;
-#[path = "impls/ssh_config_impl.rs"]
+#[path = "impls/ssh.rs"]
+mod ssh;
+#[path = "impls/ssh_config.rs"]
 pub(crate) mod ssh_config;
-#[path = "impls/ssh_impl.rs"]
-mod ssh_impl;
 
-pub(crate) use ssh_impl::*;
+pub(crate) use ssh::*;

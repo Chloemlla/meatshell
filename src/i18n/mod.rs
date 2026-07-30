@@ -1,4 +1,4 @@
-#[path = "impls/i18n_impl.rs"]
-mod i18n_impl;
+#[path = "impls/i18n.rs"]
+mod i18n;
 
-pub(crate) use i18n_impl::*;
+pub(crate) use i18n::*;

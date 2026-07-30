@@ -1,4 +1,4 @@
-#[path = "impls/forward_impl.rs"]
-mod forward_impl;
+#[path = "impls/forward.rs"]
+mod forward;
 
-pub(crate) use forward_impl::*;
+pub(crate) use forward::*;

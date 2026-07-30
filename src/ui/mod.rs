@@ -1,4 +1,4 @@
-#[path = "struct/ui_struct.rs"]
-mod ui_struct;
+#[path = "struct/types.rs"]
+mod types;
 
-pub(crate) use ui_struct::*;
+pub(crate) use types::*;
