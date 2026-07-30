@@ -12,6 +12,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 修复 / Fixed
 
+- **修复终端粘贴、命令框、光标、选区与回滚历史问题（#319）。** 括号粘贴现在也会把 Windows CRLF 规范化为单个终端换行，命令框保留多行 heredoc 的原始换行；Vim/nano 的竖线光标不再右移，事件积压时真实 Backspace 不再被实时键状态误判，按键时会恢复光标可见；普通单击不再复制字符，`ESC[3J` 同时清除 MeatShell 自己维护的回滚与重放缓存。
 - **修复 macOS 下 `Ctrl+X` 在 nano 中错误打开搜索的问题（#312）。** Slint 在 macOS 上会先把单独按下的物理 Control 键报告为控制键标记，再发送组合键字符；程序现在会在平台事件边界过滤该标记，只把随后的真实 `Ctrl+X` 控制字符发送到 PTY，同时保持 Command 应用快捷键与其他平台行为不变。
 - **改善超大终端输出的渐进显示与响应性（#311）。** 持续输出现在按累计字节预算、在完整输出块边界提交 UI 快照，并用可等待的请求代次消除丢失通知和重复渲染；当事件积压过大或夹有连接状态事件时会优先追赶队列，避免节奏等待造成内存增长或延迟 `Connected` / `Closed`。隐藏标签、标签关闭及事件循环退出均不会让输出泵固定空等。
 
@@ -19,6 +20,7 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Fixed
 
+- **Fix terminal paste, command bar, cursor, selection, and scrollback behavior (#319).** Bracketed paste now normalizes Windows CRLF to one terminal newline, while the command bar preserves multiline heredocs. Vim/nano bar cursors no longer shift right, genuine Backspace events survive delayed dispatch, keyboard input restores cursor visibility, plain clicks no longer copy a character, and `ESC[3J` clears MeatShell's own scrollback and replay buffers.
 - **Fix `Ctrl+X` opening search instead of exiting nano on macOS (#312).** Slint reports a standalone physical Control press as a modifier marker on macOS before delivering the chord character. MeatShell now filters that marker at the platform event boundary and forwards only the real `Ctrl+X` control character to the PTY, without changing Command shortcuts or other platforms.
 - **Improve progressive rendering and responsiveness under very large terminal output (#311).** Sustained output now commits UI snapshots at complete output-chunk boundaries after a cumulative byte budget, while generation-based wait tickets eliminate lost notifications and redundant renders. A large event backlog or pending connection-state event switches to catch-up mode so pacing cannot inflate memory use or delay `Connected` / `Closed`; hidden tabs, tab closure, and event-loop shutdown no longer cause repeated timeout waits.
 

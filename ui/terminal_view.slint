@@ -770,14 +770,11 @@ export component TerminalView inherits Rectangle {
                         // Blinking cursor (overlay, decoupled from text). Its
                         // shape follows the persisted user preference (#275).
                         Rectangle {
-                            // Full-screen editors such as Vim address the cell
-                            // containing the current character. Put a bar caret
-                            // on that cell's trailing edge so an end-of-line
-                            // cursor remains visibly after the final glyph,
-                            // including double-width emoji. Shells use a blank
-                            // insertion cell and must retain the original edge.
-                            x: root.cursor-col * root.cell-w
-                                + (root.cursor-style == "bar" && root.is-alt-screen ? root.cell-w : 0px);
+                            // The VT cursor already names the active grid cell.
+                            // A bar belongs on that cell's leading edge too;
+                            // shifting it one column in alternate-screen apps put
+                            // it after ASCII glyphs and inside wide CJK cells (#319).
+                            x: root.cursor-col * root.cell-w;
                             y: root.cursor-row * root.cell-h
                                 + (root.cursor-style == "underline" ? max(0px, root.cell-h - max(2px, root.cell-h / 8)) : 0px);
                             width: root.cursor-style == "bar" ? max(2px, root.cell-w / 8) : root.cell-w;
@@ -932,6 +929,10 @@ export component TerminalView inherits Rectangle {
                 }
 
                 key-pressed(event) => {
+                    // Keep the caret visible while typing or moving it. Without
+                    // this reset an old blink phase can hide the cursor halfway
+                    // through a repeated arrow-key sequence (#319).
+                    key-capture.cursor-blink = true;
                     // ⚠ macOS modifier naming is SWAPPED by Slint (see the winit
                     // backend's muda.rs): `event.modifiers.control` is the **Cmd (⌘)**
                     // key and `event.modifiers.meta` is the **physical Ctrl** key.
@@ -1166,7 +1167,10 @@ export component TerminalView inherits Rectangle {
                         font-family: Theme.ui-font-family;
                         font-size: Theme.fs-md;
                         vertical-alignment: center;
-                        single-line: true;
+                        // Preserve pasted newlines. A single-line input rewrites
+                        // them as spaces and corrupts heredoc terminators before
+                        // run-command receives the text (#319).
+                        single-line: false;
                         // Enter sends; ↑/↓ recall history.
                         accepted => {
                             root.run-command(self.text, root.send-to-all);
@@ -1174,12 +1178,17 @@ export component TerminalView inherits Rectangle {
                             root.history-cursor = -1;
                         }
                         key-pressed(e) => {
+                            if (e.text == Key.Return && !e.modifiers.shift) {
+                                root.run-command(self.text, root.send-to-all);
+                                self.text = "";
+                                root.history-cursor = -1;
+                                accept
                             // ⌘R / Ctrl+R opens the searchable history dropdown and
                             // focuses its search box — full keyboard history recall
                             // (#140). Esc closes it / returns to terminal. (The
                             // Ctrl+A/E/K/U line-editing below stays on Ctrl — those
                             // are the standard readline bindings on macOS too.)
-                            if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
+                            } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
                                     && (e.text == Key.Tab || e.text == Key.Backtab)) {
                                 root.cycle-tab(e.modifiers.shift || e.text == Key.Backtab);
                                 accept

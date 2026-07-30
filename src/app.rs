@@ -8714,12 +8714,9 @@ fn wire_key_input(
         let weak = window.as_weak();
         window.on_run_command(
             move |tab_id: SharedString, cmd: SharedString, to_all: bool| {
-                let line = cmd.trim_end().to_string();
-                if line.is_empty() {
+                let Some((line, bytes)) = encode_command_bar_input(&cmd) else {
                     return;
-                }
-                let mut bytes = line.clone().into_bytes();
-                bytes.push(b'\n');
+                };
                 {
                     let h = handles_rc.borrow();
                     if to_all {
@@ -9234,7 +9231,7 @@ fn wire_key_input(
             //   2. Posts WM_KEYDOWN VK_BACK + WM_CHAR 0x08 to erase whatever
             //      character it had already forwarded to the app.
             //
-            // Three-layer defence:
+            // Two-layer defence:
             //
             //   Layer 1 – shift=true guard.
             //     The synthetic Backspace arrives during Shift keydown, so
@@ -9246,12 +9243,16 @@ fn wire_key_input(
             //     the message is dequeued Shift may already read as "up"
             //     → shift=false defeats Layer 1.
             //     Mitigation: we recorded the timestamp when the Shift key alone
-            //     was pressed (key="", shift=true) a few lines above.  Drop any
-            //     Backspace arriving within 200 ms of that moment.
-            //
-            //   Layer 3 – GetKeyState guard (belt-and-suspenders).
-            //     If VK_BACK is not actually "down" (i.e. no real WM_KEYDOWN
-            //     VK_BACK was ever queued), the Backspace must be synthetic.
+            //     was pressed (key="", shift=true) a few lines above. Drop a
+            //     Backspace arriving within the guarded interval unless a real
+            //     intervening key has already cleared the marker.
+            // Any real intervening key proves a previous Shift/IME marker is no
+            // longer paired with this Backspace. Without clearing it, the broad
+            // safety window drops legitimate Vim insert-mode Backspace (#319).
+            if key.as_str() != "\u{0008}" && !key.as_str().is_empty() {
+                *last_shift_time.lock().unwrap() = None;
+            }
+
             if key.as_str() == "\u{0008}" && !ctrl && !alt {
                 // Layer 1
                 if shift {
@@ -9279,11 +9280,9 @@ fn wire_key_input(
                     return;
                 }
                 // Layer 3
-                #[cfg(windows)]
-                if !is_vk_back_down() {
-                    tracing::info!("[KEY_DIAG] Backspace DROPPED by layer-3 (VK_BACK not down)");
-                    return;
-                }
+                // Do not consult the live VK_BACK state here. Under UI/SSH
+                // backlog the key-up can be processed before this callback, so
+                // that test drops a genuine queued Backspace (#319).
                 tracing::info!("[KEY_DIAG] Backspace PASSED all filters → sent to PTY");
             }
 
@@ -9707,6 +9706,16 @@ fn wire_key_input(
             // Extract the selected text; a zero-area selection (a plain click)
             // is cleared instead of copied.
             let text = with_term_buf(&bufs_sel, &tid, |buf| {
+                // Selection endpoints are inclusive, so extracting an
+                // anchor-only range returns the character under a plain click.
+                // Compare coordinates instead of using extracted text as the
+                // click-vs-drag signal (#319).
+                if !buf.selection_has_extent() {
+                    buf.sel_anchor = None;
+                    buf.sel_focus = None;
+                    buf.sel_ranges.clear();
+                    return None;
+                }
                 let extracted = buf.extract_selection_text();
                 if extracted.is_empty() {
                     // Zero-area selection (a plain click) → clear it.
@@ -10311,18 +10320,32 @@ fn normalize_pasted_newlines(text: &str) -> String {
     text.replace("\r\n", "\r").replace('\n', "\r")
 }
 
+fn encode_command_bar_input(command: &str) -> Option<(String, Vec<u8>)> {
+    let command = command.trim_end().to_string();
+    if command.is_empty() {
+        return None;
+    }
+    let mut bytes = command.clone().into_bytes();
+    bytes.push(b'\n');
+    Some((command, bytes))
+}
+
 /// Encode clipboard text according to the mode requested by the remote
 /// application. Bracketed paste lets shells and editors distinguish pasted
 /// text from typed keystrokes, preserving multi-line layout and indentation.
 fn encode_pasted_text(text: &str, bracketed: bool) -> Vec<u8> {
+    // Bracketed-paste markers change how the remote application interprets the
+    // payload; they do not make CRLF a valid two-byte Enter. Normalize first on
+    // every path so a Windows clipboard cannot break `\\` continuations (#319).
+    let normalized = normalize_pasted_newlines(text);
     if !bracketed {
-        return normalize_pasted_newlines(text).into_bytes();
+        return normalized.into_bytes();
     }
 
     // A pasted ESC could forge the end marker; Ctrl+C also terminates bracketed
     // paste in some shells. Match established terminal-emulator behaviour by
     // filtering both before wrapping the payload.
-    let filtered = text.replace(['\x1b', '\x03'], "");
+    let filtered = normalized.replace(['\x1b', '\x03'], "");
     let mut bytes = Vec::with_capacity(filtered.len() + 12);
     bytes.extend_from_slice(b"\x1b[200~");
     bytes.extend_from_slice(filtered.as_bytes());
@@ -10545,24 +10568,6 @@ fn key_to_pty_bytes(key: &str, ctrl: bool, alt: bool, app_cursor: bool) -> Vec<u
     // This covers printable characters, \r (Enter), \t (Tab), \x1b (Escape),
     // and any C0 control chars the platform already encoded in `key`.
     key.as_bytes().to_vec()
-}
-
-/// Windows-only: returns `true` when the physical Backspace key (VK_BACK) is
-/// currently "down" according to `GetKeyState`.
-///
-/// Used to distinguish real Backspace key presses from synthetic WM_CHAR 0x08
-/// events injected by IME drivers (Baidu Pinyin, etc.) when they cancel an
-/// in-flight composition.  For a real Backspace, WM_KEYDOWN VK_BACK precedes
-/// WM_CHAR 0x08, so GetKeyState returns "down".  For an IME-synthesised
-/// Backspace, no VK_BACK keydown was queued, so GetKeyState returns "up".
-#[cfg(windows)]
-fn is_vk_back_down() -> bool {
-    #[allow(non_snake_case)]
-    extern "system" {
-        fn GetKeyState(nVirtKey: i32) -> i16;
-    }
-    const VK_BACK: i32 = 0x08;
-    unsafe { (GetKeyState(VK_BACK) as u16) & 0x8000 != 0 }
 }
 
 /// Windows-only: returns `true` when the letter key for a C0 control code
@@ -11764,10 +11769,19 @@ mod key_tests {
     }
 
     #[test]
+    fn command_bar_preserves_multiline_heredoc() {
+        let command = "cat <<'EOF'\nHEREDOC-1\n中文-HEREDOC-2\nEOF\n";
+        let (history, bytes) = encode_command_bar_input(command).unwrap();
+        assert_eq!(history, command.trim_end());
+        assert_eq!(bytes, command.as_bytes());
+        assert!(!history.lines().any(|line| line.starts_with(' ')));
+    }
+
+    #[test]
     fn paste_uses_remote_bracketed_paste_mode() {
         assert_eq!(
             encode_pasted_text("first\r\n  second", true),
-            b"\x1b[200~first\r\n  second\x1b[201~"
+            b"\x1b[200~first\r  second\x1b[201~"
         );
         assert_eq!(
             encode_pasted_text("safe\x1b[201~\x03text", true),
@@ -11918,6 +11932,38 @@ mod selection_tests {
 
         assert_eq!(buffer.displayed_text[0], "P> echo first");
         assert_eq!(buffer.parser.screen().cursor_position(), (0, 13));
+    }
+
+    #[test]
+    fn plain_click_has_no_selection_extent() {
+        let mut buffer = make_buf(2, 20, &[], &["one"], 0);
+        buffer.sel_anchor = Some((0, 1));
+        buffer.sel_focus = Some((0, 1));
+        buffer.sel_ranges.push(((0, 1), (0, 1)));
+        assert!(!buffer.selection_has_extent());
+
+        buffer.sel_focus = Some((0, 2));
+        buffer.sel_ranges[0].1 = (0, 2);
+        assert!(buffer.selection_has_extent());
+    }
+
+    #[test]
+    fn csi_3j_clears_meatshell_scrollback_even_when_split() {
+        let mut buffer = make_buf(3, 20, &["old one", "old two"], &["current"], 2);
+        buffer.raw.extend(b"old one\nold two\n");
+        buffer.prev.push(hist_line("old two"));
+        buffer.sel_anchor = Some((0, 0));
+        buffer.sel_focus = Some((1, 2));
+
+        buffer.ingest(b"\x1b[3");
+        assert_eq!(buffer.history.len(), 2);
+        buffer.ingest(b"J");
+
+        assert!(buffer.history.is_empty());
+        assert_eq!(buffer.view_offset, 0);
+        assert!(buffer.raw.is_empty());
+        assert!(buffer.sel_anchor.is_none());
+        assert!(buffer.sel_focus.is_none());
     }
 
     #[test]
