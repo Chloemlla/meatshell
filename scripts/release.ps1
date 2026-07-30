@@ -10,30 +10,30 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Run-Git {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Args)
+    param([string[]] $GitArgs)
 
     if ($DryRun) {
-        Write-Host "git $($Args -join ' ')"
+        Write-Host "git $($GitArgs -join ' ')"
         return
     }
 
-    & git @Args
+    & git @GitArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Args -join ' ') failed"
+        throw "git $($GitArgs -join ' ') failed"
     }
 }
 
 function Run-Cargo {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Args)
+    param([string[]] $CargoArgs)
 
     if ($DryRun) {
-        Write-Host "cargo $($Args -join ' ')"
+        Write-Host "cargo $($CargoArgs -join ' ')"
         return
     }
 
-    & cargo @Args
+    & cargo @CargoArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo $($Args -join ' ') failed"
+        throw "cargo $($CargoArgs -join ' ') failed"
     }
 }
 
@@ -117,18 +117,18 @@ if ($DryRun) {
     [System.IO.File]::WriteAllText($cargoLockPath, $newCargoLock, $utf8NoBom)
 }
 
-Run-Cargo check --locked
+Run-Cargo -CargoArgs @("check", "--locked")
 Run-CheckedOutput -Expected "meatshell $version" -Command @(
     "cargo", "run", "--locked", "--", "--version"
 )
 
-Run-Git add Cargo.toml Cargo.lock
-Run-Git commit -m "Release $Tag"
-Run-Git tag -a $Tag -m "Release $Tag"
+Run-Git -GitArgs @("add", "Cargo.toml", "Cargo.lock")
+Run-Git -GitArgs @("commit", "-m", "Release $Tag")
+Run-Git -GitArgs @("tag", "-a", $Tag, "-m", "Release $Tag")
 
 if ($Push) {
-    Run-Git push origin HEAD
-    Run-Git push origin $Tag
+    Run-Git -GitArgs @("push", "origin", "HEAD")
+    Run-Git -GitArgs @("push", "origin", $Tag)
     Write-Host "Released $Tag and pushed branch + tag."
 } else {
     Write-Host "Created release commit and tag $Tag."
