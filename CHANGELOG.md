@@ -5,6 +5,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-07-31
+
 ### OpenWrt SSH shell integration fix / OpenWrt SSH shell 集成修复
 
 - **修复 OpenWrt SSH 登录时泄露并卡在 shell 集成初始化命令的问题（#314、#317）。** 连接现在先通过独立的非交互 SSH 通道识别远端 shell，只向真正支持该集成的 Bash/Zsh 会话发送提示符钩子；BusyBox ash、fish 与未知 shell 不再收到 `test -z \"$FISH_VERSION\" ...` 长命令。
