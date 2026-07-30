@@ -326,7 +326,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ldd --version | head -n 1
+          ldd --version | sed -n '1p'
           file target/aarch64-unknown-linux-gnu/release/meatshell
           objdump -T target/aarch64-unknown-linux-gnu/release/meatshell \
             | grep -o 'GLIBC_[0-9.]*' \
@@ -415,7 +415,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ldd --version | head -n 1
+          ldd --version | sed -n '1p'
           file target/x86_64-unknown-linux-gnu/release/meatshell
           objdump -T target/x86_64-unknown-linux-gnu/release/meatshell \
             | grep -o 'GLIBC_[0-9.]*' \
