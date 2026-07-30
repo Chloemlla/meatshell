@@ -108,8 +108,12 @@ if ($newCargoLock -eq $cargoLock) {
 if ($DryRun) {
     Write-Host "Would set Cargo.toml and Cargo.lock version to $version."
 } else {
-    Set-Content -LiteralPath $cargoTomlPath -Value $newCargoToml -NoNewline
-    Set-Content -LiteralPath $cargoLockPath -Value $newCargoLock -NoNewline
+    # Windows PowerShell 5 uses the active ANSI code page for Set-Content by
+    # default, which corrupts non-ASCII comments and makes Cargo reject the
+    # manifests as invalid UTF-8. Write explicit UTF-8 without a BOM instead.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($cargoTomlPath, $newCargoToml, $utf8NoBom)
+    [System.IO.File]::WriteAllText($cargoLockPath, $newCargoLock, $utf8NoBom)
 }
 
 Run-Cargo check --locked
