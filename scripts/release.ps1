@@ -48,10 +48,11 @@ function Run-CheckedOutput {
         return
     }
 
-    $output = (& $Command[0] @($Command | Select-Object -Skip 1)).Trim()
+    $rawOutput = & $Command[0] @($Command | Select-Object -Skip 1)
     if ($LASTEXITCODE -ne 0) {
         throw "$($Command -join ' ') failed"
     }
+    $output = ($rawOutput | Out-String).Trim()
     if ($output -ne $Expected) {
         throw "Expected '$Expected' but got '$output'."
     }
@@ -117,7 +118,9 @@ if ($DryRun) {
 }
 
 Run-Cargo check --locked
-Run-CheckedOutput "meatshell $version" cargo run --locked -- --version
+Run-CheckedOutput -Expected "meatshell $version" -Command @(
+    "cargo", "run", "--locked", "--", "--version"
+)
 
 Run-Git add Cargo.toml Cargo.lock
 Run-Git commit -m "Release $Tag"
