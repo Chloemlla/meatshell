@@ -124,6 +124,55 @@ const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
 const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
 const PROMPT_SETUP_HISTORY_MARKER: &str = "__MEATSHELL_INTERNAL_SETUP_1";
 const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MEATSHELL_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; __ms7'";
+const PROMPT_SHELL_PROBE: &[u8] = b"if [ -n \"$BASH_VERSION\" ]; then printf '__MEATSHELL_SHELL__:bash\\n'; elif [ -n \"$ZSH_VERSION\" ]; then printf '__MEATSHELL_SHELL__:zsh\\n'; else printf '__MEATSHELL_SHELL__:other\\n'; fi";
+
+fn prompt_setup_supported(probe_output: &str) -> Option<bool> {
+    if probe_output.contains("__MEATSHELL_SHELL__:bash")
+        || probe_output.contains("__MEATSHELL_SHELL__:zsh")
+    {
+        Some(true)
+    } else if probe_output.contains("__MEATSHELL_SHELL__:other") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Probe the login shell through a separate exec channel so unsupported shells
+/// never see the long interactive prompt-integration command. In particular,
+/// BusyBox ash (used by OpenWrt) ignores `PROMPT_COMMAND`; injecting into its
+/// line editor only risks a visible partial command or continuation prompt.
+async fn remote_supports_prompt_setup(handle: &Handle<ClientHandler>) -> bool {
+    let probe = async {
+        let mut channel = handle.channel_open_session().await.ok()?;
+        channel.exec(true, PROMPT_SHELL_PROBE).await.ok()?;
+        let _ = channel.eof().await;
+
+        let mut output = String::new();
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    output.push_str(&String::from_utf8_lossy(&data));
+                    if let Some(supported) = prompt_setup_supported(&output) {
+                        return Some(supported);
+                    }
+                    if output.len() > 256 {
+                        return Some(false);
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        Some(false)
+    };
+
+    tokio::time::timeout(std::time::Duration::from_millis(1000), probe)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
+}
 
 /// Detect the start of a ZMODEM transfer (sz/rz) in a raw channel chunk.
 ///
@@ -1416,6 +1465,12 @@ async fn run_session(
     // tunnel that carries this session rides on it (#211).
     let _jump_keepalive = jump_handle;
 
+    // The integration body is Bash/Zsh-specific. Probe out-of-band before the
+    // interactive channel exists, so ash/dash/fish/unknown shells never receive
+    // (and therefore can never display or get stuck parsing) the setup command.
+    let prompt_setup_supported =
+        !session.disable_shell_integration && remote_supports_prompt_setup(&handle).await;
+
     // --- Shell channel --------------------------------------------------
     let mut channel = handle
         .channel_open_session()
@@ -1847,7 +1902,7 @@ async fn run_session(
                         // (e.g. a Windows pwsh/cmd server) (#140).
                         if !prompt_injected
                             && !chunk.trim().is_empty()
-                            && !session.disable_shell_integration
+                            && prompt_setup_supported
                         {
                             prompt_injected = true;
                             suppress_echo = true;
@@ -2818,9 +2873,27 @@ fn _assert_handle_send() {
 #[cfg(test)]
 mod prompt_setup_echo_tests {
     use super::{
-        prompt_setup_echo_end, strip_late_prompt_setup_echo, strip_pending_prompt_setup_echo,
-        strip_prompt_setup_echo, PROMPT_BODY, PROMPT_SETUP_HISTORY_MARKER, PROMPT_SETUP_PREFIX,
+        prompt_setup_echo_end, prompt_setup_supported, strip_late_prompt_setup_echo,
+        strip_pending_prompt_setup_echo, strip_prompt_setup_echo, PROMPT_BODY,
+        PROMPT_SETUP_HISTORY_MARKER, PROMPT_SETUP_PREFIX,
     };
+
+    #[test]
+    fn only_bash_and_zsh_receive_prompt_setup() {
+        assert_eq!(
+            prompt_setup_supported("__MEATSHELL_SHELL__:bash\n"),
+            Some(true)
+        );
+        assert_eq!(
+            prompt_setup_supported("__MEATSHELL_SHELL__:zsh\n"),
+            Some(true)
+        );
+        assert_eq!(
+            prompt_setup_supported("__MEATSHELL_SHELL__:other\n"),
+            Some(false)
+        );
+        assert_eq!(prompt_setup_supported("ash: syntax error\n"), None);
+    }
 
     #[test]
     fn bash_setup_removes_current_and_stale_history_entries() {

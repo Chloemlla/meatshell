@@ -5,6 +5,11 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### OpenWrt SSH shell integration fix / OpenWrt SSH shell 集成修复
+
+- **修复 OpenWrt SSH 登录时泄露并卡在 shell 集成初始化命令的问题（#314、#317）。** 连接现在先通过独立的非交互 SSH 通道识别远端 shell，只向真正支持该集成的 Bash/Zsh 会话发送提示符钩子；BusyBox ash、fish 与未知 shell 不再收到 `test -z \"$FISH_VERSION\" ...` 长命令。
+- **Prevent shell-integration setup from leaking or hanging OpenWrt SSH sessions (#314, #317).** MeatShell now identifies the remote shell through a separate non-interactive SSH channel and sends the prompt hook only to Bash/Zsh; BusyBox ash, fish, and unknown shells no longer receive the long `test -z \"$FISH_VERSION\" ...` command.
+
 ### 修复 / Fixed
 
 - **修复 macOS 下 `Ctrl+X` 在 nano 中错误打开搜索的问题（#312）。** Slint 在 macOS 上会先把单独按下的物理 Control 键报告为控制键标记，再发送组合键字符；程序现在会在平台事件边界过滤该标记，只把随后的真实 `Ctrl+X` 控制字符发送到 PTY，同时保持 Command 应用快捷键与其他平台行为不变。
