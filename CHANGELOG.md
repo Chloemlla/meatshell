@@ -5,6 +5,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-08-05
+
 - **修复关闭“欢迎页设为侧栏”时闪退（#323）。** 欢迎页在侧栏与标签页之间切换时，分屏模型现在会延迟到下一次界面事件循环再刷新，并跳过尺寸和内容均未变化的重复更新，避免 Windows 下递归重建界面导致当前进程及后续启动闪退。
 - **Fix crashes when disabling “Welcome page as sidebar” (#323).** Switching the welcome page between sidebar and tab mode now defers pane-model rebuilding to the next UI event-loop turn and skips unchanged model updates, preventing recursive UI reconstruction on Windows during the toggle and subsequent launches.
 
