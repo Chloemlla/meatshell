@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **Linux 支持选择界面渲染器（#330）。** “设置 → 界面 → 渲染”现在可选择自动、GPU 与软件模式，默认继续使用 Slint 自动选择；设置在重启 MeatShell 后生效，`SLINT_BACKEND` 环境变量仍具有最高优先级。
+- **Select the UI renderer on Linux (#330).** Settings → Interface → Rendering now offers Automatic, GPU, and Software modes while retaining Slint's automatic selection by default. Changes apply after restarting MeatShell, and `SLINT_BACKEND` keeps the highest priority.
+
 ## [0.6.9] - 2026-07-31
 
 ### OpenWrt SSH shell integration fix / OpenWrt SSH shell 集成修复
