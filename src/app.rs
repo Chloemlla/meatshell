@@ -10369,6 +10369,26 @@ mod key_tests {
     }
 
     #[test]
+    fn home_and_end_follow_application_cursor_mode() {
+        assert_eq!(
+            key_to_pty_bytes("\u{F729}", false, false, false),
+            b"\x1b[H"
+        );
+        assert_eq!(
+            key_to_pty_bytes("\u{F72B}", false, false, false),
+            b"\x1b[F"
+        );
+        assert_eq!(
+            key_to_pty_bytes("\u{F729}", false, false, true),
+            b"\x1bOH"
+        );
+        assert_eq!(
+            key_to_pty_bytes("\u{F72B}", false, false, true),
+            b"\x1bOF"
+        );
+    }
+
+    #[test]
     fn bare_modifier_codes_are_dropped() {
         // Shift..MetaR (0x10..=0x18) pressed alone (ctrl=false) → nothing sent.
         for cp in 0x10u32..=0x18 {

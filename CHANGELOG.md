@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复 zsh 中 Home 和 End 按键无效（#329）。** 远端 shell 启用应用光标模式时，Home/End 现在会像方向键一样改用对应的 SS3 控制序列，恢复 oh-my-zsh/ZLE 中的行首和行尾移动。
+- **Fix Home and End keys in zsh (#329).** When the remote shell enables application cursor mode, Home/End now use their corresponding SS3 sequences like the arrow keys, restoring beginning/end-of-line movement in oh-my-zsh/ZLE.
+
 - **Linux 支持选择界面渲染器（#330）。** “设置 → 界面 → 渲染”现在可选择自动、GPU 与软件模式，默认继续使用 Slint 自动选择；设置在重启 MeatShell 后生效，`SLINT_BACKEND` 环境变量仍具有最高优先级。
 - **Select the UI renderer on Linux (#330).** Settings → Interface → Rendering now offers Automatic, GPU, and Software modes while retaining Slint's automatic selection by default. Changes apply after restarting MeatShell, and `SLINT_BACKEND` keeps the highest priority.
 
