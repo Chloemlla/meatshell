@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **回复终端状态与设备属性查询（#328）。** 远端程序发送 DSR 状态/光标位置查询或 DA1 主设备属性查询时，MeatShell 现在会立即向 PTY 返回对应的状态、CPR 光标坐标或保守的 VT100 能力标识；查询序列即使被拆分到多个 SSH 输出块也能正确识别，依赖终端握手的交互式程序不再等待超时或卡死。
+- **Respond to terminal status and device-attribute queries (#328).** MeatShell now immediately returns status, CPR cursor coordinates, or a conservative VT100 identity when remote programs issue DSR or primary DA1 queries. Split query sequences are recognized across SSH output chunks, preventing interactive applications that rely on terminal handshakes from timing out or hanging.
+
 - **修复内置编辑器打开大文件时崩溃，并调整历史命令排序（#331）。** 内置查看/编辑现在采用有界读取，并在文件超过 512 KB、行数过多或存在超长单行时安全拒绝并引导使用外部打开/编辑；历史命令弹窗改为从新到旧显示，同时保留输入框 ↑/↓ 的原有回溯顺序。
 - **Prevent large-file editor crashes and reorder command history (#331).** Built-in viewing/editing now uses bounded reads and safely redirects files over 512 KB, excessive line counts, or exceptionally long lines to external tools. The history popup now lists newest commands first while preserving the input field's existing ↑/↓ recall order.
 

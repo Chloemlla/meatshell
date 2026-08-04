@@ -4,6 +4,24 @@ use crate::terminal::{
     RAW_CAP,
 };
 use crate::ui::TermMatch;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalQuery {
+    Status,
+    CursorPosition { private: bool },
+    PrimaryDeviceAttributes,
+}
+
+fn terminal_query(sequence: &[u8]) -> Option<TerminalQuery> {
+    match sequence {
+        b"\x1b[5n" => Some(TerminalQuery::Status),
+        b"\x1b[6n" => Some(TerminalQuery::CursorPosition { private: false }),
+        b"\x1b[?6n" => Some(TerminalQuery::CursorPosition { private: true }),
+        b"\x1b[c" | b"\x1b[0c" => Some(TerminalQuery::PrimaryDeviceAttributes),
+        _ => None,
+    }
+}
+
 impl TermBuffer {
     // ---- Absolute-coordinate selection helpers (#18 follow-up) -------------
     //
@@ -228,10 +246,90 @@ impl TermBuffer {
     /// after each — that way no batch ever scrolls more than the diff can see,
     /// and nothing is lost.  (Splitting only on `\n` is safe: VT escape
     /// sequences never contain a newline.)
-    pub(crate) fn ingest(&mut self, input: &[u8]) {
-        // Rewrite HVP (`ESC [ … f`) → CUP (`ESC [ … H`) so vt100 (which only
-        // implements `H`) honours btop/htop's absolute cursor positioning.
-        let bytes = self.rewrite_hvp(input);
+    /// The returned bytes are terminal-query replies that must be written back
+    /// to the PTY immediately (DSR/CPR and primary device attributes, #328).
+    pub(crate) fn ingest(&mut self, input: &[u8]) -> Vec<u8> {
+        let mut replies = Vec::new();
+        let mut display = Vec::with_capacity(input.len());
+
+        for &byte in input {
+            match self.csi_state {
+                CsiState::Normal => {
+                    if byte == 0x1b {
+                        self.csi_pending.clear();
+                        self.csi_pending.push(byte);
+                        self.csi_state = CsiState::Esc;
+                    } else {
+                        display.push(byte);
+                    }
+                }
+                CsiState::Esc => {
+                    if byte == b'[' {
+                        self.csi_pending.push(byte);
+                        self.csi_state = CsiState::Csi;
+                    } else {
+                        display.extend(self.csi_pending.drain(..));
+                        if byte == 0x1b {
+                            self.csi_pending.push(byte);
+                        } else {
+                            display.push(byte);
+                            self.csi_state = CsiState::Normal;
+                        }
+                    }
+                }
+                CsiState::Csi => {
+                    self.csi_pending.push(byte);
+                    if (0x40..=0x7e).contains(&byte) {
+                        if let Some(kind) = terminal_query(&self.csi_pending) {
+                            self.ingest_display_bytes(&display);
+                            display.clear();
+                            match kind {
+                                TerminalQuery::Status => replies.extend_from_slice(b"\x1b[0n"),
+                                TerminalQuery::CursorPosition { private } => {
+                                    let (row, col) = self.parser.screen().cursor_position();
+                                    let response = if private {
+                                        format!("\x1b[?{};{}R", row + 1, col + 1)
+                                    } else {
+                                        format!("\x1b[{};{}R", row + 1, col + 1)
+                                    };
+                                    replies.extend_from_slice(response.as_bytes());
+                                }
+                                // Identify only as a VT100 with the advanced
+                                // video option; do not claim unsupported features.
+                                TerminalQuery::PrimaryDeviceAttributes => {
+                                    replies.extend_from_slice(b"\x1b[?1;2c")
+                                }
+                            }
+                        } else {
+                            // Rewrite HVP (`CSI … f`) to CUP (`CSI … H`) because
+                            // vt100 implements only the latter.
+                            if byte == b'f' {
+                                if let Some(final_byte) = self.csi_pending.last_mut() {
+                                    *final_byte = b'H';
+                                }
+                            }
+                            display.extend(self.csi_pending.drain(..));
+                        }
+                        self.csi_pending.clear();
+                        self.csi_state = CsiState::Normal;
+                    } else if self.csi_pending.len() > 64 {
+                        // Malformed/unbounded CSI: stop buffering and let vt100
+                        // handle the bytes as ordinary terminal input.
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_state = CsiState::Normal;
+                    }
+                }
+            }
+        }
+
+        self.ingest_display_bytes(&display);
+        replies
+    }
+
+    fn ingest_display_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         // Retain the (post-rewrite) stream, capped, so a resize can replay it at
         // the new width and reflow already-printed output (#169).
         self.raw.extend(bytes.iter().copied());
@@ -255,7 +353,7 @@ impl TermBuffer {
             self.sel_ranges.clear();
         }
         self.cap_raw();
-        self.feed_batched(&bytes);
+        self.feed_batched(bytes);
     }
 
     /// Feed a (already HVP-rewritten) byte slice to vt100 in newline-bounded
@@ -316,49 +414,6 @@ impl TermBuffer {
         self.sel_focus = None;
         self.sel_ranges.clear();
         self.feed_batched(&stream);
-    }
-
-    /// Translate every CSI sequence terminated by `f` (HVP) into the identical
-    /// sequence terminated by `H` (CUP).  The scanner state persists across
-    /// calls, so a sequence split across read chunks is still handled.  Only the
-    /// final byte of a CSI sequence is ever touched; text bytes pass through.
-    fn rewrite_hvp(&mut self, input: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(input.len());
-        for &b in input {
-            match self.csi_state {
-                CsiState::Normal => {
-                    if b == 0x1b {
-                        self.csi_state = CsiState::Esc;
-                    }
-                    out.push(b);
-                }
-                CsiState::Esc => {
-                    if b == b'[' {
-                        self.csi_state = CsiState::Csi;
-                    } else {
-                        // Not a CSI (could be another ESC, OSC, etc.).  Re-arm on
-                        // a fresh ESC, otherwise fall back to normal text.
-                        self.csi_state = if b == 0x1b {
-                            CsiState::Esc
-                        } else {
-                            CsiState::Normal
-                        };
-                    }
-                    out.push(b);
-                }
-                CsiState::Csi => {
-                    // Final bytes are 0x40..=0x7e; params/intermediates are
-                    // 0x20..=0x3f.  Rewrite an `f` final into `H`.
-                    if (0x40..=0x7e).contains(&b) {
-                        out.push(if b == b'f' { b'H' } else { b });
-                        self.csi_state = CsiState::Normal;
-                    } else {
-                        out.push(b);
-                    }
-                }
-            }
-        }
-        out
     }
 
     /// Process one bounded batch and capture any lines that scrolled off the top

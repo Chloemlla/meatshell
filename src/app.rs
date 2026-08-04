@@ -43,9 +43,11 @@ fn with_term_buf<R>(
     Some(f(&mut guard))
 }
 
-fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) {
+fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) -> Vec<u8> {
     if let Some(h) = term_buf(bufs, tab_id) {
-        h.lock().unwrap().ingest(chunk);
+        h.lock().unwrap().ingest(chunk)
+    } else {
+        Vec::new()
     }
 }
 
@@ -4470,6 +4472,7 @@ fn wire_session_callbacks(
                     view_offset: 0,
                     displayed_text: Vec::new(),
                     csi_state: CsiState::Normal,
+                    csi_pending: Vec::new(),
                     raw: std::collections::VecDeque::new(),
                 })),
             );
@@ -4598,6 +4601,7 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
             initial_rows,
         ),
     };
+    let terminal_reply_tx = handle.commands.clone();
     ctx.handles.borrow_mut().insert(tab_id.to_string(), handle);
 
     // Separate SFTP connection for the same session (SSH only). It waits for
@@ -4760,7 +4764,14 @@ fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
                     match evt {
                         SessionEvent::Output(chunk) => {
                             let chunk_len = chunk.len();
-                            ingest_terminal_output(&bufs_thread, &tab_id_pump, chunk.as_bytes());
+                            let reply = ingest_terminal_output(
+                                &bufs_thread,
+                                &tab_id_pump,
+                                chunk.as_bytes(),
+                            );
+                            if !reply.is_empty() {
+                                let _ = terminal_reply_tx.send(SessionCommand::RawInput(reply));
+                            }
                             remaining_output_bytes =
                                 remaining_output_bytes.saturating_sub(chunk_len);
                             dirty_since_request = true;
@@ -6659,7 +6670,7 @@ fn apply_session_event_to_window(
         SessionEvent::Output(chunk) => {
             // Synthetic Output (disconnect hint, editor error, …) — rare, already
             // on the UI thread. Live shell output is ingested on the pump thread.
-            ingest_terminal_output(bufs, tab_id, chunk.as_bytes());
+            let _ = ingest_terminal_output(bufs, tab_id, chunk.as_bytes());
             request_tab_render_from_ui(win.as_weak(), tab_id, bufs, gates);
         }
         SessionEvent::Connected => {
@@ -10637,6 +10648,7 @@ mod selection_tests {
             view_offset,
             displayed_text: Vec::new(),
             csi_state: CsiState::Normal,
+            csi_pending: Vec::new(),
             raw: std::collections::VecDeque::new(),
         }
     }
@@ -10661,14 +10673,40 @@ mod selection_tests {
     #[test]
     fn bash_readline_history_repaints_the_current_line() {
         let mut buffer = make_buf(4, 40, &[], &[], 0);
-        buffer.ingest(b"\x1b[?2004hP> echo second");
+        let _ = buffer.ingest(b"\x1b[?2004hP> echo second");
         // GNU readline replaces "second" with the shorter "first" using six
         // backspaces, DCH for the leftover cell, then the replacement suffix.
-        buffer.ingest(b"\x08\x08\x08\x08\x08\x08\x1b[1Pfirst");
+        let _ = buffer.ingest(b"\x08\x08\x08\x08\x08\x08\x1b[1Pfirst");
         buffer.render();
 
         assert_eq!(buffer.displayed_text[0], "P> echo first");
         assert_eq!(buffer.parser.screen().cursor_position(), (0, 13));
+    }
+
+    #[test]
+    fn terminal_queries_reply_at_the_current_cursor_position() {
+        let mut buffer = make_buf(4, 40, &[], &[], 0);
+
+        assert_eq!(buffer.ingest(b"abc\x1b[6n"), b"\x1b[1;4R");
+        assert_eq!(buffer.ingest(b"\x1b[?6n"), b"\x1b[?1;4R");
+        assert_eq!(
+            buffer.ingest(b"\x1b[5n\x1b[c\x1b[0c"),
+            b"\x1b[0n\x1b[?1;2c\x1b[?1;2c"
+        );
+        assert_eq!(buffer.raw.iter().copied().collect::<Vec<_>>(), b"abc");
+    }
+
+    #[test]
+    fn terminal_query_and_hvp_scanners_survive_split_output_chunks() {
+        let mut buffer = make_buf(4, 40, &[], &[], 0);
+
+        assert!(buffer.ingest(b"\x1b[").is_empty());
+        assert!(buffer.ingest(b"6").is_empty());
+        assert_eq!(buffer.ingest(b"n"), b"\x1b[1;1R");
+
+        assert!(buffer.ingest(b"\x1b[2;").is_empty());
+        assert!(buffer.ingest(b"3fX").is_empty());
+        assert_eq!(buffer.parser.screen().cursor_position(), (1, 3));
     }
 
     #[test]
@@ -10692,9 +10730,9 @@ mod selection_tests {
         buffer.sel_anchor = Some((0, 0));
         buffer.sel_focus = Some((1, 2));
 
-        buffer.ingest(b"\x1b[3");
+        let _ = buffer.ingest(b"\x1b[3");
         assert_eq!(buffer.history.len(), 2);
-        buffer.ingest(b"J");
+        let _ = buffer.ingest(b"J");
 
         assert!(buffer.history.is_empty());
         assert_eq!(buffer.view_offset, 0);

@@ -18,6 +18,7 @@ pub(crate) struct TermBuffer {
     pub(crate) view_offset: usize,
     pub(crate) displayed_text: Vec<String>,
     pub(crate) csi_state: CsiState,
+    pub(crate) csi_pending: Vec<u8>,
     pub(crate) raw: VecDeque<u8>,
 }
 
