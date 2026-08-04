@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复快速连接中重复的 system 分组和空白右键菜单（#324）。** 内置 `system` 与隐式 `default` 现在统一视为保留分组，不再出现在服务器的“移动到”目标中，也无法通过新建、重命名、编辑或导入写入；新建或重命名为已有分组时会保留弹窗并提示“分组已存在”。升级时会自动把旧版本误放进 `system` 的服务器迁回 `default`。内置终端行改用显式标记识别，普通服务器不会再因组名碰撞而隐藏右键操作。
+- **Fix duplicate system groups and empty context menus in Quick Connect (#324).** The built-in `system` and implicit `default` groups are now reserved across move, create, rename, edit, and import paths. Creating or renaming to an existing group keeps the dialog open and reports that the group already exists. Existing servers accidentally filed under `system` are migrated back to `default`, while explicit built-in-row markers prevent ordinary servers from losing their context-menu actions due to a group-name collision.
+
 - **回复终端状态与设备属性查询（#328）。** 远端程序发送 DSR 状态/光标位置查询或 DA1 主设备属性查询时，MeatShell 现在会立即向 PTY 返回对应的状态、CPR 光标坐标或保守的 VT100 能力标识；查询序列即使被拆分到多个 SSH 输出块也能正确识别，依赖终端握手的交互式程序不再等待超时或卡死。
 - **Respond to terminal status and device-attribute queries (#328).** MeatShell now immediately returns status, CPR cursor coordinates, or a conservative VT100 identity when remote programs issue DSR or primary DA1 queries. Split query sequences are recognized across SSH output chunks, preventing interactive applications that rely on terminal handshakes from timing out or hanging.
 
