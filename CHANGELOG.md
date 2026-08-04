@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复内置编辑器打开大文件时崩溃，并调整历史命令排序（#331）。** 内置查看/编辑现在采用有界读取，并在文件超过 512 KB、行数过多或存在超长单行时安全拒绝并引导使用外部打开/编辑；历史命令弹窗改为从新到旧显示，同时保留输入框 ↑/↓ 的原有回溯顺序。
+- **Prevent large-file editor crashes and reorder command history (#331).** Built-in viewing/editing now uses bounded reads and safely redirects files over 512 KB, excessive line counts, or exceptionally long lines to external tools. The history popup now lists newest commands first while preserving the input field's existing ↑/↓ recall order.
+
 - **修复 zsh 中 Home 和 End 按键无效（#329）。** 远端 shell 启用应用光标模式时，Home/End 现在会像方向键一样改用对应的 SS3 控制序列，恢复 oh-my-zsh/ZLE 中的行首和行尾移动。
 - **Fix Home and End keys in zsh (#329).** When the remote shell enables application cursor mode, Home/End now use their corresponding SS3 sequences like the arrow keys, restoring beginning/end-of-line movement in oh-my-zsh/ZLE.
 
