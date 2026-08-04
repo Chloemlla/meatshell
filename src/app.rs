@@ -1712,7 +1712,11 @@ pub fn run() -> Result<()> {
         let panes_model = panes_model.clone();
         let splitters_model = splitters_model.clone();
         window.on_content_resized(move |w: f32, h: f32| {
-            content_size.set((w, h));
+            let next = (w.max(1.0), h.max(1.0));
+            if content_size.get() == next {
+                return;
+            }
+            content_size.set(next);
             if let Some(win) = weak.upgrade() {
                 refresh_panes(
                     &win,
@@ -1743,22 +1747,30 @@ pub fn run() -> Result<()> {
             }
             {
                 let mut lay = layout.borrow_mut();
-                if v {
-                    lay.remove_tab("welcome");
-                } else if lay.leaf_of_tab("welcome").is_none() {
-                    lay.add_tab("welcome".into());
+                update_welcome_tab(&mut lay, v);
+            }
+            // Switching the property destroys the sidebar Welcome component and
+            // creates the tabbed one (or vice versa). Rebuild the pane model on
+            // the next event-loop turn so Slint never mutates that component tree
+            // recursively from inside the Switch callback (#323).
+            let weak = weak.clone();
+            let layout = layout.clone();
+            let content_size = content_size.clone();
+            let tabs_model = tabs_model.clone();
+            let panes_model = panes_model.clone();
+            let splitters_model = splitters_model.clone();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Some(w) = weak.upgrade() {
+                    refresh_panes(
+                        &w,
+                        &layout.borrow(),
+                        content_size.get(),
+                        &tabs_model,
+                        &panes_model,
+                        &splitters_model,
+                    );
                 }
-            }
-            if let Some(w) = weak.upgrade() {
-                refresh_panes(
-                    &w,
-                    &layout.borrow(),
-                    content_size.get(),
-                    &tabs_model,
-                    &panes_model,
-                    &splitters_model,
-                );
-            }
+            });
         });
     }
     // Per-session SFTP state: collapse + sizes live in each tab's TerminalState so
@@ -7441,6 +7453,48 @@ fn update_terminal_row(
     }
 }
 
+fn update_welcome_tab(layout: &mut crate::layout::Layout, as_sidebar: bool) {
+    if as_sidebar {
+        layout.remove_tab("welcome");
+    } else if layout.leaf_of_tab("welcome").is_none() {
+        layout.add_tab("welcome".into());
+    }
+}
+
+#[cfg(test)]
+mod welcome_sidebar_tests {
+    use super::update_welcome_tab;
+    use crate::layout::Layout;
+
+    #[test]
+    fn welcome_tab_can_toggle_from_an_empty_layout_without_duplicates() {
+        let mut layout = Layout::new(Vec::new(), String::new());
+
+        update_welcome_tab(&mut layout, false);
+        update_welcome_tab(&mut layout, false);
+        let pane = &layout.flatten(0.0, 0.0, 800.0, 600.0).0[0];
+        assert_eq!(pane.tabs, ["welcome"]);
+        assert_eq!(pane.active, "welcome");
+
+        update_welcome_tab(&mut layout, true);
+        update_welcome_tab(&mut layout, true);
+        assert!(layout.leaf_of_tab("welcome").is_none());
+    }
+
+    #[test]
+    fn hiding_welcome_preserves_open_session_tabs() {
+        let mut layout = Layout::new(
+            vec!["welcome".into(), "session-1".into()],
+            "welcome".into(),
+        );
+
+        update_welcome_tab(&mut layout, true);
+        let pane = &layout.flatten(0.0, 0.0, 800.0, 600.0).0[0];
+        assert_eq!(pane.tabs, ["session-1"]);
+        assert_eq!(pane.active, "session-1");
+    }
+}
+
 fn refresh_panes(
     window: &AppWindow,
     layout: &crate::layout::Layout,
@@ -7495,8 +7549,20 @@ fn refresh_panes(
             if let Some(old) = panes_model.row_data(i) {
                 // Reuse the existing tab sub-model when the tabs are unchanged so a
                 // geometry-only refresh doesn't churn the tab strips.
-                if old.id == r.id && tabs_eq(&old.tabs, &r.tabs) {
+                let same_tabs = old.id == r.id && tabs_eq(&old.tabs, &r.tabs);
+                let unchanged = same_tabs
+                    && old.x == r.x
+                    && old.y == r.y
+                    && old.w == r.w
+                    && old.h == r.h
+                    && old.active_id == r.active_id
+                    && old.focused == r.focused
+                    && old.reserve_right == r.reserve_right;
+                if same_tabs {
                     r.tabs = old.tabs;
+                }
+                if unchanged {
+                    continue;
                 }
             }
             panes_model.set_row_data(i, r);
@@ -7518,7 +7584,17 @@ fn refresh_panes(
         .collect();
     if splitters_model.row_count() == split_infos.len() {
         for (i, r) in split_infos.into_iter().enumerate() {
-            splitters_model.set_row_data(i, r);
+            let unchanged = splitters_model.row_data(i).is_some_and(|old| {
+                old.split_id == r.split_id
+                    && old.x == r.x
+                    && old.y == r.y
+                    && old.w == r.w
+                    && old.h == r.h
+                    && old.vertical == r.vertical
+            });
+            if !unchanged {
+                splitters_model.set_row_data(i, r);
+            }
         }
     } else {
         splitters_model.set_vec(split_infos);
