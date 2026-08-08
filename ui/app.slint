@@ -1175,11 +1175,15 @@ export component AppWindow inherits Window {
         height: parent.height
             - (!parent.welcome-horizontal ? parent.welcome-taken : 0px)
             - parent.quick-top - parent.quick-bottom;
-        // Sidebar extent along its docked axis. When collapsed it shrinks to the
-        // 36px ToolStrip icon bar (M5) instead of 0 + a floating button; the 4px
-        // splitter is gone while collapsed.
-        property <length> sb-w: root.sidebar-collapsed ? 36px : root.sidebar-width;
-        property <length> sb-h: root.sidebar-collapsed ? 36px : root.sidebar-height;
+        // A shared ToolStrip is already reserved outside `rest` while the
+        // welcome panel is expanded, or by the merged welcome strip while both
+        // panels are collapsed. Do not reserve the same 36px a second time.
+        property <length> sb-w: dock-area.sidebar-strip-outside
+                || dock-area.combine-collapsed-tools ? 0px
+            : root.sidebar-collapsed ? 36px : root.sidebar-width;
+        property <length> sb-h: dock-area.sidebar-strip-outside
+                || dock-area.combine-collapsed-tools ? 0px
+            : root.sidebar-collapsed ? 36px : root.sidebar-height;
         property <length> sp: root.sidebar-collapsed ? 0px : 4px;
         // The collapsed bar (sb-h) already reserves the bottom strip now.
         property <length> bottom-strip-h: 0px;
