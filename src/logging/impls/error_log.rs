@@ -12,20 +12,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use super::writer::{CappedFile, CappedWriter, Guard};
 
 /// `<log_dir>/error.log`, in its own `log/` folder beside the exe.
 pub fn path() -> Option<PathBuf> {
     let dir = crate::config::log_dir();
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join("error.log"))
-}
-
-/// One log file capped at `cap` bytes (truncate-and-restart when full).
-pub struct CappedFile {
-    path: PathBuf,
-    file: File,
-    written: u64,
-    cap: u64,
 }
 
 impl CappedFile {
@@ -57,10 +50,6 @@ impl Write for CappedFile {
     }
 }
 
-/// `MakeWriter` over a shared [`CappedFile`] so a tracing fmt layer can use it.
-#[derive(Clone)]
-pub struct CappedWriter(Arc<Mutex<CappedFile>>);
-
 impl CappedWriter {
     pub fn new(cf: CappedFile) -> Self {
         Self(Arc::new(Mutex::new(cf)))
@@ -73,8 +62,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CappedWriter {
         Guard(self.0.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
-
-pub struct Guard<'a>(std::sync::MutexGuard<'a, CappedFile>);
 
 impl Write for Guard<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {

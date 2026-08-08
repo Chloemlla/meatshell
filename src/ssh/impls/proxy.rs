@@ -18,35 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::config::Secret;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ProxyKind {
-    Socks5,
-    Http,
-}
-
-#[derive(Clone)]
-pub struct ProxyConfig {
-    kind: ProxyKind,
-    host: String,
-    port: u16,
-    // (user, password). The password is wrapped in `Secret` so it is zeroed on
-    // drop and never printed; see the manual `Debug` below for the user part.
-    auth: Option<(String, Secret)>,
-}
-
-// Manual `Debug` so proxy credentials can never leak via `{:?}` / tracing
-// (issue #32). Host/port/kind stay visible for diagnostics; auth is redacted.
-impl std::fmt::Debug for ProxyConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProxyConfig")
-            .field("kind", &self.kind)
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("auth", &self.auth.as_ref().map(|_| "[redacted]"))
-            .finish()
-    }
-}
+use super::structs::{ProxyConfig, ProxyKind};
 
 /// Resolve the proxy for a session: the explicit `session_proxy` string if set,
 /// otherwise the `ALL_PROXY` / `all_proxy` environment variable.  Returns `None`

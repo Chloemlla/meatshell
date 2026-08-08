@@ -3,6 +3,13 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::ui::TermSpan;
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CtrlKeySide {
+    Left,
+    Right,
+}
+
 /// Per-terminal state used by normal and alternate-screen rendering.
 pub(crate) struct TermBuffer {
     pub(crate) parser: vt100::Parser,

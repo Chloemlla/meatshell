@@ -16,17 +16,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use ssh_key::{HashAlg, PublicKey};
-
-/// Result of checking a server key against the store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostKeyStatus {
-    /// No entry for this host:port — first time we've seen it.
-    Unknown,
-    /// Stored key matches the presented one — trusted.
-    Match,
-    /// A key is stored for this host:port but it differs (possible MITM).
-    Changed,
-}
+use super::structs::HostKeyStatus;
 
 /// `host:port` lookup key.
 fn id(host: &str, port: u16) -> String {

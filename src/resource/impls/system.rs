@@ -7,32 +7,8 @@ use std::time::Duration;
 
 use sysinfo::{Disks, Networks, System};
 
-/// Snapshot passed to the UI each tick.
-#[derive(Debug, Clone, Default)]
-pub struct SystemSnapshot {
-    pub cpu_percent: f32,
-    pub mem_percent: f32,
-    pub swap_percent: f32,
-    pub mem_used_mib: u64,
-    pub mem_total_mib: u64,
-    pub swap_used_mib: u64,
-    pub swap_total_mib: u64,
-    pub net_bytes_per_sec: u64,
-    pub net_rx_per_sec: u64,
-    pub net_tx_per_sec: u64,
-    /// Per-filesystem (mount, available_bytes, total_bytes).
-    pub disks: Vec<(String, u64, u64)>,
-}
+use super::system_types::{SystemSampler, SystemSnapshot};
 
-/// Stateful sampler. Construct once per process and poll via [`Self::sample`].
-pub struct SystemSampler {
-    sys: System,
-    nets: Networks,
-    disks: Disks,
-    last_rx_total: u64,
-    last_tx_total: u64,
-    last_instant: std::time::Instant,
-}
 
 impl SystemSampler {
     pub fn new() -> Self {

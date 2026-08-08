@@ -1,4 +1,4 @@
-use super::types::WebDavAcceptAnyCertVerifier;
+use super::verifier::WebDavAcceptAnyCertVerifier;
 
 impl ureq::rustls::client::danger::ServerCertVerifier for WebDavAcceptAnyCertVerifier {
     fn verify_server_cert(

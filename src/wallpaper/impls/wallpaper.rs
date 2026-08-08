@@ -10,6 +10,8 @@
 
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
+use super::wallpaper_types::{Palette, Wallpaper};
+
 /// Render size for the built-in wallpapers. `image-fit: cover` in the UI scales
 /// this up to the window, so a fixed, generous size stays crisp without any
 /// re-render on resize.
@@ -20,22 +22,6 @@ const H: u32 = 1000;
 /// a whole 6000px texture in GPU memory.
 const MAX_EDGE: u32 = 2560;
 
-/// Colours derived from a wallpaper, pushed into the Theme global so panels,
-/// accent and backgrounds harmonise with the image.
-#[derive(Clone, Copy, Debug)]
-pub struct Palette {
-    /// Wallpaper is dark overall → use the dark base palette.
-    pub is_dark: bool,
-    /// Vivid accent colour sharing the wallpaper's dominant hue.
-    pub accent: (u8, u8, u8),
-    /// Average colour, used to subtly tint panel/background surfaces.
-    pub tint: (u8, u8, u8),
-}
-
-pub struct Wallpaper {
-    pub image: Image,
-    pub palette: Palette,
-}
 
 /// Resolve a stored wallpaper id into an image + palette.
 ///

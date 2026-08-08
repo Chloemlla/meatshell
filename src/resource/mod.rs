@@ -1,8 +1,9 @@
 #[path = "impls/system.rs"]
 pub(crate) mod system;
-#[path = "struct/types.rs"]
-mod types;
+#[path = "struct/system.rs"]
+mod system_types;
 
-pub(crate) use types::{
-    LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
+pub(crate) use system_types::{
+    LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, SystemSampler, SystemSnapshot, TabStatus,
+    TabStatuses,
 };

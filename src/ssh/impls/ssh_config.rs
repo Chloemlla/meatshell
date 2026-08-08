@@ -6,16 +6,7 @@
 //! convenience importer, not a full ssh_config implementation.
 
 use std::path::{Path, PathBuf};
-
-/// One importable host parsed from `~/.ssh/config`.
-#[derive(Debug, Clone)]
-pub struct ImportedHost {
-    pub alias: String,
-    pub hostname: String,
-    pub user: String,
-    pub port: u16,
-    pub identity_file: String,
-}
+use super::structs::ImportedHost;
 
 /// Parse the user's `~/.ssh/config` (returns empty if it doesn't exist).
 pub fn parse_default() -> Vec<ImportedHost> {
