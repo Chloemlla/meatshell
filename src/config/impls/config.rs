@@ -841,7 +841,7 @@ pub(crate) fn is_reserved_session_group(name: &str) -> bool {
     name.eq_ignore_ascii_case("default") || name.eq_ignore_ascii_case("system")
 }
 
-/// Repair configurations created before #324, when the Move-to menu exposed
+/// Repair configurations created before #316/#324, when the Move-to menu exposed
 /// the built-in `system` group as a destination for saved server sessions.
 fn normalize_reserved_session_groups(cfg: &mut ConfigFile) -> bool {
     let old_group_count = cfg.groups.len();
@@ -986,7 +986,7 @@ impl ConfigStore {
                     dedup_keep_last(&mut cfg.command_history);
                     // `system` and `default` are display-only group names. Older
                     // builds allowed moving saved servers into `system`, creating
-                    // a duplicate empty-menu folder (#324).
+                    // a duplicate empty-menu folder (#316, #324).
                     migrated |= normalize_reserved_session_groups(&mut cfg);
                     // One-time push of the new default layout to existing users
                     // (only for items they never changed). (#new-user-defaults)
@@ -2111,9 +2111,10 @@ mod tests {
     }
 
     #[test]
-    fn reserved_session_groups_are_repaired_and_rejected() {
+    fn issue_316_reserved_system_groups_are_repaired_and_rejected() {
         let mut system_session = sample_session("misfiled");
         system_session.group = "system".into();
+        system_session.password = Secret::default();
         let mut default_session = sample_session("legacy-default");
         default_session.group = "Default".into();
         let mut cfg = ConfigFile {
@@ -2126,6 +2127,7 @@ mod tests {
         assert!(normalize_reserved_session_groups(&mut cfg));
         assert_eq!(cfg.groups, ["prod"]);
         assert!(cfg.sessions.iter().all(|session| session.group.is_empty()));
+        assert!(cfg.sessions[0].password.is_empty());
         // The built-in system folder's collapse preference is display state,
         // not a user-created group, so normalization must preserve it.
         assert_eq!(
