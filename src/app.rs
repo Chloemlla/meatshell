@@ -57,9 +57,27 @@ const PACED_QUEUE_EVENT_LIMIT: usize = 256;
 
 /// Max UI renders per second for a tab under sustained output (#209).
 const RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+/// A scrolled-back viewport is content-anchored, so sustained output only
+/// needs occasional model refreshes for its scrollbar metadata (#306).
+const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(100);
 
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     bufs.lock().unwrap().get(tab_id).cloned()
+}
+
+fn tab_render_interval(bufs: &TermBuffers, tab_id: &str) -> std::time::Duration {
+    let Some(handle) = term_buf(bufs, tab_id) else {
+        return RENDER_MIN_INTERVAL;
+    };
+    let interval = match handle.try_lock() {
+        Ok(buf) if buf.view_offset > 0 => SCROLLED_RENDER_MIN_INTERVAL,
+        Ok(_) => RENDER_MIN_INTERVAL,
+        // A busy ingest lock is itself a firehose signal. Deferring this
+        // snapshot prevents the UI thread from joining the contention.
+        Err(_) => SCROLLED_RENDER_MIN_INTERVAL,
+    };
+    interval
 }
 
 fn with_term_buf<R>(
@@ -128,7 +146,9 @@ use crate::resource::{
 };
 use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
-use crate::sftp::{spawn_sftp, SftpHandles, SftpLastCwd};
+use crate::sftp::{
+    download_target_path, spawn_sftp, DownloadConflict, SftpHandles, SftpLastCwd,
+};
 use crate::ssh::{
     format_mtime, format_size, spawn_session, test_session_auth, ProcInfo, SessionCommand,
     SessionEvent, SessionHandle, SystemDetails,
@@ -262,7 +282,7 @@ fn run_coalesced_tab_render(
     bufs: &TermBuffers,
     gate: Arc<TabRenderGate>,
 ) {
-    let delay = gate.flush_delay(RENDER_MIN_INTERVAL);
+    let delay = gate.flush_delay(tab_render_interval(bufs, tab_id));
 
     let weak2 = weak.clone();
     let tid = tab_id.to_string();

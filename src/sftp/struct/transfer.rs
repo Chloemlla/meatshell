@@ -22,7 +22,11 @@ pub enum SftpCommand {
     /// Toggle a directory node in the tree (expand if collapsed, collapse if expanded).
     ToggleTreeNode(String),
     /// Download a remote file to a local directory.
-    Download { remote: String, local_dir: String },
+    Download {
+        remote: String,
+        local_dir: String,
+        conflict: DownloadConflict,
+    },
     /// Multi-select download (#100): tar the named entries under `remote_dir`
     /// into one archive on the remote, download it, then delete the temp.
     DownloadArchive {
@@ -65,6 +69,12 @@ pub enum SftpCommand {
     WriteText { remote: String, content: String },
     /// Gracefully shut down the SFTP worker.
     Close,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadConflict {
+    Replace,
+    KeepBoth,
 }
 
 /// Handle retained by the UI to drive a running SFTP worker.

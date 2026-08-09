@@ -513,6 +513,15 @@ impl TermBuffer {
             while self.history.len() > MAX_HISTORY {
                 self.history.pop_front();
             }
+            // `view_offset` is measured backwards from the live bottom.  If
+            // output scrolls while the user is reading history, keeping the
+            // same offset would move their viewport forward by `k` rows. Move
+            // the offset back by the number of newly captured rows instead so
+            // the content under the scrollbar stays anchored (#306). At the
+            // live bottom (`0`) output-following remains unchanged.
+            if self.view_offset > 0 && k > 0 {
+                self.view_offset = self.view_offset.saturating_add(k).min(self.history.len());
+            }
         }
         self.prev = curr;
     }

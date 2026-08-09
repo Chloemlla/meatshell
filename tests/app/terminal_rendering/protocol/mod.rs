@@ -74,3 +74,21 @@ fn csi_3j_clears_meatshell_scrollback_even_when_split() {
     assert!(buffer.sel_anchor.is_none());
     assert!(buffer.sel_focus.is_none());
 }
+
+#[test]
+fn incoming_output_keeps_a_scrolled_view_anchored() {
+    let mut buffer = make_buf(3, 20, &[], &[], 0);
+    let _ = buffer.ingest(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
+    assert!(!buffer.history.is_empty());
+
+    buffer.view_offset = 1;
+    buffer.render();
+    let before = buffer.displayed_text.clone();
+    let old_offset = buffer.view_offset;
+
+    let _ = buffer.ingest(b"\r\nseven");
+    buffer.render();
+
+    assert_eq!(buffer.view_offset, old_offset + 1);
+    assert_eq!(buffer.displayed_text, before);
+}

@@ -33,7 +33,7 @@ use crate::config::{AuthMethod, Session};
 use crate::i18n::t;
 use crate::ssh::{format_mtime, format_size, RemoteEntry, RemoteTreeNode, SessionEvent};
 
-use super::transfer::{SftpCommand, SftpHandle};
+use super::transfer::{DownloadConflict, SftpCommand, SftpHandle};
 
 impl SftpHandle {
     pub fn list_dir(&self, path: String) {
@@ -42,10 +42,12 @@ impl SftpHandle {
     pub fn refresh_dir(&self, path: String) {
         let _ = self.commands.send(SftpCommand::RefreshDir(path));
     }
-    pub fn download(&self, remote: String, local_dir: String) {
-        let _ = self
-            .commands
-            .send(SftpCommand::Download { remote, local_dir });
+    pub fn download(&self, remote: String, local_dir: String, conflict: DownloadConflict) {
+        let _ = self.commands.send(SftpCommand::Download {
+            remote,
+            local_dir,
+            conflict,
+        });
     }
     pub fn download_archive(&self, remote_dir: String, names: Vec<String>, local_dir: String) {
         let _ = self.commands.send(SftpCommand::DownloadArchive {
@@ -588,7 +590,11 @@ async fn run_sftp(
                 let _ = events.send(SessionEvent::SftpTreeUpdate(nodes));
             }
 
-            SftpCommand::Download { remote, local_dir } => {
+            SftpCommand::Download {
+                remote,
+                local_dir,
+                conflict,
+            } => {
                 // Run on its own task so the command loop stays free to list /
                 // switch directories during the transfer (#116-2).
                 let sftp = sftp.clone();
@@ -653,8 +659,12 @@ async fn run_sftp(
                         // name with traversal, shell-special chars or a Windows reserved
                         // device name to write outside the chosen dir or hit a device.
                         let filename = sanitize_filename(&base_name(&remote));
-                        let local_path =
-                            format!("{}/{}", local_dir.trim_end_matches('/'), filename);
+                        let requested = download_target_path(&remote, &local_dir);
+                        let local_path = match conflict {
+                            DownloadConflict::Replace => requested,
+                            DownloadConflict::KeepBoth => available_download_path(&requested),
+                        };
+                        let local_path_text = local_path.to_string_lossy().to_string();
                         let id = file_id.clone();
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{} {}...",
@@ -664,7 +674,7 @@ async fn run_sftp(
                         match download_impl(
                             &handle,
                             &remote,
-                            &local_path,
+                            &local_path_text,
                             &filename,
                             &id,
                             &events,
@@ -1554,6 +1564,33 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
+pub(crate) fn download_target_path(remote: &str, local_dir: &str) -> PathBuf {
+    Path::new(local_dir).join(sanitize_filename(&base_name(remote)))
+}
+
+fn available_download_path(requested: &Path) -> PathBuf {
+    if !requested.exists() {
+        return requested.to_path_buf();
+    }
+    let parent = requested.parent().unwrap_or_else(|| Path::new(""));
+    let stem = requested
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
+    let extension = requested.extension().and_then(|value| value.to_str());
+    for suffix in 1usize.. {
+        let name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem} ({suffix}).{extension}"),
+            _ => format!("{stem} ({suffix})"),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("an unused download filename suffix must exist")
+}
+
 /// Watch a downloaded temp file and re-upload it to the remote whenever it
 /// changes on disk (the "edit" flow).  Re-upload is routed back through the
 /// worker's own command channel.  Stops when the channel closes or after a
@@ -2220,7 +2257,8 @@ const _: fn() = || {
 #[cfg(test)]
 mod sanitize_tests {
     use super::{
-        sanitize_filename, validate_editor_text, EditorTextRejection,
+        available_download_path, download_target_path, sanitize_filename, validate_editor_text,
+        EditorTextRejection,
         MAX_BUILTIN_EDITOR_BYTES, MAX_BUILTIN_EDITOR_LINES, MAX_BUILTIN_EDITOR_LINE_BYTES,
     };
 
@@ -2277,6 +2315,19 @@ mod sanitize_tests {
         assert_eq!(sanitize_filename(""), "file");
         assert_eq!(sanitize_filename("   "), "file");
         assert_eq!(sanitize_filename("..."), "file");
+    }
+
+    #[test]
+    fn keep_both_uses_the_first_available_numbered_name() {
+        let dir = std::env::temp_dir().join(format!("meatshell-download-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let requested = download_target_path("/remote/report.txt", dir.to_str().unwrap());
+        std::fs::write(&requested, b"old").unwrap();
+        std::fs::write(dir.join("report (1).txt"), b"older").unwrap();
+
+        assert_eq!(available_download_path(&requested), dir.join("report (2).txt"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
