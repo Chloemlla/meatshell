@@ -60,6 +60,10 @@ export global Theme {
     // Settings dialog: 20% less transparent than the other panels so its dense
     // grey labels stay legible even at a low wallpaper overlay (user request).
     out property <brush> bg-panel-strong: frost(base-bg-panel, min(1.0, root.panel-alpha + 0.20));
+    // Menus, editors and modal cards must stay readable independently of the
+    // wallpaper transparency selected for ordinary application panels (#287).
+    out property <brush> popup-bg: base-bg-panel;
+    out property <brush> popup-bg-alt: base-bg-panel-alt;
 
     // Active terminal tab: with wallpaper, pull from the image's average colour
     // so the strip feels immersed; without wallpaper, make the active tab one

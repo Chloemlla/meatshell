@@ -84,7 +84,10 @@ export component SftpPanel inherits Rectangle {
     // When narrow, drop Size then Modified the moment keeping them would squeeze
     // the Name column below `name-min` (names start eliding to "…"). Reserved
     // widths: checkbox+padding+spacing 36px, Size col 76px, Modified 120px.
-    property <length> list-w: root.show-tree ? root.width - 161px : root.width;
+    in-out property <length> tree-width: 160px;
+    callback persist-tree-width(length);
+    property <bool> tree-resizing: false;
+    property <length> list-w: root.show-tree ? root.width - root.tree-width - 5px : root.width;
     property <length> name-min: 180px;     // narrower than this → start dropping columns
     property <bool> show-size-col: root.show-tree || (root.list-w - 36px - 76px - 120px > root.name-min);
     property <bool> show-modified-col: root.show-tree || (root.list-w - 36px - 120px > root.name-min);
@@ -357,7 +360,7 @@ export component SftpPanel inherits Rectangle {
                         width: 124px;
                         height: 2 * 27px + 8px;
                         Rectangle {
-                            background: Theme.bg-panel;
+                            background: Theme.popup-bg;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
                             border-color: Theme.border-strong;
@@ -405,7 +408,7 @@ export component SftpPanel inherits Rectangle {
                         width: 142px;
                         height: 4 * 27px + 8px;
                         Rectangle {
-                            background: Theme.bg-panel;
+                            background: Theme.popup-bg;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
                             border-color: Theme.border-strong;
@@ -536,7 +539,7 @@ export component SftpPanel inherits Rectangle {
 
             // ── Left: directory tree (hidden when the panel is narrow) ──────
             if root.show-tree : VerticalLayout {
-                width: 160px;
+                width: root.tree-width;
                 spacing: 0;
 
                 // Tree header
@@ -610,8 +613,31 @@ export component SftpPanel inherits Rectangle {
                 }
             }
 
-            // Vertical separator (only when the tree is shown)
-            if root.show-tree : Rectangle { width: 1px; background: Theme.border-subtle; }
+            // Draggable directory-tree divider (#287).
+            if root.show-tree : Rectangle {
+                width: 5px;
+                background: tree-split.pressed ? Theme.accent : Theme.border-subtle;
+                tree-split := TouchArea {
+                    x: -3px;
+                    width: parent.width + 6px;
+                    mouse-cursor: ew-resize;
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            root.tree-resizing = true;
+                        } else if (ev.kind == PointerEventKind.up) {
+                            root.tree-resizing = false;
+                            root.persist-tree-width(root.tree-width);
+                        }
+                    }
+                    moved => {
+                        if (root.tree-resizing) {
+                            root.tree-width = clamp(
+                                self.absolute-position.x + self.mouse-x - root.absolute-position.x,
+                                120px, min(420px, root.width - 220px));
+                        }
+                    }
+                }
+            }
 
             // ── Right: file listing ─────────────────────────────────────────
             VerticalLayout {
@@ -816,7 +842,7 @@ export component SftpPanel inherits Rectangle {
                         width: 148px;
                         height: max(1, root.transfer-targets.length) * 27px + 8px;
                         Rectangle {
-                            background: Theme.bg-panel;
+                            background: Theme.popup-bg;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
                             border-color: Theme.border-strong;
@@ -848,7 +874,7 @@ export component SftpPanel inherits Rectangle {
                         width: 148px;
                         height: 14 * 27px + 8px;
                         Rectangle {
-                            background: Theme.bg-panel;
+                            background: Theme.popup-bg;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
                             border-color: Theme.border-strong;

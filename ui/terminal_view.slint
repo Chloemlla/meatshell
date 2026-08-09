@@ -275,10 +275,12 @@ export component TerminalView inherits Rectangle {
     in property <length> sftp-panel-height: 220px;
     in property <length> sftp-panel-width: 380px;     // extent when docked left/right
     in property <length> sftp-saved-height: 220px;    // height to restore on un-collapse
+    in property <length> sftp-tree-width: 160px;
     in property <bool>   sftp-collapsed: false;       // SFTP panel minimised (toolbar only)
     callback set-sftp-panel-height(length);
     callback set-sftp-panel-width(length);
     callback set-sftp-saved-height(length);
+    callback persist-sftp-tree-width(length);
     callback set-sftp-collapsed(bool);
 
     // --- SFTP docking (within the terminal area) ---------------------------
@@ -371,6 +373,7 @@ export component TerminalView inherits Rectangle {
     callback select-start(int, int, bool, bool); // row, col, ctrl, shift
     callback select-update(int, int);       // extend drag-selection to (row, col)
     callback select-end();                  // finish selection → copy to clipboard
+    callback select-word(int, int);         // double-click word → select + copy (#287)
     callback select-autoscroll(int);        // auto-scroll while dragging past edge (dir: -1 up / +1 down)
 
     // Right-click context-menu anchor + find-bar visibility (private UI state).
@@ -669,6 +672,11 @@ export component TerminalView inherits Rectangle {
                                     }
                                 }
                             }
+                            double-clicked => {
+                                root.select-word(
+                                    floor(self.mouse-y / root.cell-h),
+                                    floor(self.mouse-x / root.cell-w));
+                            }
                             moved => {
                                 if (root.selecting) {
                                     // Position of the cursor within the *visible*
@@ -830,6 +838,11 @@ export component TerminalView inherits Rectangle {
                                     }
                                 }
                             }
+                            double-clicked => {
+                                root.select-word(
+                                    floor(self.mouse-y / root.cell-h),
+                                    floor(self.mouse-x / root.cell-w));
+                            }
                             moved => {
                                 if (root.selecting) {
                                     root.select-update(
@@ -867,7 +880,7 @@ export component TerminalView inherits Rectangle {
                             width: 132px;
                             height: 132px;
                             Rectangle {
-                                background: Theme.bg-panel;
+                                background: Theme.popup-bg;
                                 border-radius: Theme.radius-sm;
                                 border-width: 1px;
                                 border-color: Theme.border-strong;
@@ -1052,7 +1065,7 @@ export component TerminalView inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: 34px;
-                background: Theme.bg-panel;
+                background: Theme.popup-bg;
                 border-width: 1px;
                 border-color: Theme.border-strong;
                 border-radius: Theme.radius-sm;
@@ -1323,7 +1336,7 @@ export component TerminalView inherits Rectangle {
                 width: 420px;
                 height: min(320px, qc-col.preferred-height + 8px);
                 y: -self.height - 2px;
-                background: Theme.bg-panel;
+                background: Theme.popup-bg;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
                 border-color: Theme.border-strong;
@@ -1382,7 +1395,7 @@ export component TerminalView inherits Rectangle {
                                     x: gmx; y: gmy; width: 150px;
                                     height: (q.orig-index == -1 ? 3 : 2) * 30px + 9px;
                                     Rectangle {
-                                        background: Theme.bg-panel; border-radius: Theme.radius-sm;
+                                        background: Theme.popup-bg; border-radius: Theme.radius-sm;
                                         border-width: 1px; border-color: Theme.border-strong;
                                         drop-shadow-blur: 10px; drop-shadow-color: #00000050;
                                         VerticalLayout {
@@ -1451,7 +1464,7 @@ export component TerminalView inherits Rectangle {
                                     x: ctx-x; y: ctx-y; width: 160px;
                                     height: qpop-ctx-vl.preferred-height;
                                     Rectangle {
-                                        background: Theme.bg-panel; border-radius: Theme.radius-sm;
+                                        background: Theme.popup-bg; border-radius: Theme.radius-sm;
                                         border-width: 1px; border-color: Theme.border-strong;
                                         drop-shadow-blur: 10px; drop-shadow-color: #00000050;
                                         qpop-ctx-vl := VerticalLayout {
@@ -1552,7 +1565,7 @@ export component TerminalView inherits Rectangle {
                 width: 300px;
                 height: min(296px, 46px + max(28px, min(228px, h-col.preferred-height + 8px)));
                 y: -self.height - 2px;
-                background: Theme.bg-panel;
+                background: Theme.popup-bg;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
                 border-color: Theme.border-strong;
@@ -1786,6 +1799,8 @@ export component TerminalView inherits Rectangle {
             width:  root.sftp-horizontal ? parent.sf-w : parent.width;
             height: root.sftp-horizontal ? parent.height : parent.sf-h;
             show-tree: !root.sftp-horizontal;   // hide the tree when narrow (vertical)
+            tree-width: root.sftp-tree-width;
+            persist-tree-width(width) => { root.persist-sftp-tree-width(width); }
             compact: root.sftp-collapsed && root.sftp-horizontal;  // clean strip when side+collapsed
             dock-drag-move(ax, ay) => {
                 root.sftp-panel-dragging = true;

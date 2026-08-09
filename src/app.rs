@@ -9,12 +9,12 @@ mod auth_dialogs;
 mod port_forward;
 mod quick_commands;
 mod resource_ui;
-mod session_runtime;
 mod session_event;
 mod session_models;
-mod sidebar;
+mod session_runtime;
 mod sftp_callbacks;
 mod sftp_ui;
+mod sidebar;
 mod tab_callbacks;
 mod terminal_ui;
 mod webdav;
@@ -24,12 +24,12 @@ use self::auth_dialogs::*;
 use self::port_forward::*;
 use self::quick_commands::*;
 use self::resource_ui::*;
-use self::session_runtime::*;
 use self::session_event::*;
 use self::session_models::*;
-use self::sidebar::*;
+use self::session_runtime::*;
 use self::sftp_callbacks::*;
 use self::sftp_ui::*;
+use self::sidebar::*;
 use self::tab_callbacks::*;
 use self::terminal_ui::*;
 use self::webdav::*;
@@ -122,32 +122,32 @@ use crate::config::{
 };
 use crate::i18n::t;
 use crate::layout::{LogicalRect, TerminalWheelHit};
+use crate::resource::system::{format_bytes_per_sec, format_mem};
 use crate::resource::{
     LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
 };
+use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
 use crate::sftp::{spawn_sftp, SftpHandles, SftpLastCwd};
 use crate::ssh::{
     format_mtime, format_size, spawn_session, test_session_auth, ProcInfo, SessionCommand,
     SessionEvent, SessionHandle, SystemDetails,
 };
+#[cfg(windows)]
+use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
     bare_ctrl_marker_workaround_enabled, cell_prefix, compile_output_rules,
     encode_command_bar_input, encode_pasted_text, key_to_pty_bytes, paste_requires_large_review,
-    should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste, CsiState,
-    OutputHighlightPreset, RenderGates, TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
+    should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset,
+    RenderGates, TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };
 #[cfg(test)]
 use crate::terminal::{
     build_row, highlight_plain_output, log_level_marker, normalize_pasted_newlines,
     text_cell_width, vt_span_colors, CompiledOutputRule, HistSpan, Line,
 };
-#[cfg(windows)]
-use crate::terminal::c0_letter_key_down;
 #[cfg(any(target_os = "windows", test))]
 use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
-use crate::resource::system::{format_bytes_per_sec, format_mem};
-use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::ui::*;
 use crate::webdav::WebDavAcceptAnyCertVerifier;
 
@@ -158,7 +158,6 @@ fn tab_title_len(title: &str) -> i32 {
         .sum::<usize>()
         .min(i32::MAX as usize) as i32
 }
-
 
 fn should_block_close(exit_confirmed: bool, has_live_sessions: bool) -> bool {
     !exit_confirmed && has_live_sessions
@@ -733,6 +732,7 @@ pub fn run() -> Result<()> {
         window.set_sidebar_dock(sidebar_dock.into());
         window.set_sftp_panel_width(s.sftp_panel_width());
         window.set_sftp_panel_height(s.sftp_panel_height());
+        window.set_sftp_tree_width(s.sftp_tree_width());
         window.set_sftp_dock(s.sftp_dock().into());
         window.set_quick_commands_as_sidebar(quick_commands_as_sidebar);
         window.set_quick_panel_open(quick_panel_open);
@@ -1079,6 +1079,14 @@ pub fn run() -> Result<()> {
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_size(size as f32);
             }
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_persist_sftp_tree_width(move |width| {
+            let mut s = store.borrow_mut();
+            s.set_sftp_tree_width(width);
+            let _ = s.save();
         });
     }
     {
@@ -1430,62 +1438,80 @@ pub fn run() -> Result<()> {
         let handles = handles.clone();
         let statuses = tab_statuses.clone();
         let runtime = runtime.clone();
-        proc_win.on_terminate_process(move |tab_id: SharedString, pid: SharedString, password: SharedString| {
-            let tab_id = tab_id.to_string();
-            let Ok(pid) = pid.parse::<u32>() else {
-                set_process_action_error(&proc_weak, t("无效的 PID", "Invalid PID"));
-                return;
-            };
+        proc_win.on_terminate_process(
+            move |tab_id: SharedString, pid: SharedString, password: SharedString| {
+                let tab_id = tab_id.to_string();
+                let Ok(pid) = pid.parse::<u32>() else {
+                    set_process_action_error(&proc_weak, t("无效的 PID", "Invalid PID"));
+                    return;
+                };
 
-            // Re-check the source tab, PID, and owner against the latest sample;
-            // the main window may have switched tabs since the menu was opened.
-            let ownership = {
-                let states = statuses.lock().unwrap();
-                states.get(&tab_id).map_or_else(
-                    || Err(t("当前会话不可用", "The current session is unavailable")),
-                    |status| status.procs.iter().find(|p| p.pid == pid)
-                        .map(|process| process_needs_root(&status.user, &process.user))
-                        .ok_or_else(|| t("进程已退出", "The process has already exited")),
-                )
-            };
-            let needs_root = match ownership {
-                Ok(value) => value,
-                Err(message) => {
-                    set_process_action_error(&proc_weak, message);
+                // Re-check the source tab, PID, and owner against the latest sample;
+                // the main window may have switched tabs since the menu was opened.
+                let ownership = {
+                    let states = statuses.lock().unwrap();
+                    states.get(&tab_id).map_or_else(
+                        || Err(t("当前会话不可用", "The current session is unavailable")),
+                        |status| {
+                            status
+                                .procs
+                                .iter()
+                                .find(|p| p.pid == pid)
+                                .map(|process| process_needs_root(&status.user, &process.user))
+                                .ok_or_else(|| t("进程已退出", "The process has already exited"))
+                        },
+                    )
+                };
+                let needs_root = match ownership {
+                    Ok(value) => value,
+                    Err(message) => {
+                        set_process_action_error(&proc_weak, message);
+                        return;
+                    }
+                };
+                if needs_root && password.is_empty() {
+                    set_process_action_error(
+                        &proc_weak,
+                        t(
+                            "请输入管理员（sudo）密码",
+                            "Enter the administrator (sudo) password",
+                        ),
+                    );
                     return;
                 }
-            };
-            if needs_root && password.is_empty() {
-                set_process_action_error(
-                    &proc_weak,
-                    t("请输入管理员（sudo）密码", "Enter the administrator (sudo) password"),
-                );
-                return;
-            }
 
-            let root_password = needs_root.then(|| crate::config::Secret::new(password.to_string()));
-            let response = handles.borrow().get(&tab_id)
-                .map(|handle| handle.kill_process(pid, root_password));
-            let Some(response) = response else {
-                set_process_action_error(&proc_weak, t("SSH 会话不可用", "The SSH session is unavailable"));
-                return;
-            };
+                let root_password =
+                    needs_root.then(|| crate::config::Secret::new(password.to_string()));
+                let response = handles
+                    .borrow()
+                    .get(&tab_id)
+                    .map(|handle| handle.kill_process(pid, root_password));
+                let Some(response) = response else {
+                    set_process_action_error(
+                        &proc_weak,
+                        t("SSH 会话不可用", "The SSH session is unavailable"),
+                    );
+                    return;
+                };
 
-            let done_weak = proc_weak.clone();
-            runtime.spawn(async move {
-                let result = response.await.unwrap_or_else(|_| crate::ssh::ProcessKillResult {
-                    success: false,
-                    message: t("SSH 会话已关闭", "The SSH session has closed").to_string(),
+                let done_weak = proc_weak.clone();
+                runtime.spawn(async move {
+                    let result = response
+                        .await
+                        .unwrap_or_else(|_| crate::ssh::ProcessKillResult {
+                            success: false,
+                            message: t("SSH 会话已关闭", "The SSH session has closed").to_string(),
+                        });
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(pw) = done_weak.upgrade() {
+                            pw.set_action_busy(false);
+                            pw.set_action_error(!result.success);
+                            pw.set_action_status(result.message.into());
+                        }
+                    });
                 });
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(pw) = done_weak.upgrade() {
-                        pw.set_action_busy(false);
-                        pw.set_action_error(!result.success);
-                        pw.set_action_status(result.message.into());
-                    }
-                });
-            });
-        });
+            },
+        );
     }
 
     // --- Wire callbacks --------------------------------------------------
@@ -1971,289 +1997,291 @@ pub fn run() -> Result<()> {
         // Apply the Win11 rounded-corner hint once, on the first event (the HWND
         // reliably exists by then, unlike a pre-run timer) (#166).
         let mut chrome_done = false;
-        window.window().on_winit_window_event(move |slint_window, event| {
-            if !chrome_done {
-                chrome_done = true;
-                if let Some(win) = weak.upgrade() {
-                    apply_window_chrome(win.window());
-                }
-            }
-            // Recompute window activity, push it to the shared cell, and update
-            // Theme.window-focused (gates the cursor blink) (#127).
-            let apply_activity = |focused: bool, minimized: bool, occluded: bool| {
-                let act = if minimized || occluded {
-                    WinActivity::Hidden
-                } else if focused {
-                    WinActivity::Active
-                } else {
-                    WinActivity::Background
-                };
-                let prev = ev_activity.get();
-                ev_activity.set(act);
-                if let Some(win) = weak.upgrade() {
-                    win.set_window_focused(act == WinActivity::Active);
-                    if prev == WinActivity::Hidden && act != WinActivity::Hidden {
-                        win.set_terminal_restore_cover(true);
-                        let weak2 = weak.clone();
-                        slint::Timer::single_shot(
-                            std::time::Duration::from_millis(120),
-                            move || {
-                                if let Some(w) = weak2.upgrade() {
-                                    w.set_terminal_restore_cover(false);
-                                }
-                            },
-                        );
-                    }
-                }
-            };
-            match event {
-                #[cfg(target_os = "windows")]
-                WEvent::KeyboardInput { event, .. } => {
-                    // Microsoft IME can relabel a Ctrl key-up as Process while
-                    // retaining the physical Ctrl scan code. Slint drops Process,
-                    // so deliver the missing modifier release directly.
-                    if let Some(side) = windows_process_ctrl_release(
-                        event.state,
-                        &event.logical_key,
-                        &event.physical_key,
-                    ) {
-                        let key = match side {
-                            CtrlKeySide::Left => slint::platform::Key::Control,
-                            CtrlKeySide::Right => slint::platform::Key::ControlR,
-                        };
-                        slint_window.dispatch_event(
-                            slint::platform::WindowEvent::KeyReleased { text: key.into() },
-                        );
-                        tracing::debug!(
-                            "restored Windows IME Process-key Ctrl release side={side:?}"
-                        );
-                        return EventResult::PreventDefault;
-                    }
-                }
-                #[cfg(target_os = "windows")]
-                WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Disabled) => {
-                    // Windows emits Ime::Disabled when a composition ends, including
-                    // while switching between Chinese and English input methods. The
-                    // Slint winit backend intentionally ignores this notification, so
-                    // after several switches the native input context can remain
-                    // detached and every TextInput appears to stop accepting keys
-                    // (#236). Re-associate the window with its current default IME;
-                    // the focused Slint TextInput keeps owning text input as before.
-                    slint_window.with_winit_window(|window| window.set_ime_allowed(true));
-                }
-                WEvent::DroppedFile(path) => {
+        window
+            .window()
+            .on_winit_window_event(move |slint_window, event| {
+                if !chrome_done {
+                    chrome_done = true;
                     if let Some(win) = weak.upgrade() {
-                        handle_file_drop(&win, &sh, path.clone());
+                        apply_window_chrome(win.window());
                     }
                 }
-                WEvent::CursorMoved { position, .. } => {
+                // Recompute window activity, push it to the shared cell, and update
+                // Theme.window-focused (gates the cursor blink) (#127).
+                let apply_activity = |focused: bool, minimized: bool, occluded: bool| {
+                    let act = if minimized || occluded {
+                        WinActivity::Hidden
+                    } else if focused {
+                        WinActivity::Active
+                    } else {
+                        WinActivity::Background
+                    };
+                    let prev = ev_activity.get();
+                    ev_activity.set(act);
                     if let Some(win) = weak.upgrade() {
-                        let scale = win.window().scale_factor().max(0.01) as f64;
-                        let p = position.to_logical::<f64>(scale);
-                        last_cursor_logical = Some((p.x as f32, p.y as f32));
-                    }
-                }
-                WEvent::MouseWheel { delta, .. } if cfg!(target_os = "macos") => {
-                    let Some((x, y)) = last_cursor_logical else {
-                        return EventResult::Propagate;
-                    };
-                    let Some(win) = weak.upgrade() else {
-                        return EventResult::Propagate;
-                    };
-                    let wheel_lines = match delta {
-                        MouseScrollDelta::LineDelta(_, dy) => dy * 3.0,
-                        MouseScrollDelta::PixelDelta(p) => {
-                            let scale = win.window().scale_factor().max(0.01) as f64;
-                            let p = p.to_logical::<f64>(scale);
-                            p.y as f32 / 18.0
+                        win.set_window_focused(act == WinActivity::Active);
+                        if prev == WinActivity::Hidden && act != WinActivity::Hidden {
+                            win.set_terminal_restore_cover(true);
+                            let weak2 = weak.clone();
+                            slint::Timer::single_shot(
+                                std::time::Duration::from_millis(120),
+                                move || {
+                                    if let Some(w) = weak2.upgrade() {
+                                        w.set_terminal_restore_cover(false);
+                                    }
+                                },
+                            );
                         }
-                    };
-                    if wheel_lines.abs() < f32::EPSILON {
-                        return EventResult::Propagate;
                     }
-                    macos_wheel_accum += wheel_lines;
-                    let whole = macos_wheel_accum.trunc() as i32;
-                    if whole == 0 {
-                        return EventResult::Propagate;
+                };
+                match event {
+                    #[cfg(target_os = "windows")]
+                    WEvent::KeyboardInput { event, .. } => {
+                        // Microsoft IME can relabel a Ctrl key-up as Process while
+                        // retaining the physical Ctrl scan code. Slint drops Process,
+                        // so deliver the missing modifier release directly.
+                        if let Some(side) = windows_process_ctrl_release(
+                            event.state,
+                            &event.logical_key,
+                            &event.physical_key,
+                        ) {
+                            let key = match side {
+                                CtrlKeySide::Left => slint::platform::Key::Control,
+                                CtrlKeySide::Right => slint::platform::Key::ControlR,
+                            };
+                            slint_window.dispatch_event(
+                                slint::platform::WindowEvent::KeyReleased { text: key.into() },
+                            );
+                            tracing::debug!(
+                                "restored Windows IME Process-key Ctrl release side={side:?}"
+                            );
+                            return EventResult::PreventDefault;
+                        }
                     }
-                    macos_wheel_accum -= whole as f32;
-                    if handle_macos_terminal_wheel(&win, &wheel_bufs, x, y, whole) {
-                        return EventResult::PreventDefault;
-                    }
-                }
-                WEvent::Focused(f) => {
-                    focused = *f;
-                    apply_activity(focused, minimized, occluded);
-                    if *f {
-                        #[cfg(target_os = "windows")]
+                    #[cfg(target_os = "windows")]
+                    WEvent::Ime(i_slint_backend_winit::winit::event::Ime::Disabled) => {
+                        // Windows emits Ime::Disabled when a composition ends, including
+                        // while switching between Chinese and English input methods. The
+                        // Slint winit backend intentionally ignores this notification, so
+                        // after several switches the native input context can remain
+                        // detached and every TextInput appears to stop accepting keys
+                        // (#236). Re-associate the window with its current default IME;
+                        // the focused Slint TextInput keeps owning text input as before.
                         slint_window.with_winit_window(|window| window.set_ime_allowed(true));
+                    }
+                    WEvent::DroppedFile(path) => {
+                        if let Some(win) = weak.upgrade() {
+                            handle_file_drop(&win, &sh, path.clone());
+                        }
+                    }
+                    WEvent::CursorMoved { position, .. } => {
+                        if let Some(win) = weak.upgrade() {
+                            let scale = win.window().scale_factor().max(0.01) as f64;
+                            let p = position.to_logical::<f64>(scale);
+                            last_cursor_logical = Some((p.x as f32, p.y as f32));
+                        }
+                    }
+                    WEvent::MouseWheel { delta, .. } if cfg!(target_os = "macos") => {
+                        let Some((x, y)) = last_cursor_logical else {
+                            return EventResult::Propagate;
+                        };
+                        let Some(win) = weak.upgrade() else {
+                            return EventResult::Propagate;
+                        };
+                        let wheel_lines = match delta {
+                            MouseScrollDelta::LineDelta(_, dy) => dy * 3.0,
+                            MouseScrollDelta::PixelDelta(p) => {
+                                let scale = win.window().scale_factor().max(0.01) as f64;
+                                let p = p.to_logical::<f64>(scale);
+                                p.y as f32 / 18.0
+                            }
+                        };
+                        if wheel_lines.abs() < f32::EPSILON {
+                            return EventResult::Propagate;
+                        }
+                        macos_wheel_accum += wheel_lines;
+                        let whole = macos_wheel_accum.trunc() as i32;
+                        if whole == 0 {
+                            return EventResult::Propagate;
+                        }
+                        macos_wheel_accum -= whole as f32;
+                        if handle_macos_terminal_wheel(&win, &wheel_bufs, x, y, whole) {
+                            return EventResult::PreventDefault;
+                        }
+                    }
+                    WEvent::Focused(f) => {
+                        focused = *f;
+                        apply_activity(focused, minimized, occluded);
+                        if *f {
+                            #[cfg(target_os = "windows")]
+                            slint_window.with_winit_window(|window| window.set_ime_allowed(true));
 
-                        // Some window managers deliver the first Resized event
-                        // before the native window belongs to a monitor. Focus
-                        // is a reliable second opportunity to seed restoration;
-                        // request_inner_size will produce the Resized event that
-                        // verifies the native window actually reached the target.
-                        if !ev_window_size_tracking_ready.get() {
-                            if let Some(win) = weak.upgrade() {
-                                if is_wayland_window(&win.window()) {
-                                    ev_pending_window_size_restore.set(None);
-                                    ev_window_size_tracking_ready.set(true);
-                                    tracing::info!(
+                            // Some window managers deliver the first Resized event
+                            // before the native window belongs to a monitor. Focus
+                            // is a reliable second opportunity to seed restoration;
+                            // request_inner_size will produce the Resized event that
+                            // verifies the native window actually reached the target.
+                            if !ev_window_size_tracking_ready.get() {
+                                if let Some(win) = weak.upgrade() {
+                                    if is_wayland_window(&win.window()) {
+                                        ev_pending_window_size_restore.set(None);
+                                        ev_window_size_tracking_ready.set(true);
+                                        tracing::info!(
                                         "[WINDOW_SIZE] skipped persisted-size restore on Wayland"
                                     );
-                                } else if let Some(preferred) =
-                                    ev_pending_window_size_restore.get()
-                                {
-                                    if let Some(target) = clamp_window_size_to_monitor(
-                                        &win.window(),
-                                        Some(preferred),
-                                    ) {
-                                        tracing::info!(
-                                            "[WINDOW_SIZE] focus retry saved={:.0}x{:.0} \
+                                    } else if let Some(preferred) =
+                                        ev_pending_window_size_restore.get()
+                                    {
+                                        if let Some(target) = clamp_window_size_to_monitor(
+                                            &win.window(),
+                                            Some(preferred),
+                                        ) {
+                                            tracing::info!(
+                                                "[WINDOW_SIZE] focus retry saved={:.0}x{:.0} \
                                              target={:.0}x{:.0}",
+                                                preferred.0,
+                                                preferred.1,
+                                                target.0,
+                                                target.1,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            refresh_revealed_main_window(weak.clone());
+                        }
+                    }
+                    WEvent::Occluded(o) => {
+                        occluded = *o;
+                        apply_activity(focused, minimized, occluded);
+                        if !*o {
+                            refresh_revealed_main_window(weak.clone());
+                        }
+                    }
+                    WEvent::ScaleFactorChanged { .. } => {
+                        // Moving a maximized frameless window between mixed-DPI
+                        // monitors can leave Win11 reporting "maximized" while the
+                        // native rectangle/render surface still has the old size.
+                        refresh_revealed_main_window(weak.clone());
+                    }
+                    WEvent::Resized(size) => {
+                        // A 0-sized resize is how Windows reports a minimize; track it
+                        // so we pause the sampler while minimized (#127).
+                        minimized = size.width == 0 || size.height == 0;
+                        apply_activity(focused, minimized, occluded);
+                        // Keep the maximize/restore icon (and resize-edge gating) in
+                        // sync when the OS changes the window state (#119).
+                        if let Some(win) = weak.upgrade() {
+                            let maxed = win
+                                .window()
+                                .with_winit_window(|ww| ww.is_maximized())
+                                .unwrap_or(false);
+                            win.set_window_maximized(maxed);
+                            if !ev_window_size_tracking_ready.get()
+                                && is_wayland_window(&win.window())
+                            {
+                                // The configure size in this event is authoritative
+                                // on Wayland. Accept and persist that actual size;
+                                // never chase the advisory saved size (#286).
+                                ev_pending_window_size_restore.set(None);
+                                ev_window_size_tracking_ready.set(true);
+                                tracing::info!(
+                                    "[WINDOW_SIZE] accepted compositor size {}x{} on Wayland",
+                                    size.width,
+                                    size.height
+                                );
+                            }
+                            if !ev_window_size_tracking_ready.get() {
+                                if let Some(preferred) = ev_pending_window_size_restore.get() {
+                                    let scale = win.window().scale_factor().max(0.01);
+                                    let actual =
+                                        (size.width as f32 / scale, size.height as f32 / scale);
+                                    if let Some(target) =
+                                        clamp_window_size_to_monitor(&win.window(), Some(preferred))
+                                    {
+                                        tracing::info!(
+                                            "[WINDOW_SIZE] restore requested saved={:.0}x{:.0} \
+                                         target={:.0}x{:.0} actual={:.0}x{:.0} scale={:.2}",
                                             preferred.0,
                                             preferred.1,
                                             target.0,
                                             target.1,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        refresh_revealed_main_window(weak.clone());
-                    }
-                }
-                WEvent::Occluded(o) => {
-                    occluded = *o;
-                    apply_activity(focused, minimized, occluded);
-                    if !*o {
-                        refresh_revealed_main_window(weak.clone());
-                    }
-                }
-                WEvent::ScaleFactorChanged { .. } => {
-                    // Moving a maximized frameless window between mixed-DPI
-                    // monitors can leave Win11 reporting "maximized" while the
-                    // native rectangle/render surface still has the old size.
-                    refresh_revealed_main_window(weak.clone());
-                }
-                WEvent::Resized(size) => {
-                    // A 0-sized resize is how Windows reports a minimize; track it
-                    // so we pause the sampler while minimized (#127).
-                    minimized = size.width == 0 || size.height == 0;
-                    apply_activity(focused, minimized, occluded);
-                    // Keep the maximize/restore icon (and resize-edge gating) in
-                    // sync when the OS changes the window state (#119).
-                    if let Some(win) = weak.upgrade() {
-                        let maxed = win
-                            .window()
-                            .with_winit_window(|ww| ww.is_maximized())
-                            .unwrap_or(false);
-                        win.set_window_maximized(maxed);
-                        if !ev_window_size_tracking_ready.get()
-                            && is_wayland_window(&win.window())
-                        {
-                            // The configure size in this event is authoritative
-                            // on Wayland. Accept and persist that actual size;
-                            // never chase the advisory saved size (#286).
-                            ev_pending_window_size_restore.set(None);
-                            ev_window_size_tracking_ready.set(true);
-                            tracing::info!(
-                                "[WINDOW_SIZE] accepted compositor size {}x{} on Wayland",
-                                size.width,
-                                size.height
-                            );
-                        }
-                        if !ev_window_size_tracking_ready.get() {
-                            if let Some(preferred) = ev_pending_window_size_restore.get() {
-                                let scale = win.window().scale_factor().max(0.01);
-                                let actual =
-                                    (size.width as f32 / scale, size.height as f32 / scale);
-                                if let Some(target) =
-                                    clamp_window_size_to_monitor(&win.window(), Some(preferred))
-                                {
-                                    tracing::info!(
-                                        "[WINDOW_SIZE] restore requested saved={:.0}x{:.0} \
-                                         target={:.0}x{:.0} actual={:.0}x{:.0} scale={:.2}",
-                                        preferred.0,
-                                        preferred.1,
-                                        target.0,
-                                        target.1,
-                                        actual.0,
-                                        actual.1,
-                                        scale,
-                                    );
-                                    if (actual.0 - target.0).abs() <= 2.0
-                                        && (actual.1 - target.1).abs() <= 2.0
-                                    {
-                                        ev_pending_window_size_restore.set(None);
-                                        ev_window_size_tracking_ready.set(true);
-                                        tracing::info!(
-                                            "[WINDOW_SIZE] restore settled at {:.0}x{:.0}",
                                             actual.0,
-                                            actual.1
+                                            actual.1,
+                                            scale,
+                                        );
+                                        if (actual.0 - target.0).abs() <= 2.0
+                                            && (actual.1 - target.1).abs() <= 2.0
+                                        {
+                                            ev_pending_window_size_restore.set(None);
+                                            ev_window_size_tracking_ready.set(true);
+                                            tracing::info!(
+                                                "[WINDOW_SIZE] restore settled at {:.0}x{:.0}",
+                                                actual.0,
+                                                actual.1
+                                            );
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            "[WINDOW_SIZE] restore deferred: no monitor available \
+                                         saved={:.0}x{:.0}",
+                                            preferred.0,
+                                            preferred.1,
                                         );
                                     }
                                 } else {
-                                    tracing::warn!(
-                                        "[WINDOW_SIZE] restore deferred: no monitor available \
-                                         saved={:.0}x{:.0}",
-                                        preferred.0,
-                                        preferred.1,
+                                    // First run: accept the initialized size as the
+                                    // baseline, but do not persist this startup event.
+                                    ev_window_size_tracking_ready.set(true);
+                                }
+                                return EventResult::Propagate;
+                            }
+                            // Record the last user-adjusted windowed size while the
+                            // resize event still carries authoritative native
+                            // geometry. Persisting only during CloseRequested can
+                            // observe an installer/minimize transition instead
+                            // (#278). Keep writes in memory here; save_layout flushes
+                            // the config on exit.
+                            if ev_window_size_tracking_ready.get() && !maxed && !minimized {
+                                let scale = win.window().scale_factor().max(0.01);
+                                let width = size.width as f32 / scale;
+                                let height = size.height as f32 / scale;
+                                if width > 200.0 && height > 200.0 {
+                                    ev_store.borrow_mut().set_window_size(width, height);
+                                    tracing::debug!(
+                                        "[WINDOW_SIZE] recorded user size {:.0}x{:.0}",
+                                        width,
+                                        height
                                     );
                                 }
-                            } else {
-                                // First run: accept the initialized size as the
-                                // baseline, but do not persist this startup event.
-                                ev_window_size_tracking_ready.set(true);
-                            }
-                            return EventResult::Propagate;
-                        }
-                        // Record the last user-adjusted windowed size while the
-                        // resize event still carries authoritative native
-                        // geometry. Persisting only during CloseRequested can
-                        // observe an installer/minimize transition instead
-                        // (#278). Keep writes in memory here; save_layout flushes
-                        // the config on exit.
-                        if ev_window_size_tracking_ready.get() && !maxed && !minimized {
-                            let scale = win.window().scale_factor().max(0.01);
-                            let width = size.width as f32 / scale;
-                            let height = size.height as f32 / scale;
-                            if width > 200.0 && height > 200.0 {
-                                ev_store.borrow_mut().set_window_size(width, height);
-                                tracing::debug!(
-                                    "[WINDOW_SIZE] recorded user size {:.0}x{:.0}",
-                                    width,
-                                    height
-                                );
                             }
                         }
                     }
-                }
-                WEvent::CloseRequested => {
-                    // Confirm before closing if there are open session tabs (#88),
-                    // so a stray double-click on the title-bar icon / X / Alt+F4
-                    // doesn't silently drop live sessions. Installer/Restart
-                    // Manager may send repeated requests, so never intercept
-                    // again after the user has confirmed shutdown (#267).
-                    if should_block_close(
-                        ev_exit_confirmed.get(),
-                        !close_handles.borrow().is_empty(),
-                    ) {
+                    WEvent::CloseRequested => {
+                        // Confirm before closing if there are open session tabs (#88),
+                        // so a stray double-click on the title-bar icon / X / Alt+F4
+                        // doesn't silently drop live sessions. Installer/Restart
+                        // Manager may send repeated requests, so never intercept
+                        // again after the user has confirmed shutdown (#267).
+                        if should_block_close(
+                            ev_exit_confirmed.get(),
+                            !close_handles.borrow().is_empty(),
+                        ) {
+                            if let Some(win) = weak.upgrade() {
+                                win.set_confirm_close_open(true);
+                            }
+                            return EventResult::PreventDefault;
+                        }
+                        ev_exit_confirmed.set(true);
+                        // No sessions → the window is about to close; persist layout.
                         if let Some(win) = weak.upgrade() {
-                            win.set_confirm_close_open(true);
+                            save_layout(&win, &ev_store);
                         }
-                        return EventResult::PreventDefault;
                     }
-                    ev_exit_confirmed.set(true);
-                    // No sessions → the window is about to close; persist layout.
-                    if let Some(win) = weak.upgrade() {
-                        save_layout(&win, &ev_store);
-                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            EventResult::Propagate
-        });
+                EventResult::Propagate
+            });
     }
     // Confirm-close dialog "Close" → actually quit the event loop (#88).
     {
@@ -2333,10 +2361,8 @@ pub fn run() -> Result<()> {
         window.on_win_close(move || {
             if let Some(w) = weak.upgrade() {
                 // Mirror the native-X behaviour: confirm if sessions are open.
-                if !should_block_close(
-                    wc_exit_confirmed.get(),
-                    !close_handles.borrow().is_empty(),
-                ) {
+                if !should_block_close(wc_exit_confirmed.get(), !close_handles.borrow().is_empty())
+                {
                     wc_exit_confirmed.set(true);
                     save_layout(&w, &wc_store);
                     let _ = slint::quit_event_loop();
@@ -2495,7 +2521,14 @@ fn terminal_wheel_hit(
     } else {
         term_state.sftp_panel_height + 4.0
     };
-    shrink_edge(&mut term_x, &mut term_y, &mut term_w, &mut term_h, &sftp_dock, sftp_take);
+    shrink_edge(
+        &mut term_x,
+        &mut term_y,
+        &mut term_w,
+        &mut term_h,
+        &sftp_dock,
+        sftp_take,
+    );
 
     // Leave the command bar to TextInput/history handling; wheel fallback is for
     // terminal output only.
@@ -3223,10 +3256,7 @@ fn wire_session_callbacks(
                 if trimmed.is_empty() {
                     Some(t("请输入分组名称", "Enter a group name"))
                 } else if is_reserved_session_group(trimmed) {
-                    Some(t(
-                        "该名称为系统保留分组",
-                        "This group name is reserved",
-                    ))
+                    Some(t("该名称为系统保留分组", "This group name is reserved"))
                 } else if (orig.is_empty() || !trimmed.eq_ignore_ascii_case(orig.as_str()))
                     && s.session_group_exists(trimmed)
                 {
@@ -3567,13 +3597,9 @@ fn wire_session_callbacks(
     {
         let weak = window.as_weak();
         window.on_session_dialog_pick_key(move || {
-            let mut dialog =
-                rfd::FileDialog::new()
-                    .set_title(t("选择私钥文件", "Choose private key file"))
-                    .add_filter(
-                        t("SSH 私钥", "SSH private keys"),
-                        &["ppk", "pem", "key"],
-                    );
+            let mut dialog = rfd::FileDialog::new()
+                .set_title(t("选择私钥文件", "Choose private key file"))
+                .add_filter(t("SSH 私钥", "SSH private keys"), &["ppk", "pem", "key"]);
             // Start in ~/.ssh if it exists.
             if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().join(".ssh")) {
                 if home.is_dir() {
@@ -3786,13 +3812,10 @@ fn wire_session_callbacks(
                     raw: std::collections::VecDeque::new(),
                 })),
             );
-            render_gates
-                .lock()
-                .unwrap()
-                .insert(
-                    tab_id.clone(),
-                    Arc::new(TabRenderGate::new(RENDER_MIN_INTERVAL)),
-                );
+            render_gates.lock().unwrap().insert(
+                tab_id.clone(),
+                Arc::new(TabRenderGate::new(RENDER_MIN_INTERVAL)),
+            );
             // No followed-cwd yet: the first OSC 7 always triggers a follow.
             sftp_last_cwd.lock().unwrap().remove(&tab_id);
             // Add the new tab to the focused pane and re-flatten (this also sets
@@ -3892,11 +3915,7 @@ fn save_layout(win: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         .with_winit_window(|ww| ww.is_maximized())
         .unwrap_or_else(|| win.get_window_maximized());
     let (saved_w, saved_h) = s.window_size();
-    if !native_maximized
-        && (saved_w <= 0.0 || saved_h <= 0.0)
-        && w > 200.0
-        && h > 200.0
-    {
+    if !native_maximized && (saved_w <= 0.0 || saved_h <= 0.0) && w > 200.0 && h > 200.0 {
         // Normal resize events keep this cache current. Only fall back to the
         // close-time geometry for a first run where no valid resize was seen;
         // do not issue a new native resize while the window is shutting down.
@@ -5109,34 +5128,36 @@ fn wire_key_input(
     {
         let bufs_sel = bufs.clone();
         let weak = window.as_weak();
-        window.on_term_select_start(move |tab_id: SharedString, row: i32, col: i32, ctrl: bool, shift: bool| {
-            let tid = tab_id.to_string();
-            with_term_buf(&bufs_sel, &tid, |buf| {
-                let (rows, cols) = buf.parser.screen().size();
-                let r = row.clamp(0, rows.saturating_sub(1) as i32) as u16;
-                let c = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
-                // Anchor + focus in absolute scrollback coordinates.
-                let abs = buf.vis_to_abs(r);
-                let point = (abs, c);
-                if ctrl && !shift {
-                    buf.sel_ranges.push((point, point));
-                } else if shift && !buf.sel_ranges.is_empty() {
-                    let anchor = buf.sel_ranges.last().map(|range| range.0).unwrap_or(point);
-                    if let Some(range) = buf.sel_ranges.last_mut() {
-                        *range = (anchor, point);
+        window.on_term_select_start(
+            move |tab_id: SharedString, row: i32, col: i32, ctrl: bool, shift: bool| {
+                let tid = tab_id.to_string();
+                with_term_buf(&bufs_sel, &tid, |buf| {
+                    let (rows, cols) = buf.parser.screen().size();
+                    let r = row.clamp(0, rows.saturating_sub(1) as i32) as u16;
+                    let c = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
+                    // Anchor + focus in absolute scrollback coordinates.
+                    let abs = buf.vis_to_abs(r);
+                    let point = (abs, c);
+                    if ctrl && !shift {
+                        buf.sel_ranges.push((point, point));
+                    } else if shift && !buf.sel_ranges.is_empty() {
+                        let anchor = buf.sel_ranges.last().map(|range| range.0).unwrap_or(point);
+                        if let Some(range) = buf.sel_ranges.last_mut() {
+                            *range = (anchor, point);
+                        }
+                    } else {
+                        buf.sel_ranges.clear();
+                        buf.sel_ranges.push((point, point));
                     }
-                } else {
-                    buf.sel_ranges.clear();
-                    buf.sel_ranges.push((point, point));
+                    let (anchor, focus) = buf.sel_ranges.last().copied().unwrap_or((point, point));
+                    buf.sel_anchor = Some(anchor);
+                    buf.sel_focus = Some(focus);
+                });
+                if let Some(win) = weak.upgrade() {
+                    refresh_terminal_selection(&win, &bufs_sel, &tid);
                 }
-                let (anchor, focus) = buf.sel_ranges.last().copied().unwrap_or((point, point));
-                buf.sel_anchor = Some(anchor);
-                buf.sel_focus = Some(focus);
-            });
-            if let Some(win) = weak.upgrade() {
-                refresh_terminal_selection(&win, &bufs_sel, &tid);
-            }
-        });
+            },
+        );
     }
     {
         let bufs_sel = bufs.clone();
@@ -5196,6 +5217,26 @@ fn wire_key_input(
                     std::thread::spawn(move || clipboard_set_text(t));
                 }
                 _ => {}
+            }
+            if let Some(win) = weak.upgrade() {
+                refresh_terminal_selection(&win, &bufs_sel, &tid);
+            }
+        });
+    }
+    {
+        let bufs_sel = bufs.clone();
+        let weak = window.as_weak();
+        window.on_term_select_word(move |tab_id: SharedString, row: i32, col: i32| {
+            let tid = tab_id.to_string();
+            let text = with_term_buf(&bufs_sel, &tid, |buf| {
+                let (rows, cols) = buf.parser.screen().size();
+                let row = row.clamp(0, rows.saturating_sub(1) as i32) as u16;
+                let col = col.clamp(0, cols.saturating_sub(1) as i32) as u16;
+                buf.select_word_at(row, col)
+            })
+            .flatten();
+            if let Some(text) = text.filter(|text| !text.is_empty()) {
+                std::thread::spawn(move || clipboard_set_text(text));
             }
             if let Some(win) = weak.upgrade() {
                 refresh_terminal_selection(&win, &bufs_sel, &tid);

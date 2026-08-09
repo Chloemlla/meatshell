@@ -656,24 +656,83 @@ pub(super) fn wire_sftp_callbacks(
             w.set_editor_dirty(false);
         });
     }
-    // Close the editor; in edit mode upload first if there are unsaved edits.
+    // Closing the editor discards unsaved edits. Saving is an explicit action
+    // (button / Ctrl+S); silently uploading on X or Esc is surprising and can
+    // overwrite a remote file the user only meant to inspect (#287).
     {
-        let sftp_handles = sftp_handles.clone();
         let weak = window.as_weak();
         window.on_close_editor(move || {
             let Some(w) = weak.upgrade() else { return };
-            if !w.get_editor_readonly() && w.get_editor_dirty() {
-                let path = w.get_editor_path().to_string();
-                let content = w.get_editor_content().to_string();
-                let tab_id = w.get_active_tab_id().to_string();
-                if let Ok(handles) = sftp_handles.lock() {
-                    if let Some(h) = handles.get(&tab_id) {
-                        h.write_text(path, content);
-                    }
-                }
-            }
             w.set_editor_open(false);
             w.set_editor_dirty(false);
+            w.set_editor_find_query("".into());
+            w.set_editor_replace_text("".into());
+            w.set_editor_match_count(0);
+            w.set_editor_find_position(-1);
+        });
+    }
+
+    // Built-in editor find/replace (#287). Keep matching literal and
+    // case-sensitive, which is predictable for configuration/source files.
+    window.on_editor_count_matches(|content: SharedString, query: SharedString| {
+        if query.is_empty() {
+            0
+        } else {
+            content
+                .matches(query.as_str())
+                .count()
+                .min(i32::MAX as usize) as i32
+        }
+    });
+    window.on_editor_find_step(
+        |content: SharedString, query: SharedString, current: i32, reverse: bool| {
+            if query.is_empty() {
+                return EditorFindResult {
+                    start: 0,
+                    end: 0,
+                    count: 0,
+                };
+            }
+            let positions: Vec<usize> = content
+                .match_indices(query.as_str())
+                .map(|(index, _)| index)
+                .collect();
+            let selected = if reverse {
+                positions
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|position| current < 0 || *position < current as usize)
+                    .or_else(|| positions.last().copied())
+            } else {
+                positions
+                    .iter()
+                    .copied()
+                    .find(|position| current < 0 || *position > current as usize)
+                    .or_else(|| positions.first().copied())
+            };
+            let start = selected.unwrap_or(0).min(i32::MAX as usize) as i32;
+            EditorFindResult {
+                start,
+                end: start.saturating_add(query.len().min(i32::MAX as usize) as i32),
+                count: positions.len().min(i32::MAX as usize) as i32,
+            }
+        },
+    );
+    {
+        let weak = window.as_weak();
+        window.on_editor_replace_all(move |query: SharedString, replacement: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            if w.get_editor_readonly() || query.is_empty() {
+                return;
+            }
+            let replaced = w
+                .get_editor_content()
+                .replace(query.as_str(), replacement.as_str());
+            w.set_editor_content(replaced.clone().into());
+            w.set_editor_dirty(true);
+            w.set_editor_line_numbers(line_numbers_for(&replaced).into());
+            w.set_editor_match_count(0);
         });
     }
 }

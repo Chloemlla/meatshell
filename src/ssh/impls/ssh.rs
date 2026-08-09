@@ -26,7 +26,6 @@ use super::structs::*;
 // SFTP-related shared types
 // ---------------------------------------------------------------------------
 
-
 pub(crate) fn load_session_private_key(session: &Session, pass: &str) -> Result<PrivateKey> {
     let pass = if pass.is_empty() { None } else { Some(pass) };
     let inline = session.private_key_inline.as_str().trim();
@@ -356,7 +355,6 @@ fn url_decode(s: &str) -> String {
     }
     result
 }
-
 
 async fn kill_remote_process(
     handle: Arc<Handle<ClientHandler>>,

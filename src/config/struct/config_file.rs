@@ -35,6 +35,9 @@ pub(crate) fn default_sftp_width() -> f32 {
 pub(crate) fn default_sftp_height() -> f32 {
     220.0
 }
+pub(crate) fn default_sftp_tree_width() -> f32 {
+    160.0
+}
 
 pub(crate) fn default_quick_panel_width() -> f32 {
     260.0
@@ -174,6 +177,8 @@ pub struct ConfigFile {
     pub sftp_panel_width: f32,
     #[serde(default = "default_sftp_height")]
     pub sftp_panel_height: f32,
+    #[serde(default = "default_sftp_tree_width")]
+    pub sftp_tree_width: f32,
     #[serde(default)]
     pub sftp_dock: String,
     /// Last window size in logical px (0 = unset → use the built-in default).

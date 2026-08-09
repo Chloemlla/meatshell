@@ -14,6 +14,15 @@ fn plain_click_has_no_selection_extent() {
 }
 
 #[test]
+fn double_click_selects_shell_word_and_keeps_paths_together() {
+    let mut buffer = make_buf(2, 80, &[], &["ssh user@host /var/log/app.log"], 0);
+    buffer.render();
+    let selected = buffer.select_word_at(0, 20).expect("word under cursor");
+    assert_eq!(selected, "/var/log/app.log");
+    assert_eq!(buffer.extract_selection_text(), "/var/log/app.log");
+}
+
+#[test]
 fn vis_to_abs_maps_live_and_scrolled_consistently() {
     // history H0..H2 (3 lines), live LIVE0/LIVE1 → combined len 5.
     let live = make_buf(5, 20, &["H0", "H1", "H2"], &["LIVE0", "LIVE1"], 0);

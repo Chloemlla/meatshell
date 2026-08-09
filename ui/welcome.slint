@@ -59,7 +59,7 @@ component SessionRow inherits Rectangle {
         height: menu-vl.preferred-height;
 
         Rectangle {
-            background: Theme.bg-panel;
+            background: Theme.popup-bg;
             border-radius: Theme.radius-sm;
             border-width: 1px;
             border-color: Theme.border-strong;
@@ -451,7 +451,7 @@ export component Welcome inherits Rectangle {
                                 // edit + new always; delete only for an empty group.
                                 height: (session.id == "" ? 3 : 2) * 28px + 9px;
                                 Rectangle {
-                                    background: Theme.bg-panel;
+                                    background: Theme.popup-bg;
                                     border-radius: Theme.radius-sm;
                                     border-width: 1px;
                                     border-color: Theme.border-strong;

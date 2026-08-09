@@ -1097,6 +1097,17 @@ impl ConfigStore {
     pub fn set_sftp_panel_height(&mut self, v: f32) {
         self.cache.sftp_panel_height = v;
     }
+    pub fn sftp_tree_width(&self) -> f32 {
+        let width = self.cache.sftp_tree_width;
+        if width <= 0.0 {
+            default_sftp_tree_width()
+        } else {
+            width.clamp(120.0, 420.0)
+        }
+    }
+    pub fn set_sftp_tree_width(&mut self, width: f32) {
+        self.cache.sftp_tree_width = width.clamp(120.0, 420.0);
+    }
     pub fn sftp_dock(&self) -> String {
         let d = self.cache.sftp_dock.trim();
         if d.is_empty() {
