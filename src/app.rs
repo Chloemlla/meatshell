@@ -589,6 +589,7 @@ pub fn run() -> Result<()> {
             window.set_term_font_family(fam.into());
         }
         window.set_term_font_size(s.font_size() as f32);
+        window.set_terminal_line_spacing(s.terminal_line_spacing());
         window.set_term_font_bold(s.terminal_bold());
         window.set_term_cursor_style(s.terminal_cursor_style().into());
         if let Some(color) = parse_hex_color(s.terminal_cursor_color()) {
@@ -658,11 +659,38 @@ pub fn run() -> Result<()> {
     // Interface setting: always ask where to save on download (#87). Read live
     // by the download handler from the window property, so just set + persist.
     window.set_download_always_ask(store.borrow().download_always_ask());
+    window.set_paste_confirm_enabled(store.borrow().paste_confirm_enabled());
+    window.set_extra_paste_shortcuts_enabled(store.borrow().extra_paste_shortcuts_enabled());
+    window.set_zen_mode(store.borrow().zen_mode());
     {
         let store = store.clone();
         window.on_set_download_always_ask(move |ask| {
             let mut s = store.borrow_mut();
             s.set_download_always_ask(ask);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_paste_confirm_enabled(move |enabled| {
+            let mut s = store.borrow_mut();
+            s.set_paste_confirm_enabled(enabled);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_extra_paste_shortcuts_enabled(move |enabled| {
+            let mut s = store.borrow_mut();
+            s.set_extra_paste_shortcuts_enabled(enabled);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_zen_mode(move |enabled| {
+            let mut s = store.borrow_mut();
+            s.set_zen_mode(enabled);
             let _ = s.save();
         });
     }
@@ -1050,6 +1078,22 @@ pub fn run() -> Result<()> {
             }
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_size(size as f32);
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        window.on_set_terminal_line_spacing(move |spacing: f32| {
+            let normalized = {
+                let mut s = store.borrow_mut();
+                s.set_terminal_line_spacing(spacing);
+                let normalized = s.terminal_line_spacing();
+                let _ = s.save();
+                normalized
+            };
+            if let Some(w) = weak.upgrade() {
+                w.set_terminal_line_spacing(normalized);
             }
         });
     }
@@ -2435,12 +2479,16 @@ fn terminal_wheel_hit(
     let mut term_w = term.w;
     let mut term_h = term.h;
 
-    // TerminalView starts with a 24px status line, then the SFTP dock-region.
-    term_y += 24.0;
-    term_h = (term_h - 24.0).max(0.0);
+    // Zen mode removes the status strip and command bar as well as all docks.
+    if !win.get_zen_mode() {
+        term_y += 24.0;
+        term_h = (term_h - 24.0).max(0.0);
+    }
 
     let sftp_dock = win.get_sftp_dock().to_string();
-    let sftp_take = if term_state.sftp_collapsed {
+    let sftp_take = if win.get_zen_mode() {
+        0.0
+    } else if term_state.sftp_collapsed {
         36.0
     } else if sftp_dock == "left" || sftp_dock == "right" {
         term_state.sftp_panel_width + 4.0
@@ -2451,7 +2499,9 @@ fn terminal_wheel_hit(
 
     // Leave the command bar to TextInput/history handling; wheel fallback is for
     // terminal output only.
-    term_h = (term_h - 34.0).max(0.0);
+    if !win.get_zen_mode() {
+        term_h = (term_h - 34.0).max(0.0);
+    }
     if !contains_logical(
         LogicalRect {
             x: term_x,
@@ -2516,6 +2566,10 @@ fn app_content_area(win: &AppWindow) -> LogicalRect {
         h: 0.0,
     };
     area.h = size.height as f32 / scale - area.y;
+
+    if win.get_zen_mode() {
+        return area;
+    }
 
     if win.get_welcome_as_sidebar() {
         let dock = win.get_welcome_sidebar_dock().to_string();
@@ -2612,6 +2666,9 @@ fn active_terminal_panel_rects(win: &AppWindow) -> Option<(String, LogicalRect, 
 }
 
 fn active_sftp_file_list_rect(win: &AppWindow) -> Option<LogicalRect> {
+    if win.get_zen_mode() {
+        return None;
+    }
     let (_active, term, term_state) = active_terminal_panel_rects(win)?;
     if term_state.sftp_collapsed {
         return None;
@@ -4833,12 +4890,17 @@ fn wire_key_input(
                 .map(|h| h.commands.clone());
             let Some(sender) = sender else { return };
             let bracketed = terminal_uses_bracketed_paste(&bufs, tab_id.as_str());
+            let confirm_multiline = weak
+                .upgrade()
+                .map(|w| w.get_paste_confirm_enabled())
+                .unwrap_or(true);
             let weak = weak.clone();
             let tab_id = tab_id.to_string();
             std::thread::spawn(move || {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
                     Ok(text) => {
-                        if text.contains(['\r', '\n']) {
+                        let force_review = text.len() > 100 * 1024;
+                        if text.contains(['\r', '\n']) && (confirm_multiline || force_review) {
                             let large = paste_requires_large_review(&text);
                             let preview = text.clone();
                             let _ = slint::invoke_from_event_loop(move || {

@@ -1165,12 +1165,6 @@ async fn run_session(
     // True from injecting PROMPT_SETUP until the echoed setup line has been
     // received and stripped; output is buffered (not shown) during that window.
     let mut suppress_echo = false;
-    // Hard deadline for the suppression window. A non-POSIX shell (Windows
-    // pwsh/cmd) never runs our hook and so never echoes the OSC 7 we wait for —
-    // without this, output stayed hidden until a 16 KiB cap, leaving the terminal
-    // blank/"unusable" on Windows servers (#140-1). When the deadline passes we
-    // stop suppressing and show whatever arrived.
-    let mut suppress_deadline: Option<tokio::time::Instant> = None;
     // Buffers output while `suppress_echo` so the (long) echoed setup line can be
     // stripped even when it splits across reads (#98).
     let mut echo_buf = String::new();
@@ -1473,33 +1467,6 @@ async fn run_session(
                     }
                 }
             }
-            // Suppression safety net: if the injected hook hasn't echoed its OSC 7
-            // by the deadline, the remote shell isn't the POSIX one we injected for
-            // (e.g. Windows pwsh/cmd). Stop hiding output so the terminal is usable
-            // again; best-effort drop just the echoed setup line (#140-1).
-            _ = async {
-                match suppress_deadline {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending::<()>().await,
-                }
-            }, if suppress_echo => {
-                suppress_echo = false;
-                suppress_deadline = None;
-                let mut buf = std::mem::take(&mut echo_buf);
-                if let Some(p) = buf.find(PROMPT_SETUP_PREFIX) {
-                    let end = prompt_setup_echo_end(&buf, p);
-                    strip_prompt_setup_echo(&mut buf, p, end);
-                    late_prompt_echo_pending = false;
-                } else {
-                    // Nothing identifiable arrived before the deadline. Allow
-                    // one later setup echo to be removed, then permanently
-                    // disable the special-case stripping for this session.
-                    late_prompt_echo_pending = true;
-                }
-                if !buf.is_empty() {
-                    let _ = events.send(SessionEvent::Output(buf));
-                }
-            }
             msg = channel.wait() => {
                 match msg {
                     Some(ChannelMsg::Data { data }) => {
@@ -1559,17 +1526,11 @@ async fn run_session(
                         {
                             prompt_injected = true;
                             suppress_echo = true;
-                            // Give the hook ~2 s to echo its OSC 7; past that we
-                            // assume a non-POSIX shell and stop hiding output (#140-1).
-                            // 1.2 s was too tight for slow PTY/SSH servers — the echo
-                            // + OSC 7 landed after the deadline, so the injected setup
-                            // line leaked through (#176). The cost of the larger window
-                            // is only a slightly longer blank on a non-POSIX shell that
-                            // wasn't already flagged disable_shell_integration.
-                            suppress_deadline = Some(
-                                tokio::time::Instant::now()
-                                    + std::time::Duration::from_millis(2000),
-                            );
+                            // A separate exec probe already confirmed bash or zsh.
+                            // Keep buffering until the hook's OSC 7 arrives: slow
+                            // Linux/macOS PTYs may echo this command after several
+                            // seconds, while unsupported Windows shells never enter
+                            // this branch.
                             // Paint the banner/prompt immediately. Only later
                             // output containing our injected setup command is
                             // buffered and stripped; the first usable terminal
@@ -1601,7 +1562,6 @@ async fn run_session(
                             });
                             if let Some((cmd_pos, osc_end, cwd)) = landed {
                                 suppress_echo = false;
-                                suppress_deadline = None;
                                 late_prompt_echo_pending = false;
                                 tracing::debug!("OSC7 cwd={:?}", cwd);
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
@@ -1610,7 +1570,6 @@ async fn run_session(
                                 buf
                             } else if echo_buf.len() >= ECHO_BUF_CAP {
                                 suppress_echo = false;
-                                suppress_deadline = None;
                                 let mut buf = std::mem::take(&mut echo_buf);
                                 if let Some(p) = buf.find(PROMPT_SETUP_PREFIX) {
                                     let end = prompt_setup_echo_end(&buf, p);

@@ -106,6 +106,10 @@ pub(super) fn wire_tab_callbacks(
                 }
             }
             if let Some(w) = weak.upgrade() {
+                // Reordering refreshes the tab model and replaces the original
+                // drag source before it can receive pointer-up. Clear the
+                // insertion caret on this same-pane path before refreshing.
+                w.set_drag_active(false);
                 refresh_panes(
                     &w,
                     &layout.borrow(),

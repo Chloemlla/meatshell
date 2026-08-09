@@ -221,8 +221,8 @@ export component AppWindow inherits Window {
     // Frameless when we draw our own title bar (#119); Rust sets custom-titlebar
     // true on Windows/Linux. Slint maps no-frame → winit set_decorations(false).
     no-frame: root.custom-titlebar;
-    min-width: 960px;
-    min-height: 600px;
+    min-width: 720px;
+    min-height: 420px;
     preferred-width: 1440px;
     preferred-height: 900px;
     // Always-opaque base; the wallpaper Image (when active) covers it and panels
@@ -414,6 +414,7 @@ export component AppWindow inherits Window {
     changed dark-mode => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
     in-out property <string> term-font-family <=> Theme.term-font-family;
     in-out property <length> term-font-size <=> Theme.term-font-size;
+    in-out property <float> terminal-line-spacing: 1.0;
     in-out property <bool> term-font-bold <=> Theme.term-font-bold;
     in-out property <string> term-cursor-style: "block";
     in-out property <string> term-cursor-color-hex: root.dark-mode ? "#D4D4D4" : "#2D2D2F";
@@ -448,8 +449,8 @@ export component AppWindow inherits Window {
     // window so it can't leave the parent); init centered.
     // Centred, snapped to whole logical pixels: a half-pixel origin makes the
     // card's text render on subpixel offsets and look blurry (#v0.5).
-    property <length> ifd-w: min(root.width - 56px, max(640px, 720px * Theme.panel-font));
-    property <length> ifd-h: min(root.height - 56px, max(420px, 480px * Theme.panel-font));
+    property <length> ifd-w: min(root.width - 32px, max(560px, 720px * Theme.panel-font));
+    property <length> ifd-h: min(root.height - 32px, max(320px, 480px * Theme.panel-font));
     property <length> ifd-x: round((root.width - root.ifd-w) / 2 / 1px) * 1px;
     property <length> ifd-y: round((root.height - root.ifd-h) / 2 / 1px) * 1px;
     property <bool> ifd-dragging;
@@ -468,14 +469,15 @@ export component AppWindow inherits Window {
         if (root.interface-open) {
             root.ifd-dragging = false;
             root.ifd-resizing = false;
-            root.ifd-w = clamp(root.ifd-w, 640px, max(640px, root.width - 56px));
-            root.ifd-h = clamp(root.ifd-h, 420px, max(420px, root.height - 56px));
+            root.ifd-w = clamp(root.ifd-w, min(560px, root.width - 32px), max(560px, root.width - 32px));
+            root.ifd-h = clamp(root.ifd-h, min(320px, root.height - 32px), max(320px, root.height - 32px));
             root.ifd-x = round((root.width - root.ifd-w) / 2 / 1px) * 1px;
             root.ifd-y = round((root.height - root.ifd-h) / 2 / 1px) * 1px;
         }
     }
     callback set-term-font(string);                // apply + persist font family
     callback set-term-font-size(int);              // apply + persist font size (px)
+    callback set-terminal-line-spacing(float);
     callback set-term-font-bold(bool);             // apply + persist bold terminal text
     callback set-term-cursor-style(string);        // apply + persist cursor shape (#275)
     callback set-term-cursor-color(string) -> bool;// validate + persist cursor colour (#275)
@@ -496,6 +498,12 @@ export component AppWindow inherits Window {
     // Always ask where to save on each download (#87); default off.
     in-out property <bool> download-always-ask: false;
     callback set-download-always-ask(bool);        // apply + persist
+    in-out property <bool> paste-confirm-enabled: true;
+    callback set-paste-confirm-enabled(bool);
+    in-out property <bool> extra-paste-shortcuts-enabled: true;
+    callback set-extra-paste-shortcuts-enabled(bool);
+    in-out property <bool> zen-mode: false;
+    callback set-zen-mode(bool);
     // Collapse-by-default settings + shared SFTP collapse state (#78).
     in-out property <bool> collapse-sidebar-default: false;
     callback set-collapse-sidebar-default(bool);   // apply + persist
@@ -908,11 +916,11 @@ export component AppWindow inherits Window {
         // Collapsed-only (M5): the icon strip shows only while collapsed; the
         // panel itself (welcome-w) only while expanded — one or the other.
         property <bool> sidebar-strip-outside:
-            root.welcome-as-sidebar && !root.welcome-collapsed
+            !root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed
             && root.sidebar-collapsed && root.sidebar-dock == root.welcome-sidebar-dock;
         property <length> sidebar-outside-strip: dock-area.sidebar-strip-outside ? 36px : 0px;
-        property <length> welcome-strip: (root.welcome-as-sidebar && root.welcome-collapsed) ? 36px : 0px;
-        property <length> welcome-size: (root.welcome-as-sidebar && !root.welcome-collapsed) ? root.welcome-sidebar-width : 0px;
+        property <length> welcome-strip: (!root.zen-mode && root.welcome-as-sidebar && root.welcome-collapsed) ? 36px : 0px;
+        property <length> welcome-size: (!root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed) ? root.welcome-sidebar-width : 0px;
         property <length> welcome-taken: welcome-strip + welcome-size + sidebar-outside-strip;
         property <bool> welcome-horizontal: root.welcome-sidebar-horizontal;
         property <bool> welcome-sidebar-dragging;
@@ -931,7 +939,7 @@ export component AppWindow inherits Window {
             && !dock-area.quick-merge-welcome && root.sidebar-collapsed
             && root.quick-panel-dock == root.sidebar-dock;
         property <length> quick-outer-strip:
-            root.quick-panel-open && root.quick-panel-collapsed
+            !root.zen-mode && root.quick-panel-open && root.quick-panel-collapsed
                 && !dock-area.quick-merge-welcome && !dock-area.quick-merge-sidebar
                 ? 36px : 0px;
         property <bool> quick-outer-horizontal:
@@ -1178,13 +1186,15 @@ export component AppWindow inherits Window {
         // A shared ToolStrip is already reserved outside `rest` while the
         // welcome panel is expanded, or by the merged welcome strip while both
         // panels are collapsed. Do not reserve the same 36px a second time.
-        property <length> sb-w: dock-area.sidebar-strip-outside
+        property <length> sb-w: root.zen-mode ? 0px
+            : dock-area.sidebar-strip-outside
                 || dock-area.combine-collapsed-tools ? 0px
             : root.sidebar-collapsed ? 36px : root.sidebar-width;
-        property <length> sb-h: dock-area.sidebar-strip-outside
+        property <length> sb-h: root.zen-mode ? 0px
+            : dock-area.sidebar-strip-outside
                 || dock-area.combine-collapsed-tools ? 0px
             : root.sidebar-collapsed ? 36px : root.sidebar-height;
-        property <length> sp: root.sidebar-collapsed ? 0px : 4px;
+        property <length> sp: root.zen-mode || root.sidebar-collapsed ? 0px : 4px;
         // The collapsed bar (sb-h) already reserves the bottom strip now.
         property <length> bottom-strip-h: 0px;
 
@@ -1355,11 +1365,11 @@ export component AppWindow inherits Window {
             property <bool> quick-horizontal:
                 root.quick-panel-dock == "left" || root.quick-panel-dock == "right";
             property <length> quick-w:
-                root.quick-panel-open && !root.quick-panel-collapsed ? root.quick-panel-width : 0px;
+                !root.zen-mode && root.quick-panel-open && !root.quick-panel-collapsed ? root.quick-panel-width : 0px;
             property <length> quick-h:
-                root.quick-panel-open && !root.quick-panel-collapsed ? root.quick-panel-height : 0px;
+                !root.zen-mode && root.quick-panel-open && !root.quick-panel-collapsed ? root.quick-panel-height : 0px;
             property <length> quick-sp:
-                root.quick-panel-open && !root.quick-panel-collapsed ? 4px : 0px;
+                !root.zen-mode && root.quick-panel-open && !root.quick-panel-collapsed ? 4px : 0px;
 
             central := Rectangle {
             x: root.quick-panel-open && !root.quick-panel-collapsed && root.quick-panel-dock == "left"
@@ -1480,6 +1490,7 @@ export component AppWindow inherits Window {
                 for term[i] in root.terminals : TerminalView {
                     visible: term.id == pane.active-id;
                     active: term.id == root.active-tab-id;
+                    zen-mode: root.zen-mode;
                     width: term.id == pane.active-id ? parent.width : 0px;
                     height: term.id == pane.active-id ? parent.height : 0px;
                     tab-id: term.id;
@@ -1489,6 +1500,8 @@ export component AppWindow inherits Window {
                     cursor-col: term.cursor-col;
                     cursor-style: root.term-cursor-style;
                     cursor-color: root.term-cursor-color;
+                    terminal-line-spacing: root.terminal-line-spacing;
+                    extra-paste-shortcuts-enabled: root.extra-paste-shortcuts-enabled;
                     rows-used: term.rows-used;
                     scroll-max: term.scroll-max;
                     scroll-offset: term.scroll-offset;
@@ -1513,7 +1526,7 @@ export component AppWindow inherits Window {
                     sftp-selected-count: term.sftp-selected-count;
                     sftp-sort-key: term.sftp-sort-key;
                     sftp-sort-dir: term.sftp-sort-dir;
-                    sftp-available: term.sftp-available;
+                    sftp-available: term.sftp-available && !root.zen-mode;
                     tunnels: term.tunnels;
                     quick-commands: root.quick-commands;
                     quick-sidebar-enabled: root.quick-commands-as-sidebar;
@@ -1659,7 +1672,11 @@ export component AppWindow inherits Window {
             // TouchArea reaches ±5px beyond so it's easy to grab.
             for sp[si] in root.splitters : Rectangle {
                 x: sp.x; y: sp.y; width: sp.w; height: sp.h;
-                background: sp-ta.has-hover || sp-ta.pressed ? Theme.accent : Theme.border-strong;
+                // A tab dropped on a pane boundary leaves the pointer hovering
+                // over this splitter. Highlight only while the splitter itself
+                // is being dragged, otherwise that hover looks like a stuck
+                // full-height tab insertion caret.
+                background: sp-ta.pressed ? Theme.accent : Theme.border-strong;
                 animate background { duration: 100ms; }
                 sp-ta := TouchArea {
                     x: sp.vertical ? -5px : 0px;
@@ -3925,6 +3942,7 @@ export component AppWindow inherits Window {
                     term-fonts: root.term-fonts;
                     term-font-family: root.term-font-family;
                     term-font-size: root.term-font-size;
+                    terminal-line-spacing <=> root.terminal-line-spacing;
                     term-font-bold: root.term-font-bold;
                     term-cursor-style <=> root.term-cursor-style;
                     term-cursor-color-hex <=> root.term-cursor-color-hex;
@@ -3946,6 +3964,9 @@ export component AppWindow inherits Window {
                     webdav-accept-invalid-certs <=> root.webdav-accept-invalid-certs;
                     webdav-status <=> root.webdav-status;
                     download-always-ask <=> root.download-always-ask;
+                    paste-confirm-enabled <=> root.paste-confirm-enabled;
+                    extra-paste-shortcuts-enabled <=> root.extra-paste-shortcuts-enabled;
+                    zen-mode <=> root.zen-mode;
                     welcome-as-sidebar <=> root.welcome-as-sidebar;
                     quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
                     update-check-enabled <=> root.update-check-enabled;
@@ -3956,6 +3977,7 @@ export component AppWindow inherits Window {
                     pick-wallpaper-file() => { root.pick-wallpaper-file(); }
                     set-term-font(v) => { root.set-term-font(v); }
                     set-term-font-size(v) => { root.set-term-font-size(v); }
+                    set-terminal-line-spacing(v) => { root.set-terminal-line-spacing(v); }
                     set-term-font-bold(v) => { root.set-term-font-bold(v); }
                     set-term-cursor-style(v) => { root.set-term-cursor-style(v); }
                     set-term-cursor-color(v) => { root.set-term-cursor-color(v) }
@@ -3985,6 +4007,9 @@ export component AppWindow inherits Window {
                     webdav-upload => { root.webdav-upload(); }
                     webdav-download => { root.webdav-download(); }
                     set-download-always-ask(v) => { root.set-download-always-ask(v); }
+                    set-paste-confirm-enabled(v) => { root.set-paste-confirm-enabled(v); }
+                    set-extra-paste-shortcuts-enabled(v) => { root.set-extra-paste-shortcuts-enabled(v); }
+                    set-zen-mode(v) => { root.set-zen-mode(v); }
                     set-welcome-as-sidebar(v) => { root.set-welcome-as-sidebar(v); }
                     set-quick-commands-as-sidebar(v) => {
                         root.quick-commands-as-sidebar = v;

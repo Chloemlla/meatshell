@@ -214,7 +214,6 @@ fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) {
     }
 }
 
-
 fn normalize_hex_color(value: &str) -> Option<String> {
     let digits = value.trim().strip_prefix('#').unwrap_or(value.trim());
     if digits.len() != 6 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -284,7 +283,6 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     true
 }
 
-
 fn normalize_highlight_color(color: &str) -> &'static str {
     match color {
         "yellow" => "yellow",
@@ -295,7 +293,6 @@ fn normalize_highlight_color(color: &str) -> &'static str {
         _ => "red",
     }
 }
-
 
 /// Remove duplicate entries in place, keeping the *last* (most recent)
 /// occurrence of each and preserving relative order (#113). The list is capped
@@ -642,6 +639,43 @@ impl ConfigStore {
 
     pub fn set_font_size(&mut self, size: u32) {
         self.cache.font_size = size.clamp(8, 32);
+    }
+
+    pub fn terminal_line_spacing(&self) -> f32 {
+        let value = self.cache.terminal_line_spacing;
+        if value <= 0.0 {
+            1.0
+        } else {
+            value.clamp(0.8, 1.5)
+        }
+    }
+
+    pub fn set_terminal_line_spacing(&mut self, value: f32) {
+        self.cache.terminal_line_spacing = value.clamp(0.8, 1.5);
+    }
+
+    pub fn paste_confirm_enabled(&self) -> bool {
+        !self.cache.paste_confirm_disabled
+    }
+
+    pub fn set_paste_confirm_enabled(&mut self, enabled: bool) {
+        self.cache.paste_confirm_disabled = !enabled;
+    }
+
+    pub fn extra_paste_shortcuts_enabled(&self) -> bool {
+        !self.cache.extra_paste_shortcuts_disabled
+    }
+
+    pub fn set_extra_paste_shortcuts_enabled(&mut self, enabled: bool) {
+        self.cache.extra_paste_shortcuts_disabled = !enabled;
+    }
+
+    pub fn zen_mode(&self) -> bool {
+        self.cache.zen_mode
+    }
+
+    pub fn set_zen_mode(&mut self, enabled: bool) {
+        self.cache.zen_mode = enabled;
     }
 
     /// Force regular terminal text to render with a bold face (#262).
@@ -1595,7 +1629,12 @@ mod tests {
         default_session.group = "Default".into();
         let mut cfg = ConfigFile {
             sessions: vec![system_session, default_session],
-            groups: vec!["system".into(), "System".into(), "default".into(), "prod".into()],
+            groups: vec![
+                "system".into(),
+                "System".into(),
+                "default".into(),
+                "prod".into(),
+            ],
             collapsed_session_groups: Some(vec!["system".into(), "prod".into()]),
             ..ConfigFile::default()
         };
@@ -1884,5 +1923,29 @@ mod tests {
         let _ = std::fs::remove_file(&export_path);
         let _ = std::fs::remove_file(&a.path);
         let _ = std::fs::remove_file(&b.path);
+    }
+
+    #[test]
+    fn issue_300_interface_defaults_and_ranges_are_safe() {
+        let mut store = temp_store();
+
+        // Legacy configs keep the safe confirmation and familiar paste aliases.
+        store.cache = serde_json::from_str("{}").unwrap();
+        assert!(store.paste_confirm_enabled());
+        assert!(store.extra_paste_shortcuts_enabled());
+        assert!(!store.zen_mode());
+        assert_eq!(store.terminal_line_spacing(), 1.0);
+
+        store.set_terminal_line_spacing(0.1);
+        assert_eq!(store.terminal_line_spacing(), 0.8);
+        store.set_terminal_line_spacing(9.0);
+        assert_eq!(store.terminal_line_spacing(), 1.5);
+
+        store.set_paste_confirm_enabled(false);
+        store.set_extra_paste_shortcuts_enabled(false);
+        store.set_zen_mode(true);
+        assert!(!store.paste_confirm_enabled());
+        assert!(!store.extra_paste_shortcuts_enabled());
+        assert!(store.zen_mode());
     }
 }

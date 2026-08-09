@@ -236,6 +236,9 @@ export component QuickDockPanel inherits Rectangle {
 
 export component TerminalView inherits Rectangle {
     in property <bool> active: true;
+    in property <bool> zen-mode: false;
+    in property <float> terminal-line-spacing: 1.0;
+    in property <bool> extra-paste-shortcuts-enabled: true;
     in property <bool> quick-sidebar-enabled: false;
     in property <bool> quick-panel-docked: false;
     in property <string> quick-external-command;
@@ -434,7 +437,7 @@ export component TerminalView inherits Rectangle {
     // minimum here is dangerous: if the spans fall back to a system font, a
     // mismatched cell-w garbles the grid.  Keep them derived from one source.)
     property <length> cell-w: max(1px, cell-probe.preferred-width / 50);
-    property <length> cell-h: max(1px, cell-probe.preferred-height);
+    property <length> cell-h: max(1px, cell-probe.preferred-height * root.terminal-line-spacing);
     // Usable text box = root.width minus the 10px left/right padding of
     // output-text; usable height = key-capture height minus the 8px top pad.
     // The old 16px bottom focus-recovery strip was redundant once body-touch
@@ -507,7 +510,8 @@ export component TerminalView inherits Rectangle {
 
         // --- Status strip ---------------------------------------------------
         Rectangle {
-            height: 24px;
+            visible: !root.zen-mode;
+            height: root.zen-mode ? 0px : 24px;
             background: Theme.bg-panel-alt;
             HorizontalLayout {
                 padding-left: 10px; padding-right: 10px;
@@ -542,11 +546,12 @@ export component TerminalView inherits Rectangle {
         // Side-docked SFTP needs enough room for its compact action row and a
         // usable path field. Clamp legacy/saved widths below that floor instead
         // of letting Slint squeeze controls out of alignment.
-        property <length> sf-w: root.sftp-collapsed ? 36px
+        property <length> sf-w: root.zen-mode ? 0px
+            : root.sftp-collapsed ? 36px
             : root.sftp-horizontal ? max(300px, root.sftp-panel-width)
             : root.sftp-panel-width;
-        property <length> sf-h: root.sftp-collapsed ? 36px : root.sftp-panel-height;
-        property <length> sp:   root.sftp-collapsed ? 0px : 4px;
+        property <length> sf-h: root.zen-mode ? 0px : root.sftp-collapsed ? 36px : root.sftp-panel-height;
+        property <length> sp: root.zen-mode || root.sftp-collapsed ? 0px : 4px;
         // The collapsed bar (sf-h) already reserves the bottom strip now.
         property <length> bottom-strip-h: 0px;
 
@@ -653,7 +658,7 @@ export component TerminalView inherits Rectangle {
                                             ev.modifiers.shift);
                                     }
                                 } else if (ev.kind == PointerEventKind.up) {
-                                    if (ev.button == PointerEventButton.middle) {
+                                    if (root.extra-paste-shortcuts-enabled && ev.button == PointerEventButton.middle) {
                                         root.paste-from-clipboard();
                                         ime-input.focus();
                                     } else if (ev.button == PointerEventButton.left
@@ -814,7 +819,7 @@ export component TerminalView inherits Rectangle {
                                             ev.modifiers.shift);
                                     }
                                 } else if (ev.kind == PointerEventKind.up) {
-                                    if (ev.button == PointerEventButton.middle) {
+                                    if (root.extra-paste-shortcuts-enabled && ev.button == PointerEventButton.middle) {
                                         root.paste-from-clipboard();
                                         ime-input.focus();
                                     } else if (ev.button == PointerEventButton.left
@@ -959,6 +964,7 @@ export component TerminalView inherits Rectangle {
                         accept
                     // ── Copy: ⌘C (macOS, no Shift) / Ctrl+Shift+C ──
                     } else if (event.modifiers.control
+                            && (!event.modifiers.alt || root.extra-paste-shortcuts-enabled)
                             && (Theme.is-mac ? !event.modifiers.shift : event.modifiers.shift)
                             && (event.text == "c" || event.text == "C"
                                 || event.text == "\u{0003}")) {
@@ -974,7 +980,8 @@ export component TerminalView inherits Rectangle {
                         ime-input.focus();
                         accept
                     // ── Paste: Shift+Insert (the X11 / xterm paste convention) (#144) ──
-                    } else if (event.modifiers.shift && event.text == Key.Insert) {
+                    } else if (root.extra-paste-shortcuts-enabled
+                            && event.modifiers.shift && event.text == Key.Insert) {
                         root.paste-from-clipboard();
                         ime-input.focus();
                         accept
@@ -1115,7 +1122,8 @@ export component TerminalView inherits Rectangle {
 
         // --- Command bar (#55): quick commands + input box + history ---------
         cmd-bar := Rectangle {
-            height: 34px;
+            visible: !root.zen-mode;
+            height: root.zen-mode ? 0px : 34px;
             background: Theme.bg-panel-alt;
             border-width: 0;
 

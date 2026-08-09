@@ -68,6 +68,9 @@ pub struct ConfigFile {
     /// Terminal font size in px. 0 = the built-in default.
     #[serde(default)]
     pub font_size: u32,
+    /// Terminal line-height multiplier. 0 means the default 1.0.
+    #[serde(default)]
+    pub terminal_line_spacing: f32,
     /// Force regular terminal text to render with a bold face (#262).
     #[serde(default)]
     pub terminal_bold: bool,
@@ -114,6 +117,17 @@ pub struct ConfigFile {
     /// preset download dir. Defaults to false (#87).
     #[serde(default)]
     pub download_always_ask: bool,
+    /// Stored inverted so multiline paste confirmation remains enabled for
+    /// existing configurations unless the user explicitly disables it (#300).
+    #[serde(default)]
+    pub paste_confirm_disabled: bool,
+    /// Stored inverted so Ctrl+Alt+V, Shift+Insert, and middle-click paste stay
+    /// enabled for existing users (#300).
+    #[serde(default)]
+    pub extra_paste_shortcuts_disabled: bool,
+    /// Hide auxiliary panels and edge strips so the terminal fills the window.
+    #[serde(default)]
+    pub zen_mode: bool,
     /// Saved quick commands (#55).
     #[serde(default)]
     pub quick_commands: Vec<QuickCommand>,
@@ -236,4 +250,3 @@ pub(crate) struct ExportFile {
     pub(crate) meatshell_export: u32,
     pub(crate) sessions: Vec<Session>,
 }
-

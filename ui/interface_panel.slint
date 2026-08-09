@@ -358,6 +358,7 @@ export component InterfacePanel inherits Rectangle {
     in property <[string]> term-fonts;
     in property <string> term-font-family;
     in property <length> term-font-size;
+    in-out property <float> terminal-line-spacing: 1.0;
     in-out property <bool> term-font-bold;
     in-out property <string> term-cursor-style: "block";
     in-out property <string> term-cursor-color-hex: "#D4D4D4";
@@ -379,6 +380,9 @@ export component InterfacePanel inherits Rectangle {
     in-out property <bool> webdav-accept-invalid-certs;
     in-out property <string> webdav-status;
     in-out property <bool> download-always-ask;
+    in-out property <bool> paste-confirm-enabled: true;
+    in-out property <bool> extra-paste-shortcuts-enabled: true;
+    in-out property <bool> zen-mode: false;
     in-out property <bool> welcome-as-sidebar;
     in-out property <bool> quick-commands-as-sidebar;
     in-out property <bool> update-check-enabled;
@@ -401,6 +405,7 @@ export component InterfacePanel inherits Rectangle {
 
     callback set-term-font(string);
     callback set-term-font-size(int);
+    callback set-terminal-line-spacing(float);
     callback set-term-font-bold(bool);
     callback set-term-cursor-style(string);
     callback set-term-cursor-color(string) -> bool;
@@ -419,6 +424,9 @@ export component InterfacePanel inherits Rectangle {
     callback webdav-upload();
     callback webdav-download();
     callback set-download-always-ask(bool);
+    callback set-paste-confirm-enabled(bool);
+    callback set-extra-paste-shortcuts-enabled(bool);
+    callback set-zen-mode(bool);
     callback set-welcome-as-sidebar(bool);
     callback set-quick-commands-as-sidebar(bool);
     callback set-update-check-enabled(bool);   // startup new-version check (#184)
@@ -437,10 +445,16 @@ export component InterfacePanel inherits Rectangle {
                 x: parent.width - 1px; width: 1px; height: parent.height;
                 background: Theme.border-subtle;
             }
-            VerticalLayout {
-                padding: 10px;
-                spacing: 2px;
-                alignment: start;
+            nav-scroll := ScrollView {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.visible-width;
+                viewport-height: max(self.visible-height, nav-items.preferred-height);
+                nav-items := VerticalLayout {
+                    width: nav-scroll.visible-width;
+                    padding: 10px;
+                    spacing: 2px;
+                    alignment: start;
                 NavItem {
                     icon: "\u{E167}"; label: root.lang-en ? "Font" : "字体";
                     active: root.ifd-page == "font";
@@ -496,6 +510,7 @@ export component InterfacePanel inherits Rectangle {
                     active: root.ifd-page == "update";
                     clicked => { root.ifd-page = "update"; }
                 }
+                }
             }
         }
         // --- Right content -------------------------------------------------
@@ -539,6 +554,24 @@ export component InterfacePanel inherits Rectangle {
                         value: root.term-font-size / 1px; minimum: 8; maximum: 32; step: 1; unit: "px";
                         changed(v) => { root.set-term-font-size(v); }
                     }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Terminal line spacing" : "终端行距";
+                    desc: root.lang-en ? "Adjust terminal row height from compact to loose."
+                                       : "调整终端行高，可设置得更紧凑或更宽松。";
+                    Stepper {
+                        value: round(root.terminal-line-spacing * 100);
+                        minimum: 80; maximum: 150; step: 5; unit: "%";
+                        changed(v) => { root.terminal-line-spacing = v / 100; root.set-terminal-line-spacing(root.terminal-line-spacing); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Installed fonts" : "已安装字体";
+                    desc: root.lang-en
+                        ? "Install a TTF/OTF font in Windows, then restart meatshell to refresh this list."
+                        : "在 Windows 中安装 TTF/OTF 字体后，重启 meatshell 即可刷新字体列表。";
+                    show-divider: false;
+                    Rectangle { width: 1px; height: 1px; background: transparent; }
                 }
                 SettingRow {
                     label: root.lang-en ? "Bold terminal text" : "终端字体加粗";
@@ -1199,6 +1232,34 @@ export component InterfacePanel inherits Rectangle {
                     Switch {
                         on: root.collapse-sidebar-default;
                         toggled(v) => { root.collapse-sidebar-default = v; root.set-collapse-sidebar-default(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Zen mode" : "专注模式";
+                    desc: root.lang-en
+                        ? "Hide side panels and collapsed edge strips so the terminal fills the window."
+                        : "隐藏侧栏、底栏和收起图标，让终端填满窗口内容区。";
+                    Switch {
+                        on: root.zen-mode;
+                        toggled(v) => { root.zen-mode = v; root.set-zen-mode(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Confirm multiline paste" : "确认多行粘贴";
+                    desc: root.lang-en ? "Show a review dialog before sending multiline content."
+                                       : "发送多行内容前显示预览确认窗口。";
+                    Switch {
+                        on: root.paste-confirm-enabled;
+                        toggled(v) => { root.paste-confirm-enabled = v; root.set-paste-confirm-enabled(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Additional paste shortcuts" : "额外粘贴快捷键";
+                    desc: root.lang-en ? "Enable Ctrl+Alt+V, Shift+Insert, and middle-click paste."
+                                       : "启用 Ctrl+Alt+V、Shift+Insert 和鼠标中键粘贴。";
+                    Switch {
+                        on: root.extra-paste-shortcuts-enabled;
+                        toggled(v) => { root.extra-paste-shortcuts-enabled = v; root.set-extra-paste-shortcuts-enabled(v); }
                     }
                 }
                 SettingRow {
