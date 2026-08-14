@@ -475,7 +475,11 @@ pub fn run() -> Result<()> {
     {
         // ✕ hides the window (data keeps flowing into the shared model).
         let weak = proc_win.as_weak();
+        let main_weak = window.as_weak();
         proc_win.on_close(move || {
+            if let Some(main) = main_weak.upgrade() {
+                main.set_process_window_open(false);
+            }
             if let Some(w) = weak.upgrade() {
                 let _ = w.hide();
             }
@@ -520,6 +524,8 @@ pub fn run() -> Result<()> {
             let (Some(main), Some(pw)) = (win_weak.upgrade(), proc_weak.upgrade()) else {
                 return;
             };
+            main.set_process_window_open(true);
+            main.invoke_refresh_sidebar();
             pw.set_host(main.get_connection_state());
             sync_proc_theme(&main, &pw);
             let _ = pw.show();
@@ -529,7 +535,11 @@ pub fn run() -> Result<()> {
     }
     {
         let weak = sys_win.as_weak();
+        let main_weak = window.as_weak();
         sys_win.on_close(move || {
+            if let Some(main) = main_weak.upgrade() {
+                main.set_system_info_window_open(false);
+            }
             if let Some(w) = weak.upgrade() {
                 let _ = w.hide();
             }
@@ -570,6 +580,8 @@ pub fn run() -> Result<()> {
             if !main.get_system_info_available() {
                 return;
             }
+            main.set_system_info_window_open(true);
+            main.invoke_refresh_sidebar();
             sw.set_host(main.get_conn_host());
             sw.set_connection_state(main.get_connection_state());
             sw.set_resource_title(main.get_resource_title());
@@ -1985,7 +1997,9 @@ pub fn run() -> Result<()> {
             if let Some(w) = weak.upgrade() {
                 // Everything (status, CPU/mem/swap, both graphs) follows the
                 // active tab; refresh_sidebar reads the stores we just updated.
-                refresh_sidebar(&w, &tick_statuses, &tick_local, &tick_net);
+                if sidebar_updates_visible(&w) {
+                    refresh_sidebar(&w, &tick_statuses, &tick_local, &tick_net);
+                }
             }
         },
     );
@@ -2040,6 +2054,7 @@ pub fn run() -> Result<()> {
                     ev_activity.set(act);
                     if let Some(win) = weak.upgrade() {
                         win.set_window_focused(act == WinActivity::Active);
+                        win.set_dynamic_ui_active(act == WinActivity::Active);
                         if prev == WinActivity::Hidden && act != WinActivity::Hidden {
                             win.set_terminal_restore_cover(true);
                             let weak2 = weak.clone();
@@ -4210,9 +4225,7 @@ fn wire_key_input(
         let weak = window.as_weak();
         window.on_run_command(
             move |tab_id: SharedString, cmd: SharedString, to_all: bool| {
-                let Some((line, bytes)) = encode_command_bar_input(&cmd) else {
-                    return;
-                };
+                let (history_line, bytes) = encode_command_bar_input(&cmd);
                 {
                     let h = handles_rc.borrow();
                     if to_all {
@@ -4223,13 +4236,13 @@ fn wire_key_input(
                         handle.send_raw(bytes);
                     }
                 }
-                {
+                if let Some(line) = history_line {
                     let mut s = store_rc.borrow_mut();
                     s.push_command_history(line);
                     let _ = s.save();
-                }
-                if let Some(w) = weak.upgrade() {
-                    w.set_command_history(history_model(&store_rc.borrow()));
+                    if let Some(w) = weak.upgrade() {
+                        w.set_command_history(history_model(&s));
+                    }
                 }
             },
         );

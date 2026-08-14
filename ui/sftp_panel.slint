@@ -266,6 +266,21 @@ export component SftpPanel inherits Rectangle {
                 // actions aligned at the right. The path gets the full second row.
                 if root.narrow-toolbar : Rectangle { horizontal-stretch: 1; }
 
+                // Keep parent navigation discoverable in the narrow layout
+                // instead of hiding this primary action in the overflow menu
+                // (#322). It stays beside the other compact toolbar actions.
+                if root.narrow-toolbar && root.panel-mode == "files" : Rectangle {
+                    width: 24px; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: compact-up-ta.has-hover ? Theme.bg-hover : transparent;
+                    compact-up-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.navigate(".."); }
+                    }
+                    Text { text: "↑"; color: Theme.text-secondary; font-size: Theme.fs-md;
+                           horizontal-alignment: center; vertical-alignment: center; }
+                }
+
                 // Editable path bar: type or paste a path and press Enter to
                 // jump there; copy / paste-jump buttons sit right after it (#54).
                 Rectangle {
@@ -406,7 +421,7 @@ export component SftpPanel inherits Rectangle {
                         x: parent.width - self.width;
                         y: parent.height + 2px;
                         width: 142px;
-                        height: 4 * 27px + 8px;
+                        height: 3 * 27px + 8px;
                         Rectangle {
                             background: Theme.popup-bg;
                             border-radius: Theme.radius-sm;
@@ -417,10 +432,6 @@ export component SftpPanel inherits Rectangle {
                             VerticalLayout {
                                 padding: 4px;
                                 spacing: 1px;
-                                SftpMenuItem {
-                                    label: @tr("Up one level");
-                                    clicked => { root.navigate(".."); }
-                                }
                                 SftpMenuItem {
                                     label: @tr("Copy path");
                                     clicked => {

@@ -14,10 +14,22 @@ fn paste_normalizes_newlines_to_cr() {
 #[test]
 fn command_bar_preserves_multiline_heredoc() {
     let command = "cat <<'EOF'\nHEREDOC-1\n中文-HEREDOC-2\nEOF\n";
-    let (history, bytes) = encode_command_bar_input(command).unwrap();
-    assert_eq!(history, command.trim_end());
+    let (history, bytes) = encode_command_bar_input(command);
+    assert_eq!(history.as_deref(), Some(command.trim_end()));
     assert_eq!(bytes, command.as_bytes());
-    assert!(!history.lines().any(|line| line.starts_with(' ')));
+    assert!(!history
+        .unwrap()
+        .lines()
+        .any(|line| line.starts_with(' ')));
+}
+
+#[test]
+fn empty_command_bar_submission_sends_enter_without_history() {
+    for input in ["", "   ", "\t"] {
+        let (history, bytes) = encode_command_bar_input(input);
+        assert_eq!(history, None);
+        assert_eq!(bytes, b"\n");
+    }
 }
 
 #[test]

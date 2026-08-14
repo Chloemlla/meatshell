@@ -1,5 +1,49 @@
 use super::*;
 
+fn dynamic_sidebar_visible(active: bool, collapsed: bool) -> bool {
+    active && !collapsed
+}
+
+pub(super) fn sidebar_updates_visible(win: &AppWindow) -> bool {
+    dynamic_sidebar_visible(win.get_dynamic_ui_active(), win.get_sidebar_collapsed())
+}
+
+pub(super) fn refresh_process_model(win: &AppWindow, statuses: &TabStatuses) {
+    // The detached process window can be focused while the main window is not,
+    // so its own open state—not main-window activity—controls live updates.
+    if !win.get_process_window_open() {
+        return;
+    }
+    let active = win.get_active_tab_id().to_string();
+    let rows = statuses
+        .lock()
+        .unwrap()
+        .get(&active)
+        .filter(|status| status.state == 1)
+        .map(|status| proc_rows(&status.procs, &status.user, &active))
+        .unwrap_or_default();
+    if let Some(model) = win
+        .get_proc_list()
+        .as_any()
+        .downcast_ref::<VecModel<ProcRow>>()
+    {
+        model.set_vec(rows);
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::dynamic_sidebar_visible;
+
+    #[test]
+    fn dynamic_sidebar_updates_only_while_active_and_expanded() {
+        assert!(dynamic_sidebar_visible(true, false));
+        assert!(!dynamic_sidebar_visible(false, false));
+        assert!(!dynamic_sidebar_visible(true, true));
+        assert!(!dynamic_sidebar_visible(false, true));
+    }
+}
+
 pub(super) fn refresh_sidebar(
     win: &AppWindow,
     statuses: &TabStatuses,
@@ -52,6 +96,9 @@ pub(super) fn refresh_sidebar(
     // remote session has process data; default to empty and let the connected
     // branch below fill it in.
     let set_procs = |win: &AppWindow, procs: &[ProcInfo], current_user: &str, tab_id: &str| {
+        if !win.get_process_window_open() {
+            return;
+        }
         if let Some(vm) = win
             .get_proc_list()
             .as_any()
@@ -69,6 +116,9 @@ pub(super) fn refresh_sidebar(
                              nets: Vec<SysNetRow>,
                              disks: Vec<DiskInfo>,
                              sys: SystemDetails| {
+        if !win.get_system_info_window_open() {
+            return;
+        }
         if let Some(vm) = win
             .get_sys_metrics()
             .as_any()

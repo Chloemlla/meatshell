@@ -280,12 +280,18 @@ export component AppWindow inherits Window {
     // traffic-light buttons + a clean drag strip (0 elsewhere). See setup_macos_platform.
     property <length> titlebar-inset: root.is-mac ? 28px : 0px;
     in-out property <bool> window-maximized: false;
+    // Rust disables live model updates while the native window is unfocused,
+    // minimized or occluded. Cached samples are applied when it becomes active.
+    in-out property <bool> dynamic-ui-active: true;
     callback win-minimize();
     callback win-maximize-toggle();
     callback win-close();
     callback win-drag();          // start an OS window-move
     callback win-resize(int);     // start an OS resize; arg = direction code
     in-out property <bool> sidebar-collapsed: false; // left panel hidden
+    changed sidebar-collapsed => {
+        if (!root.sidebar-collapsed) { root.refresh-sidebar(); }
+    }
     callback set-sidebar-collapsed(bool);       // apply + persist
     // User-draggable size of the resource sidebar. width is used when docked
     // left/right, height when docked top/bottom. Seeded / persisted via the
@@ -354,9 +360,11 @@ export component AppWindow inherits Window {
     // shows/hides it in response to open-processes(); proc-list/proc-available
     // stay here as the live data source shared with that window (#23).
     callback open-processes();
+    in-out property <bool> process-window-open: false;
     in property <bool> proc-available;       // a live remote session is active
     in property <[ProcRow]> proc-list;       // top remote processes by CPU
     callback open-system-info();
+    in-out property <bool> system-info-window-open: false;
     in property <bool> system-info-available; // connected Linux session only (#268)
     in property <[SysMetricRow]> sys-metrics;
     in property <[SysNetRow]> sys-net-rows;

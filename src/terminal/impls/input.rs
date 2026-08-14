@@ -11,14 +11,15 @@ pub(crate) fn normalize_pasted_newlines(text: &str) -> String {
     text.replace("\r\n", "\r").replace('\n', "\r")
 }
 
-pub(crate) fn encode_command_bar_input(command: &str) -> Option<(String, Vec<u8>)> {
+/// Encode a command-bar submission and return the optional non-empty history
+/// entry separately. An empty bar still represents an Enter key press (#307),
+/// but must not add a blank command to persistent history.
+pub(crate) fn encode_command_bar_input(command: &str) -> (Option<String>, Vec<u8>) {
     let command = command.trim_end().to_string();
-    if command.is_empty() {
-        return None;
-    }
     let mut bytes = command.clone().into_bytes();
     bytes.push(b'\n');
-    Some((command, bytes))
+    let history = (!command.is_empty()).then_some(command);
+    (history, bytes)
 }
 
 pub(crate) fn encode_pasted_text(text: &str, bracketed: bool) -> Vec<u8> {
