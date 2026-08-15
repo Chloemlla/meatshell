@@ -1410,6 +1410,10 @@ async fn run_session(
     }
     emit_tunnel_update(&runtime_forwards, &events);
 
+    let mut terminal_decoder = crate::terminal::TerminalEncoding::new(&session.encoding);
+    let mut extended_decoder = crate::terminal::TerminalEncoding::new(&session.encoding);
+    let terminal_encoder = crate::terminal::TerminalEncoding::new(&session.encoding);
+
     // --- Main pump ------------------------------------------------------
     loop {
         tokio::select! {
@@ -1446,6 +1450,7 @@ async fn run_session(
                         // Only log the byte count — never the bytes themselves,
                         // which are raw keystrokes and may contain passwords (#15).
                         tracing::debug!("ssh channel.data len={} bytes", bytes.len());
+                        let bytes = terminal_encoder.encode(&bytes);
                         if let Err(err) = channel.data(&bytes[..]).await {
                             let _ = events.send(SessionEvent::Closed(format!("{}: {err}", t("写入失败", "write failed"))));
                             break;
@@ -1509,8 +1514,7 @@ async fn run_session(
                                     // run them through the normal output path so
                                     // the prompt shows and the cwd updates.
                                     if !leftover.is_empty() {
-                                        let text =
-                                            String::from_utf8_lossy(&leftover).into_owned();
+                                        let text = terminal_decoder.decode(&leftover);
                                         if let Some(cwd) = extract_osc7_path(&text) {
                                             let _ =
                                                 events.send(SessionEvent::CwdChanged(cwd));
@@ -1530,7 +1534,7 @@ async fn run_session(
                             continue;
                         }
 
-                        let chunk = String::from_utf8_lossy(&data).into_owned();
+                        let chunk = terminal_decoder.decode(&data);
 
                         if first_terminal_output {
                             first_terminal_output = false;
@@ -1615,7 +1619,7 @@ async fn run_session(
                         let _ = events.send(SessionEvent::Output(text));
                     }
                     Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
-                        let text = String::from_utf8_lossy(&data).into_owned();
+                        let text = extended_decoder.decode(&data);
                         let _ = events.send(SessionEvent::Output(text));
                     }
                     Some(ChannelMsg::ExitStatus { exit_status }) => {

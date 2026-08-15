@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **SSH 终端支持多字符集（#338）。** 会话高级设置新增字符集选择，可使用 UTF-8、GBK（兼容 GB2312）、Big5、Shift_JIS、EUC-KR 和 Windows-1252；远端输出与键盘输入/粘贴会在 SSH PTY 边界双向转码，并通过有状态解码正确处理跨网络包拆分的多字节字符。旧会话继续默认使用 UTF-8。
+- **Support multiple character encodings in SSH terminals (#338).** Session advanced settings now offer UTF-8, GBK (including GB2312), Big5, Shift_JIS, EUC-KR, and Windows-1252. Remote output and keyboard/paste input are transcoded bidirectionally at the SSH PTY boundary, with stateful decoding for multibyte characters split across network packets. Existing sessions continue to default to UTF-8.
+
 - **修复通过命令栏启动 `top`、`iftop` 等程序后 `q` 难以退出（#345）。** 命令框、快捷命令和历史记录的所有“立即执行”入口现在会在发送命令后把键盘焦点安全地交还终端，因此后续 `q`、方向键及其他交互按键会直接到达远端 TUI；仅填充但不执行命令时仍保留输入框焦点。
 - **Fix `q` not exiting `top`, `iftop`, and similar programs launched from the command bar (#345).** Every immediate-execution path—command input, quick commands, and history—now safely returns keyboard focus to the terminal after sending, so `q`, arrows, and other interactive keys reach the remote TUI. Filling a command without executing it still keeps focus in the input field.
 

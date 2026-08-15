@@ -49,4 +49,3 @@ impl<'de> Deserialize<'de> for Secret {
         Ok(Secret(String::deserialize(d)?))
     }
 }
-

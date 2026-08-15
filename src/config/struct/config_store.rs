@@ -10,4 +10,3 @@ pub struct ConfigStore {
     /// `secret.key` in the same directory as `sessions.json`.
     pub(crate) key: [u8; 32],
 }
-

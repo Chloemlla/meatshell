@@ -42,4 +42,3 @@ pub struct ImportedHost {
     pub port: u16,
     pub identity_file: String,
 }
-

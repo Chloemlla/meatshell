@@ -357,8 +357,14 @@ msgstr "搜索历史"
 msgid "Port forwarding"
 msgstr "端口转发"
 
-msgid "Advanced (proxy, tunnels)"
-msgstr "高级（代理、隧道）"
+msgid "Advanced (encoding, proxy, tunnels)"
+msgstr "高级（字符集、代理、隧道）"
+
+msgid "Terminal character encoding"
+msgstr "终端字符集"
+
+msgid "Use GBK for servers configured for GB2312 or GBK output."
+msgstr "远端使用 GB2312 或 GBK 输出时请选择 GBK。"
 
 msgid "Local (-L)"
 msgstr "本地 -L"

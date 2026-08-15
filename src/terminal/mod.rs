@@ -3,6 +3,8 @@ mod state;
 
 #[path = "impls/input.rs"]
 mod input;
+#[path = "impls/encoding.rs"]
+mod encoding;
 #[path = "impls/local.rs"]
 pub(crate) mod local;
 #[path = "impls/output_highlight.rs"]
@@ -31,6 +33,7 @@ pub(crate) use input::{
     key_to_pty_bytes, paste_requires_large_review, should_drop_bare_ctrl_marker,
     terminal_uses_bracketed_paste,
 };
+pub(crate) use encoding::TerminalEncoding;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) use input::windows_process_ctrl_release;
 #[cfg(any(target_os = "windows", test))]

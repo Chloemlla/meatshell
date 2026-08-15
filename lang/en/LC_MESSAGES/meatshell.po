@@ -357,8 +357,14 @@ msgstr "Search history"
 msgid "Port forwarding"
 msgstr "Port forwarding"
 
-msgid "Advanced (proxy, tunnels)"
-msgstr "Advanced (proxy, tunnels)"
+msgid "Advanced (encoding, proxy, tunnels)"
+msgstr "Advanced (encoding, proxy, tunnels)"
+
+msgid "Terminal character encoding"
+msgstr "Terminal character encoding"
+
+msgid "Use GBK for servers configured for GB2312 or GBK output."
+msgstr "Use GBK for servers configured for GB2312 or GBK output."
 
 msgid "Local (-L)"
 msgstr "Local (-L)"
