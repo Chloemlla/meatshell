@@ -461,6 +461,11 @@ export component InterfacePanel inherits Rectangle {
                     clicked => { root.ifd-page = "font"; }
                 }
                 NavItem {
+                    icon: "\u{E312}"; label: root.lang-en ? "Input" : "输入";
+                    active: root.ifd-page == "input";
+                    clicked => { root.ifd-page = "input"; }
+                }
+                NavItem {
                     icon: "\u{E1B1}"; label: root.lang-en ? "Rendering" : "渲染";
                     active: root.ifd-page == "renderer";
                     clicked => { root.ifd-page = "renderer"; }
@@ -655,6 +660,36 @@ export component InterfacePanel inherits Rectangle {
                         color: Theme.term-fg;
                         vertical-alignment: center;
                         height: parent.height;
+                    }
+                }
+            }
+
+            // --- Input page -------------------------------------------
+            if root.ifd-page == "input" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 0;
+                alignment: start;
+
+                SectionHeader { text: root.lang-en ? "INPUT" : "输入"; height: 24px; }
+                SettingRow {
+                    label: root.lang-en ? "Confirm multiline paste" : "确认多行粘贴";
+                    desc: root.lang-en ? "Show a review dialog before sending multiline content."
+                                       : "发送多行内容前显示预览确认窗口。";
+                    Switch {
+                        on: root.paste-confirm-enabled;
+                        toggled(v) => { root.paste-confirm-enabled = v; root.set-paste-confirm-enabled(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Additional paste shortcuts" : "额外粘贴快捷键";
+                    desc: root.lang-en ? "Enable Ctrl+Alt+V, Shift+Insert, and middle-click paste."
+                                       : "启用 Ctrl+Alt+V、Shift+Insert 和鼠标中键粘贴。";
+                    show-divider: false;
+                    Switch {
+                        on: root.extra-paste-shortcuts-enabled;
+                        toggled(v) => { root.extra-paste-shortcuts-enabled = v; root.set-extra-paste-shortcuts-enabled(v); }
                     }
                 }
             }
@@ -1249,24 +1284,6 @@ export component InterfacePanel inherits Rectangle {
                     Switch {
                         on: root.zen-mode;
                         toggled(v) => { root.zen-mode = v; root.set-zen-mode(v); }
-                    }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Confirm multiline paste" : "确认多行粘贴";
-                    desc: root.lang-en ? "Show a review dialog before sending multiline content."
-                                       : "发送多行内容前显示预览确认窗口。";
-                    Switch {
-                        on: root.paste-confirm-enabled;
-                        toggled(v) => { root.paste-confirm-enabled = v; root.set-paste-confirm-enabled(v); }
-                    }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Additional paste shortcuts" : "额外粘贴快捷键";
-                    desc: root.lang-en ? "Enable Ctrl+Alt+V, Shift+Insert, and middle-click paste."
-                                       : "启用 Ctrl+Alt+V、Shift+Insert 和鼠标中键粘贴。";
-                    Switch {
-                        on: root.extra-paste-shortcuts-enabled;
-                        toggled(v) => { root.extra-paste-shortcuts-enabled = v; root.set-extra-paste-shortcuts-enabled(v); }
                     }
                 }
                 SettingRow {

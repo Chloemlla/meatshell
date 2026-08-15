@@ -5,6 +5,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复通过命令栏启动 `top`、`iftop` 等程序后 `q` 难以退出（#345）。** 命令框、快捷命令和历史记录的所有“立即执行”入口现在会在发送命令后把键盘焦点安全地交还终端，因此后续 `q`、方向键及其他交互按键会直接到达远端 TUI；仅填充但不执行命令时仍保留输入框焦点。
+- **Fix `q` not exiting `top`, `iftop`, and similar programs launched from the command bar (#345).** Every immediate-execution path—command input, quick commands, and history—now safely returns keyboard focus to the terminal after sending, so `q`, arrows, and other interactive keys reach the remote TUI. Filling a command without executing it still keeps focus in the input field.
+
+- **支持在设置中关闭多行粘贴确认（#346）。** 多行粘贴安全提示默认开启；用户可在“设置 → 界面 → 确认多行粘贴”中持久化关闭或重新开启。超过 100 KiB 的超大粘贴始终强制确认。
+- **Allow disabling multiline-paste confirmation in Settings (#346).** The safety prompt remains enabled by default and can be persistently disabled or re-enabled under Settings → Interface → Confirm multiline paste. Pastes over 100 KiB always require review.
+
 - **修复 macOS 使用 `Ctrl+Space` 切换输入法时误删字符（#348）。** 部分 macOS 输入法会把裸 Control 错误上报为 `U+0008`；该标记现在仅在 macOS 输入边界被过滤，不再作为 Backspace 发送到终端。Windows、Linux 及真正由最终字母事件生成的 Ctrl+H 不受影响。
 - **Fix character deletion when switching macOS input methods with `Ctrl+Space` (#348).** Some macOS input methods report bare Control as `U+0008`; that marker is now filtered only at the macOS input boundary instead of being sent as Backspace. Windows, Linux, and genuine Ctrl+H generated from the final letter event remain unchanged.
 
