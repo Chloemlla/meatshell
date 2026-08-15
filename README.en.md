@@ -177,6 +177,12 @@ verifies `meatshell --version`, commits `Release v0.6.0`, creates an annotated
 tag, and pushes the current branch plus the tag. See
 [docs/release.md](docs/release.md) for details.
 
+## Related Groups
+
+Scan the QR code below to join the QQ group to exchange experiences, provide feedback, or get the latest updates with other users
+
+![QQ_Group_QR_ Code](assets/QQ_Group_QR_ Code.jpg)
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0.
