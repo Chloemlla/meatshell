@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复 macOS 无法在文件选择器中选择无扩展名 OpenSSH 私钥的问题（#325）。** macOS 的私钥浏览器不再按扩展名过滤，因此可直接选择 `~/.ssh/id_ed25519`、`id_rsa` 等标准无扩展名私钥；Windows 和 Linux 保持原有文件过滤行为。
+- **Fix selecting extensionless OpenSSH private keys on macOS (#325).** The macOS private-key picker no longer filters by extension, allowing standard files such as `~/.ssh/id_ed25519` and `id_rsa` to be selected directly. Windows and Linux retain their existing file filters.
+
 - **完善 macOS `Ctrl+X` 修复（#312）。** 真机日志确认部分 macOS 26.5 设备会在物理 Control 按住期间连续产生 `U+0017`（Ctrl+W）裸标记，导致 nano 在收到真正的 Ctrl+X 前先打开搜索。现在会一并过滤该设备相关标记，同时仍由组合键最后的字母事件生成真正的 Ctrl+W/Ctrl+X 控制码。
 - **Complete the macOS `Ctrl+X` fix (#312).** On-device logs confirmed that some macOS 26.5 systems repeatedly emit a bare `U+0017` (Ctrl+W) marker while physical Control is held, making nano open search before the real Ctrl+X arrives. That device-specific marker is now filtered while the chord's final letter event continues to generate genuine Ctrl+W/Ctrl+X bytes.
 
