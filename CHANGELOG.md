@@ -3,7 +3,7 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [Unreleased]
+## [0.6.11] - 2026-08-16
 
 - **SSH 终端支持多字符集（#338）。** 会话高级设置新增字符集选择，可使用 UTF-8、GBK（兼容 GB2312）、Big5、Shift_JIS、EUC-KR 和 Windows-1252；远端输出与键盘输入/粘贴会在 SSH PTY 边界双向转码，并通过有状态解码正确处理跨网络包拆分的多字节字符。旧会话继续默认使用 UTF-8。
 - **Support multiple character encodings in SSH terminals (#338).** Session advanced settings now offer UTF-8, GBK (including GB2312), Big5, Shift_JIS, EUC-KR, and Windows-1252. Remote output and keyboard/paste input are transcoded bidirectionally at the SSH PTY boundary, with stateful decoding for multibyte characters split across network packets. Existing sessions continue to default to UTF-8.
