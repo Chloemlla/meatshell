@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复 macOS 使用 `Ctrl+Space` 切换输入法时误删字符（#348）。** 部分 macOS 输入法会把裸 Control 错误上报为 `U+0008`；该标记现在仅在 macOS 输入边界被过滤，不再作为 Backspace 发送到终端。Windows、Linux 及真正由最终字母事件生成的 Ctrl+H 不受影响。
+- **Fix character deletion when switching macOS input methods with `Ctrl+Space` (#348).** Some macOS input methods report bare Control as `U+0008`; that marker is now filtered only at the macOS input boundary instead of being sent as Backspace. Windows, Linux, and genuine Ctrl+H generated from the final letter event remain unchanged.
+
 - **彻底阻止 zsh 泄漏 shell integration 初始化命令（#344）。** 不再依赖回显文本形态、软换行或 16 KiB 容量上限来判断初始化结束；注入命令现在输出专用的不可见完成标记，客户端在收到标记前持续隐藏并滚动丢弃内部回显。zsh/ZLE 即使反复重绘长命令也不会再把 `test -z "$FISH_VERSION" ...` 放到终端首屏，同时缓冲内存保持有界。
 - **Reliably prevent zsh shell-integration setup leaks (#344).** Setup completion no longer depends on echoed text shape, soft wrapping, or a 16 KiB threshold. The injected command now emits a private invisible completion marker, while the client hides and rolls over internal echo until that marker arrives. Repeated zsh/ZLE redraws can no longer expose `test -z "$FISH_VERSION" ...`, and buffering remains bounded.
 

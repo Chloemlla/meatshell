@@ -4836,7 +4836,7 @@ fn wire_key_input(
                 key.as_str(),
                 ctrl,
                 bare_ctrl_marker_workaround_enabled(),
-            ) || should_drop_macos_ctrl_w_marker(key.as_str(), ctrl, cfg!(target_os = "macos"))
+            ) || should_drop_macos_bare_ctrl_marker(key.as_str(), ctrl, cfg!(target_os = "macos"))
             {
                 tracing::debug!(
                     "send_key: dropped Slint bare Ctrl modifier marker {}",
@@ -5443,11 +5443,16 @@ fn redact_key(key: &str) -> String {
     parts.join(",")
 }
 
-/// Some macOS 26.5 devices repeat U+0017 while physical Control is held.
-/// U+0017 is Ctrl+W, so forwarding it makes nano open search before the final
-/// printable X event is encoded as the intended Ctrl+X (#312).
-fn should_drop_macos_ctrl_w_marker(key: &str, ctrl: bool, is_macos: bool) -> bool {
-    is_macos && ctrl && key.chars().collect::<Vec<_>>().as_slice() == ['\u{0017}']
+/// macOS/IME combinations may report bare physical Control as a C0 character:
+/// U+0017 opens nano search before Ctrl+X (#312), while U+0008 is encoded as
+/// Backspace and deletes the preceding character during Ctrl+Space (#348).
+fn should_drop_macos_bare_ctrl_marker(key: &str, ctrl: bool, is_macos: bool) -> bool {
+    is_macos
+        && ctrl
+        && matches!(
+            key.chars().collect::<Vec<_>>().as_slice(),
+            ['\u{0008}'] | ['\u{0017}']
+        )
 }
 
 /// `app_cursor` mirrors the remote terminal's DECCKM mode (`\x1b[?1h/l`):

@@ -102,10 +102,20 @@ fn platform_bare_ctrl_markers_do_not_reach_nano() {
 fn macos_ctrl_w_still_comes_from_the_final_printable_key() {
     // The affected device repeats bare Control as U+0017. A real Ctrl+W is
     // still generated from the chord's final printable W event.
-    assert!(should_drop_macos_ctrl_w_marker("\u{0017}", true, true));
-    assert!(!should_drop_macos_ctrl_w_marker("\u{0017}", true, false));
-    assert!(!should_drop_macos_ctrl_w_marker("\u{0017}", false, true));
+    assert!(should_drop_macos_bare_ctrl_marker("\u{0017}", true, true));
+    assert!(!should_drop_macos_bare_ctrl_marker("\u{0017}", true, false));
+    assert!(!should_drop_macos_bare_ctrl_marker("\u{0017}", false, true));
     assert_eq!(key_to_pty_bytes("w", true, false, false), vec![0x17]);
+}
+
+#[test]
+fn macos_ime_bare_ctrl_backspace_marker_is_platform_scoped() {
+    assert!(should_drop_macos_bare_ctrl_marker("\u{0008}", true, true));
+    assert!(!should_drop_macos_bare_ctrl_marker("\u{0008}", true, false));
+    assert!(!should_drop_macos_bare_ctrl_marker("\u{0008}", false, true));
+    // A genuine Ctrl+H still arrives through the final printable letter and is
+    // encoded to the same control byte at the PTY boundary.
+    assert_eq!(key_to_pty_bytes("h", true, false, false), vec![0x08]);
 }
 
 #[test]
