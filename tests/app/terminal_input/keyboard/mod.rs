@@ -92,9 +92,20 @@ fn ctrl_letter_c0_still_passes() {
 fn platform_bare_ctrl_markers_do_not_reach_nano() {
     assert!(should_drop_bare_ctrl_marker("\u{0011}", true, true));
     assert!(should_drop_bare_ctrl_marker("\u{0016}", true, true));
+    assert!(!should_drop_bare_ctrl_marker("\u{0017}", true, true));
     assert!(!should_drop_bare_ctrl_marker("\u{0011}", true, false));
     assert!(!should_drop_bare_ctrl_marker("x", true, true));
     assert_eq!(key_to_pty_bytes("x", true, false, false), vec![0x18]);
+}
+
+#[test]
+fn macos_ctrl_w_still_comes_from_the_final_printable_key() {
+    // The affected device repeats bare Control as U+0017. A real Ctrl+W is
+    // still generated from the chord's final printable W event.
+    assert!(should_drop_macos_ctrl_w_marker("\u{0017}", true, true));
+    assert!(!should_drop_macos_ctrl_w_marker("\u{0017}", true, false));
+    assert!(!should_drop_macos_ctrl_w_marker("\u{0017}", false, true));
+    assert_eq!(key_to_pty_bytes("w", true, false, false), vec![0x17]);
 }
 
 #[test]

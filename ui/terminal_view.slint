@@ -331,6 +331,8 @@ export component TerminalView inherits Rectangle {
     callback search-history(string /* query */);   // filter the history dropdown (#101)
 
     callback send-key(string, bool, bool, bool);
+    // Temporary on-device diagnostics for #312. Rust redacts printable text.
+    callback diagnose-key-event(string, bool, bool, bool, bool);
     callback cycle-tab(bool /* reverse */);
     callback terminal-resize(float, float);
     callback sftp-navigate(string);
@@ -951,6 +953,9 @@ export component TerminalView inherits Rectangle {
                     // this reset an old blink phase can hide the cursor halfway
                     // through a repeated arrow-key sequence (#319).
                     key-capture.cursor-blink = true;
+                    root.diagnose-key-event(event.text,
+                        event.modifiers.control, event.modifiers.meta,
+                        event.modifiers.alt, event.modifiers.shift);
                     // ⚠ macOS modifier naming is SWAPPED by Slint (see the winit
                     // backend's muda.rs): `event.modifiers.control` is the **Cmd (⌘)**
                     // key and `event.modifiers.meta` is the **physical Ctrl** key.

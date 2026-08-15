@@ -4539,6 +4539,33 @@ fn wire_key_input(
     // Forward each keystroke as raw bytes to the SSH PTY. The server's bash /
     // readline handles echo, history (↑↓), Tab completion, Ctrl+C, etc.
     {
+        // Capture Slint's raw modifier mapping before app-shortcut routing.
+        // WARN is deliberate: packaged builds persist WARN+ to error.log.
+        window.on_diagnose_key_event(
+            move |tab_id: SharedString,
+                  key: SharedString,
+                  raw_control: bool,
+                  raw_meta: bool,
+                  alt: bool,
+                  shift: bool| {
+                if cfg!(target_os = "macos")
+                    && (raw_control
+                        || raw_meta
+                        || key.chars().any(|c| (0x10..=0x18).contains(&(c as u32))))
+                {
+                    tracing::warn!(
+                        "[KEY_DIAG_312] stage=slint tab={} key={} raw_control={} raw_meta={} alt={} shift={}",
+                        tab_id,
+                        redact_key(key.as_str()),
+                        raw_control,
+                        raw_meta,
+                        alt,
+                        shift
+                    );
+                }
+            },
+        );
+
         let handles = handles.clone();
         let bufs = bufs.clone();
         let sync_input = sync_input.clone();
@@ -4799,15 +4826,37 @@ fn wire_key_input(
                 key.as_str(),
                 ctrl,
                 bare_ctrl_marker_workaround_enabled(),
-            ) {
+            ) || should_drop_macos_ctrl_w_marker(key.as_str(), ctrl, cfg!(target_os = "macos"))
+            {
                 tracing::debug!(
                     "send_key: dropped Slint bare Ctrl modifier marker {}",
                     redact_key(key.as_str())
                 );
+                if cfg!(target_os = "macos") {
+                    tracing::warn!(
+                        "[KEY_DIAG_312] stage=filter tab={} key={} ctrl={} alt={} shift={} action=drop_bare_marker",
+                        tab_id, redact_key(key.as_str()), ctrl, alt, shift
+                    );
+                }
                 return;
             }
 
             let bytes = key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor);
+            if cfg!(target_os = "macos")
+                && (ctrl || key.chars().any(|c| (0x10..=0x18).contains(&(c as u32))))
+            {
+                tracing::warn!(
+                    "[KEY_DIAG_312] stage=pty tab={} key={} ctrl={} alt={} shift={} app_cursor={} encoded={} action={}",
+                    tab_id,
+                    redact_key(key.as_str()),
+                    ctrl,
+                    alt,
+                    shift,
+                    app_cursor,
+                    redact_key(&String::from_utf8_lossy(&bytes)),
+                    if bytes.is_empty() { "drop_empty" } else { "send" }
+                );
+            }
             // Log only the length — never the keystroke bytes, which can be
             // password characters (#15).
             tracing::debug!(
@@ -5382,6 +5431,13 @@ fn redact_key(key: &str) -> String {
         parts.push(format!("<{printable} printable redacted>"));
     }
     parts.join(",")
+}
+
+/// Some macOS 26.5 devices repeat U+0017 while physical Control is held.
+/// U+0017 is Ctrl+W, so forwarding it makes nano open search before the final
+/// printable X event is encoded as the intended Ctrl+X (#312).
+fn should_drop_macos_ctrl_w_marker(key: &str, ctrl: bool, is_macos: bool) -> bool {
+    is_macos && ctrl && key.chars().collect::<Vec<_>>().as_slice() == ['\u{0017}']
 }
 
 /// `app_cursor` mirrors the remote terminal's DECCKM mode (`\x1b[?1h/l`):

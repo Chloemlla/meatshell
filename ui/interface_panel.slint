@@ -1126,8 +1126,8 @@ export component InterfacePanel inherits Rectangle {
                     label: root.lang-en ? "Renderer" : "渲染器";
                     desc: Theme.is-mac
                         ? (root.lang-en
-                            ? "FemtoVG is the default. Try Skia when text is missing or rendered incorrectly on macOS."
-                            : "FemtoVG 是默认渲染器；如果 macOS 上文字缺失或显示异常，可以尝试 Skia。")
+                            ? "CPU is the compatibility default. FemtoVG and Skia use GPU acceleration."
+                            : "CPU 是兼容性默认渲染器；FemtoVG 和 Skia 使用 GPU 加速。")
                         : (root.lang-en
                             ? "Auto tries GPU acceleration and lets Slint fall back to software. Software is best for VMs and compatibility."
                             : "自动模式会尝试 GPU 加速，并由 Slint 在初始化失败时回退到软件渲染；虚拟机或兼容性优先时请选择软件。");
@@ -1135,19 +1135,26 @@ export component InterfacePanel inherits Rectangle {
                     ComboBox {
                         width: 150px;
                         model: Theme.is-mac
-                            ? ["FemtoVG", "Skia"]
+                            ? ["CPU", "FemtoVG", "Skia"]
                             : (root.lang-en
                                 ? ["Automatic", "GPU", "Software"]
                                 : ["自动", "GPU", "软件"]);
                         current-value: Theme.is-mac
-                            ? (root.renderer-mode == "skia" ? "Skia" : "FemtoVG")
+                            ? (root.renderer-mode == "skia"
+                                ? "Skia"
+                                : root.renderer-mode == "femtovg" ? "FemtoVG" : "CPU")
                             : (root.renderer-mode == "auto"
                                 ? (root.lang-en ? "Automatic" : "自动")
                                 : root.renderer-mode == "gpu"
                                     ? "GPU"
                                     : (root.lang-en ? "Software" : "软件"));
                         selected(v) => {
-                            if (Theme.is-mac && v == "FemtoVG"
+                            if (Theme.is-mac && v == "CPU"
+                                    && root.renderer-mode != "software") {
+                                root.renderer-mode = "software";
+                                root.set-renderer-mode("software");
+                                root.renderer-restart-required = true;
+                            } else if (Theme.is-mac && v == "FemtoVG"
                                     && root.renderer-mode != "femtovg") {
                                 root.renderer-mode = "femtovg";
                                 root.set-renderer-mode("femtovg");
@@ -1183,12 +1190,12 @@ export component InterfacePanel inherits Rectangle {
                             : "重启 MeatShell 后渲染器设置才会生效。")
                         : (root.lang-en
                             ? (Theme.is-mac
-                                ? "FemtoVG remains the default renderer on macOS."
+                                ? "CPU is the default renderer on macOS."
                                 : (root.is-windows
                                     ? "Software remains the compatibility default for existing installations."
                                     : "Automatic remains the default renderer on Linux."))
                             : (Theme.is-mac
-                                ? "macOS 默认继续使用 FemtoVG 渲染器。"
+                                ? "macOS 默认使用 CPU 渲染器。"
                                 : (root.is-windows
                                     ? "现有安装继续默认使用兼容性更好的软件渲染。"
                                     : "Linux 默认继续使用自动渲染器。")));

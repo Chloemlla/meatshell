@@ -330,6 +330,15 @@ fn normalize_reserved_session_groups(cfg: &mut ConfigFile) -> bool {
     changed
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn normalize_macos_renderer_mode(mode: &str) -> &'static str {
+    match mode {
+        "femtovg" => "femtovg",
+        "skia" => "skia",
+        _ => "software",
+    }
+}
+
 impl ConfigStore {
     /// The prefix that marks an encrypted password blob in sessions.json.
     const ENC_PREFIX: &'static str = "enc:v1:";
@@ -565,10 +574,7 @@ impl ConfigStore {
     /// Renderer preference for the current platform.
     #[cfg(target_os = "macos")]
     pub fn renderer_mode(&self) -> &str {
-        match self.cache.renderer_mode.as_str() {
-            "skia" => "skia",
-            _ => "femtovg",
-        }
+        normalize_macos_renderer_mode(&self.cache.renderer_mode)
     }
 
     /// Missing and invalid Windows values deliberately use software so upgrades
@@ -584,10 +590,7 @@ impl ConfigStore {
 
     #[cfg(target_os = "macos")]
     pub fn set_renderer_mode(&mut self, mode: String) {
-        self.cache.renderer_mode = match mode.as_str() {
-            "skia" => "skia".into(),
-            _ => "femtovg".into(),
-        };
+        self.cache.renderer_mode = normalize_macos_renderer_mode(&mode).into();
     }
 
     /// Linux previously used Slint's automatic renderer selection and had no
@@ -1697,20 +1700,31 @@ mod tests {
     }
 
     #[test]
+    fn macos_renderer_mode_defaults_to_cpu_and_preserves_gpu_choices() {
+        assert_eq!(normalize_macos_renderer_mode(""), "software");
+        assert_eq!(normalize_macos_renderer_mode("software"), "software");
+        assert_eq!(normalize_macos_renderer_mode("femtovg"), "femtovg");
+        assert_eq!(normalize_macos_renderer_mode("skia"), "skia");
+        assert_eq!(normalize_macos_renderer_mode("unexpected"), "software");
+    }
+
+    #[test]
     #[cfg(target_os = "macos")]
     fn renderer_mode_uses_macos_backends_and_validates() {
         let mut store = temp_store();
-        assert_eq!(store.renderer_mode(), "femtovg");
+        assert_eq!(store.renderer_mode(), "software");
 
         store.set_renderer_mode("skia".into());
         assert_eq!(store.renderer_mode(), "skia");
         store.set_renderer_mode("femtovg".into());
         assert_eq!(store.renderer_mode(), "femtovg");
+        store.set_renderer_mode("software".into());
+        assert_eq!(store.renderer_mode(), "software");
         store.set_renderer_mode("unexpected".into());
-        assert_eq!(store.renderer_mode(), "femtovg");
+        assert_eq!(store.renderer_mode(), "software");
 
         store.cache = serde_json::from_str("{}").expect("legacy config must deserialize");
-        assert_eq!(store.renderer_mode(), "femtovg");
+        assert_eq!(store.renderer_mode(), "software");
     }
 
     #[test]

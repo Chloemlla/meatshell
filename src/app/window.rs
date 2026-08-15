@@ -341,7 +341,7 @@ where
 ///
 /// Must run before any window is created. We build the backend explicitly, which
 /// would otherwise bypass the `SLINT_BACKEND` renderer override that exists as the
-/// macOS femtovg/Skia escape hatch (#108/#129) — so we re-honour it by hand.
+/// macOS software/FemtoVG/Skia selection (#108/#129) — so we re-honour it by hand.
 #[cfg(target_os = "macos")]
 pub(super) fn setup_macos_platform(renderer_mode: &str) {
     use i_slint_backend_winit::winit::platform::macos::WindowAttributesExtMacOS;

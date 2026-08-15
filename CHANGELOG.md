@@ -5,6 +5,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **完善 macOS `Ctrl+X` 修复（#312）。** 真机日志确认部分 macOS 26.5 设备会在物理 Control 按住期间连续产生 `U+0017`（Ctrl+W）裸标记，导致 nano 在收到真正的 Ctrl+X 前先打开搜索。现在会一并过滤该设备相关标记，同时仍由组合键最后的字母事件生成真正的 Ctrl+W/Ctrl+X 控制码。
+- **Complete the macOS `Ctrl+X` fix (#312).** On-device logs confirmed that some macOS 26.5 systems repeatedly emit a bare `U+0017` (Ctrl+W) marker while physical Control is held, making nano open search before the real Ctrl+X arrives. That device-specific marker is now filtered while the chord's final letter event continues to generate genuine Ctrl+W/Ctrl+X bytes.
+
+- **macOS 新增 CPU 渲染并设为默认。** “设置 → 界面 → 渲染”现在可选择 CPU、FemtoVG 和 Skia；新安装及未保存渲染器偏好的配置默认使用 CPU 渲染，已有的 FemtoVG/Skia 明确选择保持不变。设置在重启 MeatShell 后生效，`SLINT_BACKEND` 环境变量仍具有最高优先级。
+- **Add CPU rendering on macOS and make it the default.** Settings → Interface → Rendering now offers CPU, FemtoVG, and Skia. New installations and configurations without a saved renderer preference default to CPU rendering, while explicit existing FemtoVG/Skia choices are preserved. Changes apply after restarting MeatShell, and `SLINT_BACKEND` keeps the highest priority.
+
 ## [0.6.10] - 2026-08-05
 
 - **修复关闭“欢迎页设为侧栏”时闪退（#323）。** 欢迎页在侧栏与标签页之间切换时，分屏模型现在会延迟到下一次界面事件循环再刷新，并跳过尺寸和内容均未变化的重复更新，避免 Windows 下递归重建界面导致当前进程及后续启动闪退。

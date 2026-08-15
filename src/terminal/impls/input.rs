@@ -95,7 +95,11 @@ pub(crate) fn windows_process_ctrl_release(
     }
 }
 
-pub(crate) fn should_drop_bare_ctrl_marker(key: &str, ctrl: bool, workaround: bool) -> bool {
+pub(crate) fn should_drop_bare_ctrl_marker(
+    key: &str,
+    ctrl: bool,
+    workaround: bool,
+) -> bool {
     workaround
         && ctrl
         && matches!(
@@ -127,6 +131,8 @@ pub(crate) fn bare_ctrl_marker_workaround_enabled() -> bool {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn bare_ctrl_marker_workaround_enabled() -> bool {
+    // Some macOS 26.5 devices repeat U+0017 while physical Control is held.
+    // Without filtering it, nano receives Ctrl+W (search) before Ctrl+X (#312).
     true
 }
 

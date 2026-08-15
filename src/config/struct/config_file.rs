@@ -62,7 +62,7 @@ pub struct ConfigFile {
     #[serde(default)]
     pub theme_pref: String,
     /// Platform renderer preference. Windows uses software/auto/gpu; macOS uses
-    /// femtovg/skia. Missing or foreign-platform values use the platform default.
+    /// software/femtovg/skia. Missing or foreign-platform values use the platform default.
     #[serde(default)]
     pub renderer_mode: String,
     /// Terminal font family. Empty = the built-in default ("Meatshell Mono").

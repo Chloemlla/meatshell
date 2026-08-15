@@ -24,7 +24,8 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // macOS renderer is left at Slint's default (femtovg) and is NOT forced.
+    // macOS defaults to Slint's CPU renderer. FemtoVG and Skia remain available
+    // in Settings -> Interface -> Rendering for users who prefer GPU rendering.
     //
     // History: 0.4.10 force-set SLINT_BACKEND=winit-skia to work around femtovg's
     // CoreText font lookup failing on macOS 26 / Tahoe (all text vanished, #108).
@@ -33,9 +34,9 @@ fn main() -> anyhow::Result<()> {
     // "PingFang SC" UI font and all text vanished there instead (#129). Icons
     // survived in both cases because Material Icons is an embedded font.
     //
-    // Neither renderer works for every macOS machine, so FemtoVG remains the
-    // known-good default for the majority. Users for whom it fails to render text
-    // (e.g. #108) can select Skia under Settings -> Interface -> Rendering. The
+    // Neither GPU renderer works for every macOS machine, so software rendering
+    // is the compatibility default. Users can select FemtoVG or Skia under
+    // Settings -> Interface -> Rendering. The
     // SLINT_BACKEND=winit-skia diagnostic override remains available and takes
     // precedence over the saved setting. The renderer-skia feature is compiled in
     // on macOS (see Cargo.toml), so switching does not require a rebuild.
