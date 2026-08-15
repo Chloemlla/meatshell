@@ -169,9 +169,10 @@ meatshell/
 
 ## 相关群组
 
-扫描下方二维码加入 QQ 群，与其他用户交流使用经验、反馈问题或获取最新动态。
-
-![QQ群二维码](assets/QQ_Group_QR_ Code.jpg)
+<p align="center">
+  <img src="docs/QR/QQ_Group_QR_Code.jpg" alt="QQ群二维码" width="300"><br>
+  <em>扫描二维码加入 QQ 群，与其他用户交流使用经验、反馈问题或获取最新动态</em>
+</p>
 
 ## License
 

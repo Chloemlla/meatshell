@@ -179,9 +179,10 @@ tag, and pushes the current branch plus the tag. See
 
 ## Related Groups
 
-Scan the QR code below to join the QQ group to exchange experiences, provide feedback, or get the latest updates with other users
-
-![QQ_Group_QR_ Code](assets/QQ_Group_QR_ Code.jpg)
+<p align="center">
+  <img src="docs/QR/QQ_Group_QR_Code.jpg" alt="QQ group QR code" width="300"><br>
+  <em>Scan the QR code to join QQ groups to exchange user experiences, provide feedback, or get the latest updates</em>
+</p>
 
 ## License
 
