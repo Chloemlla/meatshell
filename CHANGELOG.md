@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **彻底阻止 zsh 泄漏 shell integration 初始化命令（#344）。** 不再依赖回显文本形态、软换行或 16 KiB 容量上限来判断初始化结束；注入命令现在输出专用的不可见完成标记，客户端在收到标记前持续隐藏并滚动丢弃内部回显。zsh/ZLE 即使反复重绘长命令也不会再把 `test -z "$FISH_VERSION" ...` 放到终端首屏，同时缓冲内存保持有界。
+- **Reliably prevent zsh shell-integration setup leaks (#344).** Setup completion no longer depends on echoed text shape, soft wrapping, or a 16 KiB threshold. The injected command now emits a private invisible completion marker, while the client hides and rolls over internal echo until that marker arrives. Repeated zsh/ZLE redraws can no longer expose `test -z "$FISH_VERSION" ...`, and buffering remains bounded.
+
 - **修复 macOS 无法在文件选择器中选择无扩展名 OpenSSH 私钥的问题（#325）。** macOS 的私钥浏览器不再按扩展名过滤，因此可直接选择 `~/.ssh/id_ed25519`、`id_rsa` 等标准无扩展名私钥；Windows 和 Linux 保持原有文件过滤行为。
 - **Fix selecting extensionless OpenSSH private keys on macOS (#325).** The macOS private-key picker no longer filters by extension, allowing standard files such as `~/.ssh/id_ed25519` and `id_rsa` to be selected directly. Windows and Linux retain their existing file filters.
 
