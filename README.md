@@ -167,6 +167,13 @@ meatshell/
 
 脚本会更新 `Cargo.toml` / `Cargo.lock`，运行 `cargo check --locked`，验证 `meatshell --version`，提交 `Release v0.6.0`，创建 annotated tag，并推送当前分支和 tag。更多细节见 [docs/release.md](docs/release.md)。
 
+## 相关群组
+
+<p align="center">
+  <img src="docs/QR/QQ_Group_QR_Code.jpg" alt="QQ群二维码" width="300"><br>
+  <em>扫描二维码加入 QQ 群，与其他用户交流使用经验、反馈问题或获取最新动态</em>
+</p>
+
 ## License
 
 MIT OR Apache-2.0（双许可）。
