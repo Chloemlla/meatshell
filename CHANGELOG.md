@@ -3,7 +3,7 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [0.6.11] - 2026-08-16
+## [0.6.12] - 2026-08-16
 
 - **降低键盘输入后的字符回显延迟。** 检测到真实按键发送后，对应会话会在短暂交互窗口内把终端刷新间隔从约 33 ms 降至约 8 ms，使本地 CMD、PowerShell、WSL 和低延迟 SSH 会话的逐字输入更跟手；停止输入后自动恢复原有日志流限速，滚屏阅读仍使用低频刷新。
 - **Reduce character-echo latency after keyboard input.** After a real key is sent, the corresponding session temporarily lowers its terminal refresh interval from roughly 33 ms to 8 ms, making typing in local CMD, PowerShell, WSL, and low-latency SSH sessions feel more immediate. It automatically returns to the existing firehose throttle when typing stops, while scrolled-back views retain their lower refresh rate.
