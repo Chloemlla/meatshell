@@ -643,6 +643,22 @@ pub fn run() -> Result<()> {
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
         window.set_panel_font(s.panel_font() as f32 / 100.0); // settings-panel font scale
         window.set_renderer_mode(s.renderer_mode().into());
+        window.set_mcp_enabled(s.mcp_enabled());
+        window.set_mcp_use_saved_credentials(s.mcp_use_saved_credentials());
+        window.set_mcp_allow_commands(s.mcp_allow_commands());
+        window.set_mcp_allow_file_transfers(s.mcp_allow_file_transfers());
+    }
+
+    {
+        let store = store.clone();
+        window.on_set_mcp_permissions(move |enabled, credentials, commands, files| {
+            let mut settings = store.borrow_mut();
+            settings.set_mcp_enabled(enabled);
+            settings.set_mcp_use_saved_credentials(credentials);
+            settings.set_mcp_allow_commands(commands);
+            settings.set_mcp_allow_file_transfers(files);
+            let _ = settings.save();
+        });
     }
 
     // Apply the saved immersive wallpaper (overrides dark/light when set; a

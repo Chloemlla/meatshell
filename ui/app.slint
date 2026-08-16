@@ -538,6 +538,11 @@ export component AppWindow inherits Window {
     callback set-welcome-as-sidebar(bool);         // apply + persist
     in-out property <bool> update-check-enabled: true;   // startup new-version check (#184)
     callback set-update-check-enabled(bool);       // apply + persist
+    in-out property <bool> mcp-enabled: true;
+    in-out property <bool> mcp-use-saved-credentials: true;
+    in-out property <bool> mcp-allow-commands: true;
+    in-out property <bool> mcp-allow-file-transfers: true;
+    callback set-mcp-permissions(bool, bool, bool, bool);
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
@@ -4187,6 +4192,10 @@ export component AppWindow inherits Window {
                     welcome-as-sidebar <=> root.welcome-as-sidebar;
                     quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
                     update-check-enabled <=> root.update-check-enabled;
+                    mcp-enabled <=> root.mcp-enabled;
+                    mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
+                    mcp-allow-commands <=> root.mcp-allow-commands;
+                    mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
                     wallpaper-overlay <=> root.wallpaper-overlay;
                     current-wallpaper: root.current-wallpaper;
                     custom-wallpaper-name: root.custom-wallpaper-name;
@@ -4240,6 +4249,9 @@ export component AppWindow inherits Window {
                         root.set-quick-commands-as-sidebar(v);
                     }
                     set-update-check-enabled(v) => { root.set-update-check-enabled(v); }
+                    set-mcp-permissions(enabled, credentials, commands, files) => {
+                        root.set-mcp-permissions(enabled, credentials, commands, files);
+                    }
                     add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
                     remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
                     pick-wsl-directory => { root.pick-wsl-directory(); }

@@ -4,10 +4,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod automation;
+mod cli;
 mod config;
 mod i18n;
 mod layout;
 mod logging;
+mod mcp;
 mod resource;
 mod session;
 mod sftp;
@@ -19,7 +22,15 @@ mod wallpaper;
 mod webdav;
 
 fn main() -> anyhow::Result<()> {
-    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+    let args: Vec<String> = std::env::args().collect();
+    if mcp::is_serve_command(&args) {
+        return mcp::run_stdio();
+    }
+    if cli::is_cli_command(&args) {
+        return cli::run(&args);
+    }
+
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("meatshell {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }

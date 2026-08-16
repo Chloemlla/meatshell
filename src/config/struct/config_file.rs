@@ -16,6 +16,12 @@ fn default_wsl_home() -> String {
     "~".to_string()
 }
 
+// Testing-stage MCP defaults. Switch these serde defaults to false before the
+// feature is promoted from preview to a stable release.
+fn default_mcp_preview_enabled() -> bool {
+    true
+}
+
 /// Ships with the "幻想 3048" sci-fi wallpaper on by default (a dark theme). New
 /// installs and users upgrading from before the wallpaper feature get it; once
 /// the user picks anything (including "无"/none, stored as ""), their choice is
@@ -256,6 +262,19 @@ pub struct ConfigFile {
     /// it on stops the GitHub releases query and the banner.
     #[serde(default)]
     pub update_check_disabled: bool,
+    /// Enable the local stdio MCP server (`meatshell mcp serve`).
+    #[serde(default = "default_mcp_preview_enabled")]
+    pub mcp_enabled: bool,
+    /// Allow MCP tools to use credentials already stored by MeatShell. Secrets
+    /// remain internal and are never included in protocol responses.
+    #[serde(default = "default_mcp_preview_enabled")]
+    pub mcp_use_saved_credentials: bool,
+    /// Allow MCP clients to execute arbitrary commands on saved SSH sessions.
+    #[serde(default = "default_mcp_preview_enabled")]
+    pub mcp_allow_commands: bool,
+    /// Allow MCP clients to upload local files and download remote files.
+    #[serde(default = "default_mcp_preview_enabled")]
+    pub mcp_allow_file_transfers: bool,
     /// One-time default-layout migration marker (#new-user-defaults). 0 = config
     /// predates the migration. `migrate_defaults` bumps it to `DEFAULTS_REV` after
     /// pushing the new look (default wallpaper / welcome-as-sidebar / right-docked

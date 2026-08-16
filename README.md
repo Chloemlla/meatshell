@@ -125,6 +125,118 @@ cargo run --release
 首次启动会在 `%APPDATA%/meatshell/sessions.json` 建立空的会话库。点击右上
 角 **“＋ 新建会话”** 添加第一台服务器。
 
+## CLI 与 MCP 自动化
+
+MeatShell 的 CLI 和 MCP 共用 GUI 中保存的会话及 SSH / SFTP 实现。CLI 适合脚本、
+CI 和手动执行明确的命令；MCP 则让支持 MCP 的 AI 客户端通过自然语言完成服务器
+巡检、日志分析和文件传输。两者只是调用入口不同，不需要重新维护一份服务器配置。
+
+> 使用前请先在 GUI 中创建并成功连接一次目标会话，以完成主机密钥确认。密码、私钥等
+> 凭据不会出现在 CLI/MCP 返回结果中，也不要把明文密码写进提示词或 MCP 配置。
+
+### CLI
+
+查看所有可用命令：
+
+```bash
+meatshell cli help
+```
+
+常用示例：
+
+```bash
+# 列出已保存的会话，第一列是后续命令使用的 session-id
+meatshell cli sessions
+meatshell cli sessions --json
+
+# 查看单个会话的非敏感信息
+meatshell cli session <session-id>
+
+# 执行非交互式 SSH 命令；远端命令必须放在 -- 后面
+meatshell cli exec <session-id> -- free -h
+meatshell cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
+
+# 浏览、读取和传输远端文件
+meatshell cli files <session-id> /var/log
+meatshell cli read <session-id> /var/log/example.log
+meatshell cli upload <session-id> ./local.txt /tmp
+meatshell cli download <session-id> /tmp/result.txt ./downloads
+```
+
+CLI 的 `<session-id>` 可由 `meatshell cli sessions` 获取。文件下载要求本地目标目录已经
+存在，且不会覆盖同名文件。
+
+### MCP
+
+先打开 MeatShell 的 **设置 → 界面 → MCP**：
+
+1. 启用 MCP。
+2. 根据需要允许使用已保存的凭据。
+3. 需要远程诊断时允许执行任意 SSH 命令。
+4. 需要上传或下载文件时允许文件传输。
+
+然后在支持 stdio MCP 的客户端中添加名为 `meatshell` 的服务：
+
+```json
+{
+  "mcpServers": {
+    "meatshell": {
+      "command": "/absolute/path/to/meatshell",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷新 MCP 客户端
+后，应能看到 `meatshell` 服务以及会话查询、远程命令、目录浏览、文本读取、上传和下载
+等工具。不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端文档为准。
+
+#### MCP JSON-RPC 示例
+
+一般情况下由 AI 客户端自动生成这些请求，无需手工输入。调试 stdio 连接时，每个请求
+必须是独立的一行 JSON，依次完成初始化和 `notifications/initialized` 通知：
+
+```jsonl
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1.0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+查询已保存会话并获取 `<session-id>`：
+
+```jsonl
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_session","arguments":{"session_id":"<session-id>"}}}
+```
+
+执行 OOM 只读诊断并浏览堆转储目录：
+
+```jsonl
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"session_id":"<session-id>","command":"free -h; printf '\\n=== kernel OOM ===\\n'; dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -50 || true; printf '\\n=== Java ===\\n'; ps -ef | grep '[j]ava'","timeout_seconds":30,"max_output_bytes":1048576}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_remote_files","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/heapdumps"}}}
+```
+
+读取日志或下载一个堆文件：
+
+```jsonl
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
+```
+
+`read_remote_text_file` 只接受有大小和行数限制的 UTF-8 文本；HPROF 等二进制文件应使用
+`download_file`。下载目标目录必须已经存在，且工具不会覆盖同名文件。
+
+配置完成后，可以直接对 AI 客户端说：
+
+> 用 `meatshell` MCP 排查一下：我的 `192.168.100.41` 服务器出现 OOM，堆转储位于
+> `/home/jeff/test/heapdumps`。请检查系统内存、内核 OOM 记录、Java 进程、应用日志和
+> HPROF 文件，判断根因；先只读排查，不要重启服务或删除文件。
+
+MCP 会先通过 `list_sessions` 查找匹配的已保存会话，再按已授予的权限调用远程命令或
+SFTP 工具。若存在多条同主机会话，可在提示词中补充 GUI 中的会话名称。建议诊断提示词
+明确写出目标主机、日志或堆文件路径，以及是否允许重启、修改配置、下载文件等操作边界。
+
 ## 项目布局
 
 ```

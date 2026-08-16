@@ -3,6 +3,11 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
+## [Unreleased]
+
+- **新增 MCP 与 CLI 自动化入口。** `meatshell mcp serve` 通过本机 stdio 提供会话查询、SSH 命令执行、SFTP 目录浏览、有界文本读取以及文件上传/下载，并在“设置 → 界面 → MCP”中独立控制服务、保存凭据、任意命令及文件传输权限；密码、私钥和代理凭据不会出现在协议响应中。`meatshell cli` 复用同一核心能力，提供人类可读输出及 `--json`。
+- **Add MCP and CLI automation entry points.** `meatshell mcp serve` exposes session discovery, SSH command execution, SFTP directory listing, bounded text reads, and file uploads/downloads over local stdio, with separate service, saved-credential, arbitrary-command, and file-transfer controls under Settings → Interface → MCP. Passwords, private keys, and proxy credentials never appear in protocol responses. `meatshell cli` reuses the same core and supports both human-readable output and `--json`.
+
 ## [0.6.12] - 2026-08-16
 
 - **降低键盘输入后的字符回显延迟。** 检测到真实按键发送后，对应会话会在短暂交互窗口内把终端刷新间隔从约 33 ms 降至约 8 ms，使本地 CMD、PowerShell、WSL 和低延迟 SSH 会话的逐字输入更跟手；停止输入后自动恢复原有日志流限速，滚屏阅读仍使用低频刷新。

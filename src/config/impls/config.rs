@@ -1088,6 +1088,30 @@ impl ConfigStore {
     pub fn set_update_check_enabled(&mut self, enabled: bool) {
         self.cache.update_check_disabled = !enabled;
     }
+    pub fn mcp_enabled(&self) -> bool {
+        self.cache.mcp_enabled
+    }
+    pub fn set_mcp_enabled(&mut self, enabled: bool) {
+        self.cache.mcp_enabled = enabled;
+    }
+    pub fn mcp_use_saved_credentials(&self) -> bool {
+        self.cache.mcp_use_saved_credentials
+    }
+    pub fn set_mcp_use_saved_credentials(&mut self, enabled: bool) {
+        self.cache.mcp_use_saved_credentials = enabled;
+    }
+    pub fn mcp_allow_commands(&self) -> bool {
+        self.cache.mcp_allow_commands
+    }
+    pub fn set_mcp_allow_commands(&mut self, enabled: bool) {
+        self.cache.mcp_allow_commands = enabled;
+    }
+    pub fn mcp_allow_file_transfers(&self) -> bool {
+        self.cache.mcp_allow_file_transfers
+    }
+    pub fn set_mcp_allow_file_transfers(&mut self, enabled: bool) {
+        self.cache.mcp_allow_file_transfers = enabled;
+    }
     pub fn wallpaper_overlay(&self) -> f32 {
         let a = self.cache.wallpaper_overlay;
         // Floor lowered 0.40 -> 0.30 so more see-through panels are reachable.

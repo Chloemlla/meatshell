@@ -131,6 +131,129 @@ On first launch an empty session store is created at
 `%APPDATA%/meatshell/sessions.json`. Click **"＋ New Session"** in the top-right
 to add your first server.
 
+## CLI and MCP automation
+
+The MeatShell CLI and MCP server share the sessions and SSH/SFTP implementation
+used by the GUI. The CLI is suited to scripts, CI, and explicit commands, while
+MCP lets an MCP-capable AI client perform server inspection, log analysis, and
+file transfers from natural-language requests. They are two entry points to the
+same saved server configuration.
+
+> Before using either interface, create the target session in the GUI and connect
+> successfully once to complete host-key confirmation. Passwords, private keys,
+> and other secrets are never returned by CLI/MCP. Do not put plaintext passwords
+> in prompts or MCP configuration files.
+
+### CLI
+
+Show every available command:
+
+```bash
+meatshell cli help
+```
+
+Common examples:
+
+```bash
+# List saved sessions; the first column is the session-id used below
+meatshell cli sessions
+meatshell cli sessions --json
+
+# Show non-secret metadata for one session
+meatshell cli session <session-id>
+
+# Run a non-interactive SSH command; the remote command must follow --
+meatshell cli exec <session-id> -- free -h
+meatshell cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
+
+# Browse, read, and transfer remote files
+meatshell cli files <session-id> /var/log
+meatshell cli read <session-id> /var/log/example.log
+meatshell cli upload <session-id> ./local.txt /tmp
+meatshell cli download <session-id> /tmp/result.txt ./downloads
+```
+
+Get `<session-id>` from `meatshell cli sessions`. A download requires an existing
+local destination directory and will not overwrite a file with the same name.
+
+### MCP
+
+First open **Settings → Interface → MCP** in MeatShell:
+
+1. Enable MCP.
+2. Allow saved credentials when required.
+3. Allow arbitrary SSH commands for remote diagnostics.
+4. Allow file transfers when uploads or downloads are required.
+
+Then register a stdio MCP server named `meatshell` in your MCP-capable client:
+
+```json
+{
+  "mcpServers": {
+    "meatshell": {
+      "command": "/absolute/path/to/meatshell",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+On Windows, `command` can be `C:\\path\\to\\meatshell.exe`. Restart or refresh
+the MCP client; the `meatshell` server should expose tools for session lookup,
+remote commands, directory listing, bounded text reads, uploads, and downloads.
+MCP configuration locations vary by AI client, so consult that client's docs.
+
+#### MCP JSON-RPC examples
+
+An AI client normally creates these requests automatically; you do not need to
+enter them manually. When debugging the stdio connection, send each request as
+one complete line of JSON and complete initialization in this order:
+
+```jsonl
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1.0.0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+List saved sessions and obtain a `<session-id>`:
+
+```jsonl
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_session","arguments":{"session_id":"<session-id>"}}}
+```
+
+Run read-only OOM diagnostics and browse the heap-dump directory:
+
+```jsonl
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"session_id":"<session-id>","command":"free -h; printf '\\n=== kernel OOM ===\\n'; dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -50 || true; printf '\\n=== Java ===\\n'; ps -ef | grep '[j]ava'","timeout_seconds":30,"max_output_bytes":1048576}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_remote_files","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/heapdumps"}}}
+```
+
+Read a log or download a heap dump:
+
+```jsonl
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
+```
+
+`read_remote_text_file` accepts only bounded UTF-8 text. Use `download_file` for
+binary files such as HPROF dumps. The local destination directory must already
+exist, and the tool will not overwrite a file with the same name.
+
+Once configured, give the AI client a request such as:
+
+> Use the `meatshell` MCP to investigate an OOM on my `192.168.100.41` server.
+> Heap dumps are in `/home/jeff/test/heapdumps`. Check system memory, kernel OOM
+> records, Java processes, application logs, and the HPROF files, then identify
+> the root cause. Perform read-only diagnostics first; do not restart services or
+> delete files.
+
+MCP first uses `list_sessions` to find the matching saved session, then invokes
+remote-command or SFTP tools within the permissions you granted. If several
+sessions use the same host, include the GUI session name in the prompt. A good
+diagnostic prompt states the target host, log or dump paths, and whether restarts,
+configuration changes, or file downloads are allowed.
+
 ## Project layout
 
 ```

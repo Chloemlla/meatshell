@@ -1066,6 +1066,116 @@ pub async fn test_session_auth(
     result
 }
 
+/// Result of a non-interactive SSH command used by automation frontends.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommandExecution {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<u32>,
+    pub timed_out: bool,
+    pub truncated: bool,
+}
+
+/// Execute one command through the same transport, proxy, jump-host, host-key,
+/// and authentication path as an interactive MeatShell session.
+///
+/// The caller must only pass a session after enforcing its own permission
+/// policy. Missing credentials and unknown/changed host keys fail closed because
+/// this headless path has no UI in which to ask the user.
+pub async fn execute_command(
+    session: Session,
+    jump: Option<Session>,
+    command: &str,
+    timeout: std::time::Duration,
+    max_output_bytes: usize,
+) -> Result<CommandExecution> {
+    let (events, event_rx) = mpsc::unbounded_channel();
+    drop(event_rx);
+    let config = ssh_client_config();
+    let (mut handle, mut jump_handle) =
+        connect_ssh(&session, jump.as_ref(), config.clone(), &events).await?;
+
+    match authenticate_session(
+        &mut handle,
+        &mut jump_handle,
+        &session,
+        jump.as_ref(),
+        config,
+        &events,
+    )
+    .await?
+    {
+        AuthResult::Success => {}
+        AuthResult::Cancelled => return Err(anyhow!("login cancelled")),
+        AuthResult::Failed => return Err(anyhow!("authentication failed")),
+    }
+
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .context("open command channel")?;
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .context("execute remote command")?;
+
+    let collect = async {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        let mut truncated = false;
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    append_bounded(&mut stdout, &data, max_output_bytes, &mut truncated);
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    append_bounded(&mut stderr, &data, max_output_bytes, &mut truncated);
+                }
+                ChannelMsg::ExitStatus { exit_status } => {
+                    exit_code = Some(exit_status);
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        CommandExecution {
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_code,
+            timed_out: false,
+            truncated,
+        }
+    };
+
+    let result = match tokio::time::timeout(timeout, collect).await {
+        Ok(result) => result,
+        Err(_) => CommandExecution {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            timed_out: true,
+            truncated: false,
+        },
+    };
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, "command complete", "")
+        .await;
+    if let Some(jump_handle) = jump_handle {
+        let _ = jump_handle
+            .disconnect(Disconnect::ByApplication, "command complete", "")
+            .await;
+    }
+    Ok(result)
+}
+
+fn append_bounded(target: &mut Vec<u8>, data: &[u8], limit: usize, truncated: &mut bool) {
+    let remaining = limit.saturating_sub(target.len());
+    let take = remaining.min(data.len());
+    target.extend_from_slice(&data[..take]);
+    *truncated |= take < data.len();
+}
+
 async fn run_session(
     session: Session,
     jump: Option<Session>,
