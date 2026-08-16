@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **优化侧栏快速连接的服务器信息显示（#339）。** 窄侧栏中的会话行改为两行紧凑布局，首行显示名称，次行始终显示 `用户@主机:端口`，避免固定宽度列把 IP 地址裁出可视区域；完整欢迎页继续保留原来的分栏布局。
+- **Improve server details in the Quick Connect sidebar (#339).** Session rows in the narrow sidebar now use a compact two-line layout with the name first and `user@host:port` always visible beneath it, preventing fixed-width columns from clipping the IP address. The full Welcome page retains its existing column layout.
+
 - **SSH config 导入支持 `Include`（#341）。** 导入 `~/.ssh/config` 时会在指令原位置递归读取包含文件，支持 `~`、相对 `~/.ssh` 的路径和 glob，并通过循环检测与深度上限避免恶意或误配置的递归引用。
 - **Support `Include` while importing SSH config (#341).** Importing `~/.ssh/config` now recursively expands included files at the directive position, supports `~`, paths relative to `~/.ssh`, and globs, and guards against cyclic or excessively deep include chains.
 
