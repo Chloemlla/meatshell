@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **防止不同服务器的同名文件在外部编辑时互相覆盖（#318）。** 外部打开/编辑使用按连接隔离的临时目录，并在本地文件名中加入服务器地址；编辑监视器会把修改上传到原始远端完整路径，而不再从带前缀的临时文件名推导目标，因此同时编辑多台服务器上的 `nginx.conf` 不会共用文档或传错服务器。
+- **Prevent same-named files from different servers colliding during external editing (#318).** External open/edit now uses a connection-isolated temporary directory and includes the server address in the local filename. The edit watcher uploads changes to the exact original remote path instead of deriving a target from the prefixed temp name, so concurrent `nginx.conf` edits across servers cannot share a document or upload to the wrong server.
+
 - **修复 Windows 右键打开终端查找时闪退（#343）。** 从右键菜单创建查找栏时，输入框现在会等弹窗点击事件和首轮布局完成后再获取焦点，避免 Windows 的 IME/无障碍焦点处理重入 Slint 运行时；`Ctrl+F` 与右键“查找”仍会自动聚焦搜索框。
 - **Fix the Windows crash when opening terminal Find from the context menu (#343).** When the find bar is created from the right-click menu, its input now waits for popup event dispatch and the first layout pass to finish before taking focus, avoiding re-entry into Slint through Windows IME/accessibility focus handling. Both `Ctrl+F` and right-click → Find still focus the search field automatically.
 

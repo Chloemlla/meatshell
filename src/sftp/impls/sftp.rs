@@ -280,6 +280,17 @@ async fn run_sftp(
     });
 
     let addr = format!("{}:{}", session.host, session.port);
+    // Isolate external-editor files by connection and keep the server in the
+    // visible local filename. Different hosts (or concurrent edit sessions)
+    // can therefore open the same remote basename without sharing one temp
+    // file or editor document (#318).
+    let external_edit_prefix = sanitize_filename(&session.host);
+    let external_edit_dir = std::env::temp_dir().join("meatshell").join(format!(
+        "{}-{}-{}",
+        external_edit_prefix,
+        session.port,
+        Uuid::new_v4()
+    ));
     // Keep the jump-host connection alive for the whole SFTP session — the
     // direct-tcpip tunnel rides on it (#211). Declared here so it lives to the
     // end of the function; `_`-prefixed so it isn't flagged unused.
@@ -966,6 +977,44 @@ async fn run_sftp(
                 });
             }
 
+            SftpCommand::UploadEdited { local, remote } => {
+                let sftp = sftp.clone();
+                let handle = handle.clone();
+                let events = events.clone();
+                tokio::spawn(async move {
+                    let filename = base_name(&remote);
+                    let remote_dir = parent_dir(&remote);
+                    let id = Uuid::new_v4().to_string();
+                    let no_cancel = Arc::new(AtomicBool::new(false));
+                    let result = upload_pipelined(
+                        &handle, &local, &remote, &filename, &id, &events, &no_cancel,
+                    )
+                    .await;
+                    match result {
+                        Ok(true) => {
+                            if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
+                                let _ = events.send(SessionEvent::SftpEntries {
+                                    path: remote_dir,
+                                    entries,
+                                });
+                            }
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {}",
+                                t("已上传修改", "Re-uploaded changes"),
+                                filename
+                            )));
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            let _ = events.send(SessionEvent::SftpStatus(format!(
+                                "{}: {e}",
+                                t("上传修改失败", "Failed to re-upload changes")
+                            )));
+                        }
+                    }
+                });
+            }
+
             SftpCommand::CopyTo {
                 remotes,
                 target,
@@ -1192,9 +1241,13 @@ async fn run_sftp(
                 // Sanitize the remote-controlled name before it becomes a local
                 // file path that we later hand to the OS "open" call.
                 let filename = sanitize_filename(&base_name(&remote));
-                let tmp_dir = std::env::temp_dir().join("meatshell");
+                let tmp_dir = external_edit_dir.clone();
                 let _ = tokio::fs::create_dir_all(&tmp_dir).await;
-                let local = tmp_dir.join(&filename);
+                let local = tmp_dir.join(external_edit_local_name(
+                    &external_edit_prefix,
+                    &filename,
+                    &Uuid::new_v4().to_string(),
+                ));
                 let local_str = local.to_string_lossy().to_string();
                 let _ = events.send(SessionEvent::SftpStatus(format!(
                     "{} {}...",
@@ -1220,13 +1273,7 @@ async fn run_sftp(
                             filename
                         )));
                         if edit {
-                            spawn_edit_watcher(
-                                self_tx.clone(),
-                                local_str,
-                                remote.clone(),
-                                filename,
-                                events.clone(),
-                            );
+                            spawn_edit_watcher(self_tx.clone(), local_str, remote.clone());
                         }
                     }
                     Err(e) => {
@@ -1564,6 +1611,15 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
+fn external_edit_local_name(host: &str, filename: &str, unique: &str) -> String {
+    format!(
+        "{}_{}_{}",
+        sanitize_filename(host),
+        sanitize_filename(unique),
+        sanitize_filename(filename)
+    )
+}
+
 pub(crate) fn download_target_path(remote: &str, local_dir: &str) -> PathBuf {
     Path::new(local_dir).join(sanitize_filename(&base_name(remote)))
 }
@@ -1595,14 +1651,7 @@ fn available_download_path(requested: &Path) -> PathBuf {
 /// changes on disk (the "edit" flow).  Re-upload is routed back through the
 /// worker's own command channel.  Stops when the channel closes or after a
 /// generous idle window.
-fn spawn_edit_watcher(
-    self_tx: UnboundedSender<SftpCommand>,
-    local: String,
-    remote: String,
-    filename: String,
-    events: UnboundedSender<SessionEvent>,
-) {
-    let remote_dir = parent_dir(&remote);
+fn spawn_edit_watcher(self_tx: UnboundedSender<SftpCommand>, local: String, remote: String) {
     tokio::spawn(async move {
         let mtime = |p: &str| std::fs::metadata(p).ok().and_then(|m| m.modified().ok());
         let mut last = mtime(&local);
@@ -1615,16 +1664,10 @@ fn spawn_edit_watcher(
             let cur = mtime(&local);
             if cur.is_some() && cur != last {
                 last = cur;
-                let _ = self_tx.send(SftpCommand::Upload {
+                let _ = self_tx.send(SftpCommand::UploadEdited {
                     local: PathBuf::from(&local),
-                    remote_dir: remote_dir.clone(),
-                    cleanup_after: None,
+                    remote: remote.clone(),
                 });
-                let _ = events.send(SessionEvent::SftpStatus(format!(
-                    "{}: {}",
-                    t("已上传修改", "Re-uploaded changes"),
-                    filename
-                )));
             }
         }
     });
@@ -2257,8 +2300,8 @@ const _: fn() = || {
 #[cfg(test)]
 mod sanitize_tests {
     use super::{
-        available_download_path, download_target_path, sanitize_filename, validate_editor_text,
-        EditorTextRejection,
+        available_download_path, download_target_path, external_edit_local_name,
+        sanitize_filename, validate_editor_text, EditorTextRejection,
         MAX_BUILTIN_EDITOR_BYTES, MAX_BUILTIN_EDITOR_LINES, MAX_BUILTIN_EDITOR_LINE_BYTES,
     };
 
@@ -2315,6 +2358,22 @@ mod sanitize_tests {
         assert_eq!(sanitize_filename(""), "file");
         assert_eq!(sanitize_filename("   "), "file");
         assert_eq!(sanitize_filename("..."), "file");
+    }
+
+    #[test]
+    fn external_edits_include_the_host_in_the_local_name() {
+        assert_eq!(
+            external_edit_local_name("192.168.1.10", "nginx.conf", "edit-1"),
+            "192.168.1.10_edit-1_nginx.conf"
+        );
+        assert_ne!(
+            external_edit_local_name("server-a", "nginx.conf", "edit-1"),
+            external_edit_local_name("server-b", "nginx.conf", "edit-1")
+        );
+        assert_ne!(
+            external_edit_local_name("server-a", "nginx.conf", "edit-1"),
+            external_edit_local_name("server-a", "nginx.conf", "edit-2")
+        );
     }
 
     #[test]
