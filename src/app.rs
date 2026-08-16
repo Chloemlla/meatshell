@@ -628,6 +628,7 @@ pub fn run() -> Result<()> {
             window.set_term_cursor_color(color);
         }
         window.set_output_highlight_enabled(s.output_highlight_enabled());
+        window.set_json_format_output(s.json_format_output());
         window.set_output_highlight_preset(s.output_highlight_preset().into());
         window.set_output_highlight_rules(output_highlight_rule_model(&s));
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
@@ -1111,6 +1112,20 @@ pub fn run() -> Result<()> {
             }
             if let Some(w) = weak.upgrade() {
                 apply_output_highlight(&w, &bufs, enabled, &preset);
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_set_json_format_output(move |enabled| {
+            {
+                let mut settings = store.borrow_mut();
+                settings.set_json_format_output(enabled);
+                let _ = settings.save();
+            }
+            for buffer in bufs.lock().unwrap().values() {
+                buffer.lock().unwrap().json_format_output = enabled;
             }
         });
     }
@@ -3916,6 +3931,7 @@ fn wire_session_callbacks(
                     is_dark: is_dark_now,
                     output_highlight,
                     custom_highlight_rules,
+                    json_format_output: store.borrow().json_format_output(),
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),

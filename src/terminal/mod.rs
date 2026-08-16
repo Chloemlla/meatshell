@@ -3,6 +3,8 @@ mod state;
 
 #[path = "impls/input.rs"]
 mod input;
+#[path = "impls/json_output.rs"]
+mod json_output;
 #[path = "impls/encoding.rs"]
 mod encoding;
 #[path = "impls/local.rs"]
@@ -34,6 +36,7 @@ pub(crate) use input::{
     terminal_uses_bracketed_paste,
 };
 pub(crate) use encoding::TerminalEncoding;
+pub(crate) use json_output::format_json_output;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) use input::windows_process_ctrl_release;
 #[cfg(any(target_os = "windows", test))]

@@ -733,6 +733,14 @@ impl ConfigStore {
         self.cache.output_highlight_disabled = !enabled;
     }
 
+    pub fn json_format_output(&self) -> bool {
+        !self.cache.json_format_disabled
+    }
+
+    pub fn set_json_format_output(&mut self, enabled: bool) {
+        self.cache.json_format_disabled = !enabled;
+    }
+
     /// Selected built-in rule set. Unknown values safely fall back to the
     /// conservative log-level preset for forward/backward compatibility.
     pub fn output_highlight_preset(&self) -> &str {
@@ -1874,11 +1882,14 @@ mod tests {
     fn output_highlight_defaults_and_preset_validation() {
         let mut store = temp_store();
         assert!(store.output_highlight_enabled());
+        assert!(store.json_format_output());
         assert_eq!(store.output_highlight_preset(), "log");
 
         store.set_output_highlight_enabled(false);
         store.set_output_highlight_preset("devops".to_string());
         assert!(!store.output_highlight_enabled());
+        store.set_json_format_output(false);
+        assert!(!store.json_format_output());
         assert_eq!(store.output_highlight_preset(), "devops");
 
         store.set_output_highlight_preset("future-preset".to_string());

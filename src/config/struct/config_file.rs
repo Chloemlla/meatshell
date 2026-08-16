@@ -111,6 +111,10 @@ pub struct ConfigFile {
     /// User-defined rules applied before the selected built-in preset.
     #[serde(default)]
     pub output_highlight_rules: Vec<OutputHighlightRule>,
+    /// Stored inverted so complete JSON lines are formatted and syntax-coloured
+    /// by default while still allowing users to preserve byte-for-byte display.
+    #[serde(default)]
+    pub json_format_disabled: bool,
     /// Global UI scale in percent (#100). 0 = default (100%).
     #[serde(default)]
     pub ui_scale: u32,

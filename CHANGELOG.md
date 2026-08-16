@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **自动格式化并分类着色 JSON 输出（#350）。** 终端现在只对占据完整一行、能够正确解析的 JSON 对象或数组进行缩进展开，并分别着色键、字符串、数字、布尔值和 `null`；已有 ANSI SGR 颜色会先安全归一化，提示符、半截 JSON、标量以及包含光标控制的输出保持原样。可在“设置 → 输出高亮”中关闭。
+- **Automatically format and syntax-colour JSON output (#350).** The terminal now pretty-prints only complete, whole-line JSON objects or arrays and assigns distinct colours to keys, strings, numbers, booleans, and `null`. Existing ANSI SGR colours are safely normalized first, while prompts, partial JSON, scalars, and cursor-controlled output remain untouched. The behavior can be disabled under Settings → Output Highlighting.
+
 - **支持双击标签复制连接（#340）。** 双击任意终端会话标签会创建一条独立的新连接，与右键“复制连接”一致；欢迎页标签不会被复制，现有单击选择和拖动排序/分屏行为保持不变。
 - **Support duplicating connections by double-clicking tabs (#340).** Double-clicking any terminal session tab now opens an independent duplicate connection, matching the context-menu action. The Welcome tab is excluded, and existing single-click selection plus drag reorder/split behavior remain unchanged.
 

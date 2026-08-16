@@ -442,6 +442,7 @@ export component AppWindow inherits Window {
     in-out property <string> term-cursor-color-hex: root.dark-mode ? "#D4D4D4" : "#2D2D2F";
     in-out property <color> term-cursor-color: Theme.term-fg;
     in-out property <bool> output-highlight-enabled: true;
+    in-out property <bool> json-format-output: true;
     in-out property <string> output-highlight-preset: "log";
     in property <[OutputRuleItem]> output-highlight-rules;
     in-out property <string> output-highlight-rule-status;
@@ -504,6 +505,7 @@ export component AppWindow inherits Window {
     callback set-term-cursor-style(string);        // apply + persist cursor shape (#275)
     callback set-term-cursor-color(string) -> bool;// validate + persist cursor colour (#275)
     callback set-output-highlight(bool, string);   // enable + built-in preset
+    callback set-json-format-output(bool);
     callback add-output-highlight-rule(string, bool, bool, bool, string) -> bool;
     callback remove-output-highlight-rule(int);
     callback set-output-highlight-rule-enabled(int, bool);
@@ -4162,6 +4164,7 @@ export component AppWindow inherits Window {
                     term-cursor-color-hex <=> root.term-cursor-color-hex;
                     term-cursor-color: root.term-cursor-color;
                     output-highlight-enabled <=> root.output-highlight-enabled;
+                    json-format-output <=> root.json-format-output;
                     output-highlight-preset <=> root.output-highlight-preset;
                     output-highlight-rules: root.output-highlight-rules;
                     output-highlight-rule-status <=> root.output-highlight-rule-status;
@@ -4200,6 +4203,7 @@ export component AppWindow inherits Window {
                     set-output-highlight(enabled, preset) => {
                         root.set-output-highlight(enabled, preset);
                     }
+                    set-json-format-output(enabled) => { root.set-json-format-output(enabled); }
                     add-output-highlight-rule(pattern, regex, case-sensitive, whole-line, color) => {
                         root.add-output-highlight-rule(
                             pattern, regex, case-sensitive, whole-line, color)
