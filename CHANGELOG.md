@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **修复右键内置 WSL/PowerShell/CMD 时显示空白菜单（#336）。** 内置会话没有编辑、移动或删除操作，因此不再打开所有项目均被隐藏的右键弹窗；普通保存会话的上下文菜单保持不变。
+- **Fix the blank context menu on built-in WSL/PowerShell/CMD rows (#336).** Built-in sessions have no edit, move, or delete actions, so they no longer open a popup whose items are all hidden. Context menus for regular saved sessions are unchanged.
+
 - **彻底修复切换“欢迎页设为侧栏”时闪退（#323）。** 设置开关不再在自身回调栈内修改双向绑定并同步销毁 Welcome/设置组件树；属性应用、配置保存和分屏刷新现在整体延迟到下一次界面事件循环，覆盖 0.6.11 中仍可复现的 Windows 闪退及错误配置导致的后续启动问题。
 - **Fully fix crashes when toggling “Welcome page as sidebar” (#323).** The settings switch no longer changes its two-way binding and synchronously destroys the Welcome/settings component tree from inside its own callback. Property application, persistence, and pane refresh are now deferred together to the next UI turn, covering the Windows crash still reproducible in 0.6.11 and the resulting bad-startup state.
 
