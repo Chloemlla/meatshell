@@ -14,6 +14,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **快捷命令支持手动排序（#310）。** 管理列表中的每条命令新增上移/下移按钮，可在当前分组内调整并持久化顺序；不同分组不会被意外交叉，现有 GUI 编辑、分组和滚动管理方式保持不变。
 - **Support manual quick-command ordering (#310).** Each command in the management list now has move-up and move-down controls that persist its order within the current group. Commands never cross group boundaries accidentally, and the existing GUI editing, grouping, and scrollable management remain intact.
 
+- **完善快捷命令 GUI 管理（#310）。** 管理窗口现在可通过右下角拖动放大，并默认提供更宽、更高的工作区；命令编辑框支持多行内容，长列表仍可滚动，配合组内上移/下移即可在不编辑配置文件的情况下完成批量整理。
+- **Complete the quick-command GUI manager (#310).** The manager can now be enlarged from its bottom-right resize grip and opens with a wider, taller workspace. Its command editor accepts multiline content, long lists remain scrollable, and in-group move controls allow bulk organization without editing configuration files.
+
 - **修复右键内置 WSL/PowerShell/CMD 时显示空白菜单（#336）。** 内置会话没有编辑、移动或删除操作，因此不再打开所有项目均被隐藏的右键弹窗；普通保存会话的上下文菜单保持不变。
 - **Fix the blank context menu on built-in WSL/PowerShell/CMD rows (#336).** Built-in sessions have no edit, move, or delete actions, so they no longer open a popup whose items are all hidden. Context menus for regular saved sessions are unchanged.
 
