@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **支持双击标签复制连接（#340）。** 双击任意终端会话标签会创建一条独立的新连接，与右键“复制连接”一致；欢迎页标签不会被复制，现有单击选择和拖动排序/分屏行为保持不变。
+- **Support duplicating connections by double-clicking tabs (#340).** Double-clicking any terminal session tab now opens an independent duplicate connection, matching the context-menu action. The Welcome tab is excluded, and existing single-click selection plus drag reorder/split behavior remain unchanged.
+
 - **命令栏新增历史命令自动提示（#349）。** 输入命令时会自动筛选并向上展示曾执行过的匹配命令，可用方向键选择、Tab 补全、Esc 关闭；原有的历史按钮、`Ctrl+R` 搜索、复制、删除和直接运行功能保持不变，且无需修改远端 Shell 配置。
 - **Add command-history autocomplete to the command bar (#349).** Typing now filters previously executed commands into an upward suggestion list with arrow-key selection, Tab completion, and Esc dismissal. Existing history-button and `Ctrl+R` search, copy, delete, and run actions remain available, with no remote shell configuration required.
 
