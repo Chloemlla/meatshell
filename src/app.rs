@@ -1388,20 +1388,13 @@ pub fn run() -> Result<()> {
         let panes_model = panes_model.clone();
         let splitters_model = splitters_model.clone();
         window.on_set_welcome_as_sidebar(move |v| {
-            {
-                let mut s = store.borrow_mut();
-                s.set_welcome_as_sidebar(v);
-                let _ = s.save();
-            }
-            {
-                let mut lay = layout.borrow_mut();
-                update_welcome_tab(&mut lay, v);
-            }
-            // Switching the property destroys the sidebar Welcome component and
-            // creates the tabbed one (or vice versa). Rebuild the pane model on
-            // the next event-loop turn so Slint never mutates that component tree
-            // recursively from inside the Switch callback (#323).
+            // The property is two-way-bound through InterfacePanel and changing
+            // it destroys/recreates the Welcome subtree that owns the Switch.
+            // Defer the *entire* transition until its callback has returned;
+            // deferring only refresh_panes still destroys the component tree
+            // recursively on Windows (#323).
             let weak = weak.clone();
+            let store = store.clone();
             let layout = layout.clone();
             let content_size = content_size.clone();
             let tabs_model = tabs_model.clone();
@@ -1409,6 +1402,16 @@ pub fn run() -> Result<()> {
             let splitters_model = splitters_model.clone();
             slint::Timer::single_shot(std::time::Duration::ZERO, move || {
                 if let Some(w) = weak.upgrade() {
+                    w.set_welcome_as_sidebar(v);
+                    {
+                        let mut s = store.borrow_mut();
+                        s.set_welcome_as_sidebar(v);
+                        let _ = s.save();
+                    }
+                    {
+                        let mut lay = layout.borrow_mut();
+                        update_welcome_tab(&mut lay, v);
+                    }
                     refresh_panes(
                         &w,
                         &layout.borrow(),

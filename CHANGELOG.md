@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **彻底修复切换“欢迎页设为侧栏”时闪退（#323）。** 设置开关不再在自身回调栈内修改双向绑定并同步销毁 Welcome/设置组件树；属性应用、配置保存和分屏刷新现在整体延迟到下一次界面事件循环，覆盖 0.6.11 中仍可复现的 Windows 闪退及错误配置导致的后续启动问题。
+- **Fully fix crashes when toggling “Welcome page as sidebar” (#323).** The settings switch no longer changes its two-way binding and synchronously destroys the Welcome/settings component tree from inside its own callback. Property application, persistence, and pane refresh are now deferred together to the next UI turn, covering the Windows crash still reproducible in 0.6.11 and the resulting bad-startup state.
+
 - **优化侧栏快速连接的服务器信息显示（#339）。** 窄侧栏中的会话行改为两行紧凑布局，首行显示名称，次行始终显示 `用户@主机:端口`，避免固定宽度列把 IP 地址裁出可视区域；完整欢迎页继续保留原来的分栏布局。
 - **Improve server details in the Quick Connect sidebar (#339).** Session rows in the narrow sidebar now use a compact two-line layout with the name first and `user@host:port` always visible beneath it, preventing fixed-width columns from clipping the IP address. The full Welcome page retains its existing column layout.
 
