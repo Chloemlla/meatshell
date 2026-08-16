@@ -57,6 +57,12 @@ const PACED_QUEUE_EVENT_LIMIT: usize = 256;
 
 /// Max UI renders per second for a tab under sustained output (#209).
 const RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+/// Echo produced shortly after a physical keypress should feel immediate. This
+/// temporary 120 Hz ceiling is still coalesced, then falls back to 30 Hz once
+/// the user stops typing so firehose output keeps its existing CPU protection.
+const INTERACTIVE_RENDER_MIN_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(8);
+const INTERACTIVE_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(180);
 /// A scrolled-back viewport is content-anchored, so sustained output only
 /// needs occasional model refreshes for its scrollbar metadata (#306).
 const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration =
@@ -72,6 +78,9 @@ fn tab_render_interval(bufs: &TermBuffers, tab_id: &str) -> std::time::Duration 
     };
     let interval = match handle.try_lock() {
         Ok(buf) if buf.view_offset > 0 => SCROLLED_RENDER_MIN_INTERVAL,
+        Ok(buf) if std::time::Instant::now() < buf.interactive_echo_until => {
+            INTERACTIVE_RENDER_MIN_INTERVAL
+        }
         Ok(_) => RENDER_MIN_INTERVAL,
         // A busy ingest lock is itself a firehose signal. Deferring this
         // snapshot prevents the UI thread from joining the contention.
@@ -3932,6 +3941,7 @@ fn wire_session_callbacks(
                     output_highlight,
                     custom_highlight_rules,
                     json_format_output: store.borrow().json_format_output(),
+                    interactive_echo_until: std::time::Instant::now(),
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),
@@ -4989,10 +4999,18 @@ fn wire_key_input(
                 let h = handles.borrow();
                 if sync_input.load(std::sync::atomic::Ordering::Relaxed) {
                     // Broadcast the same bytes to every online session (#78 pt.4).
-                    for handle in h.values() {
+                    for (target_id, handle) in h.iter() {
+                        if let Some(buffer) = term_buf(&bufs, target_id) {
+                            buffer.lock().unwrap().interactive_echo_until =
+                                std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
+                        }
                         handle.send_raw(bytes.clone());
                     }
                 } else if let Some(handle) = h.get(tab_id.as_str()) {
+                    if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
+                        buffer.lock().unwrap().interactive_echo_until =
+                            std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
+                    }
                     handle.send_raw(bytes);
                 }
             }

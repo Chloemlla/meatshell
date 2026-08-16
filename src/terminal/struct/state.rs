@@ -18,6 +18,7 @@ pub(crate) struct TermBuffer {
     pub(crate) output_highlight: OutputHighlightPreset,
     pub(crate) custom_highlight_rules: Vec<CompiledOutputRule>,
     pub(crate) json_format_output: bool,
+    pub(crate) interactive_echo_until: std::time::Instant,
     pub(crate) sel_anchor: Option<(usize, u16)>,
     pub(crate) sel_focus: Option<(usize, u16)>,
     pub(crate) sel_ranges: Vec<((usize, u16), (usize, u16))>,
