@@ -16,6 +16,10 @@ use crate::config::Session;
 use crate::i18n::t;
 use crate::ssh::{SessionCommand, SessionEvent, SessionHandle};
 
+#[cfg(windows)]
+const WSL_LOGIN_SHELL: &str = "shell=$(getent passwd \"$(id -un)\" 2>/dev/null | cut -d: -f7); \
+     [ -x \"$shell\" ] || shell=${SHELL:-/bin/sh}; exec \"$shell\" -l";
+
 pub fn spawn_local_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
@@ -198,6 +202,17 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
             } else {
                 session.local_working_dir.clone()
             });
+            // Do not rely on wsl.exe's implicit shell launch. In particular,
+            // Arch WSL installations whose passwd login shell is fish can open
+            // a PTY without ever presenting an interactive prompt (#352).
+            // Resolve the current Linux user's configured shell inside the
+            // distribution, then replace the temporary POSIX shell with it.
+            args.extend([
+                "--exec".to_string(),
+                "/bin/sh".to_string(),
+                "-lc".to_string(),
+                WSL_LOGIN_SHELL.to_string(),
+            ]);
             ("wsl.exe".to_string(), args)
         }
         #[cfg(windows)]
@@ -220,7 +235,7 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::local_program;
+    use super::{local_program, WSL_LOGIN_SHELL};
     use crate::config::Session;
 
     #[cfg(windows)]
@@ -244,6 +259,26 @@ mod tests {
         session.host = "wsl".to_string();
         session.local_distribution = "Ubuntu-24.04".to_string();
         let (_, args) = local_program(&session);
-        assert_eq!(args, ["--distribution", "Ubuntu-24.04", "--cd", "~"]);
+        assert_eq!(
+            args,
+            [
+                "--distribution",
+                "Ubuntu-24.04",
+                "--cd",
+                "~",
+                "--exec",
+                "/bin/sh",
+                "-lc",
+                WSL_LOGIN_SHELL,
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_explicitly_starts_the_passwd_login_shell() {
+        assert!(WSL_LOGIN_SHELL.contains("getent passwd"));
+        assert!(WSL_LOGIN_SHELL.contains("exec \"$shell\" -l"));
+        assert!(!WSL_LOGIN_SHELL.contains("fish"));
     }
 }
