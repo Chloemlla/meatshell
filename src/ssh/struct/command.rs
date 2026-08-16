@@ -5,6 +5,8 @@ pub enum SessionCommand {
     RawInput(Vec<u8>),
     /// Notify the remote PTY of a terminal resize.
     Resize(u32, u32),
+    /// Start or pause periodic local/remote resource monitoring for this session.
+    SetResourceMonitoring(bool),
     /// Start a runtime-only SSH tunnel for this connected session (#206).
     AddTunnel {
         id: String,

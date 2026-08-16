@@ -49,6 +49,12 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
         ),
     };
     let terminal_reply_tx = handle.commands.clone();
+    let monitoring_enabled = ctx
+        .weak
+        .upgrade()
+        .map(|window| !window.get_sidebar_collapsed() && !window.get_zen_mode())
+        .unwrap_or(true);
+    handle.set_resource_monitoring(monitoring_enabled);
     ctx.handles.borrow_mut().insert(tab_id.to_string(), handle);
 
     // Separate SFTP connection for the same session (SSH only). It waits for

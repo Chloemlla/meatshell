@@ -146,6 +146,12 @@ impl SessionHandle {
         let _ = self.commands.send(SessionCommand::Resize(cols, rows));
     }
 
+    pub fn set_resource_monitoring(&self, enabled: bool) {
+        let _ = self
+            .commands
+            .send(SessionCommand::SetResourceMonitoring(enabled));
+    }
+
     pub fn add_tunnel(&self, id: String, forward: PortForward) {
         let _ = self
             .commands

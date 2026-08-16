@@ -719,10 +719,19 @@ pub fn run() -> Result<()> {
     }
     {
         let store = store.clone();
+        let handles = handles.clone();
+        let weak = window.as_weak();
         window.on_set_zen_mode(move |enabled| {
             let mut s = store.borrow_mut();
             s.set_zen_mode(enabled);
             let _ = s.save();
+            let sidebar_visible = weak
+                .upgrade()
+                .map(|window| !window.get_sidebar_collapsed())
+                .unwrap_or(false);
+            for handle in handles.borrow().values() {
+                handle.set_resource_monitoring(!enabled && sidebar_visible);
+            }
         });
     }
 
@@ -836,10 +845,16 @@ pub fn run() -> Result<()> {
     }
     {
         let store = store.clone();
+        let handles = handles.clone();
+        let weak = window.as_weak();
         window.on_set_sidebar_collapsed(move |v| {
             let mut s = store.borrow_mut();
             s.set_sidebar_collapsed(v);
             let _ = s.save();
+            let zen = weak.upgrade().map(|window| window.get_zen_mode()).unwrap_or(false);
+            for handle in handles.borrow().values() {
+                handle.set_resource_monitoring(!v && !zen);
+            }
         });
     }
     {
@@ -2017,6 +2032,10 @@ pub fn run() -> Result<()> {
         slint::TimerMode::Repeated,
         SystemSampler::recommended_interval(),
         move || {
+            let Some(window) = weak.upgrade() else { return };
+            if window.get_sidebar_collapsed() || window.get_zen_mode() {
+                return;
+            }
             // Skip the (non-trivial) sysinfo refresh + sidebar repaint when no one
             // is looking, and back off to ~5 s when the window is in the background.
             match tick_activity.get() {
@@ -2040,12 +2059,10 @@ pub fn run() -> Result<()> {
             // and in the bottom network graph.
             *tick_local.lock().unwrap() = snap.clone();
 
-            if let Some(w) = weak.upgrade() {
-                // Everything (status, CPU/mem/swap, both graphs) follows the
-                // active tab; refresh_sidebar reads the stores we just updated.
-                if sidebar_updates_visible(&w) {
-                    refresh_sidebar(&w, &tick_statuses, &tick_local, &tick_net);
-                }
+            // Everything (status, CPU/mem/swap, both graphs) follows the
+            // active tab; refresh_sidebar reads the stores we just updated.
+            if sidebar_updates_visible(&window) {
+                refresh_sidebar(&window, &tick_statuses, &tick_local, &tick_net);
             }
         },
     );
