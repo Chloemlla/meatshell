@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **命令栏新增历史命令自动提示（#349）。** 输入命令时会自动筛选并向上展示曾执行过的匹配命令，可用方向键选择、Tab 补全、Esc 关闭；原有的历史按钮、`Ctrl+R` 搜索、复制、删除和直接运行功能保持不变，且无需修改远端 Shell 配置。
+- **Add command-history autocomplete to the command bar (#349).** Typing now filters previously executed commands into an upward suggestion list with arrow-key selection, Tab completion, and Esc dismissal. Existing history-button and `Ctrl+R` search, copy, delete, and run actions remain available, with no remote shell configuration required.
+
 - **快捷命令支持手动排序（#310）。** 管理列表中的每条命令新增上移/下移按钮，可在当前分组内调整并持久化顺序；不同分组不会被意外交叉，现有 GUI 编辑、分组和滚动管理方式保持不变。
 - **Support manual quick-command ordering (#310).** Each command in the management list now has move-up and move-down controls that persist its order within the current group. Commands never cross group boundaries accidentally, and the existing GUI editing, grouping, and scrollable management remain intact.
 
