@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [0.6.11] - 2026-08-16
 
+- **SSH config 导入支持 `Include`（#341）。** 导入 `~/.ssh/config` 时会在指令原位置递归读取包含文件，支持 `~`、相对 `~/.ssh` 的路径和 glob，并通过循环检测与深度上限避免恶意或误配置的递归引用。
+- **Support `Include` while importing SSH config (#341).** Importing `~/.ssh/config` now recursively expands included files at the directive position, supports `~`, paths relative to `~/.ssh`, and globs, and guards against cyclic or excessively deep include chains.
+
 - **防止不同服务器的同名文件在外部编辑时互相覆盖（#318）。** 外部打开/编辑使用按连接隔离的临时目录，并在本地文件名中加入服务器地址；编辑监视器会把修改上传到原始远端完整路径，而不再从带前缀的临时文件名推导目标，因此同时编辑多台服务器上的 `nginx.conf` 不会共用文档或传错服务器。
 - **Prevent same-named files from different servers colliding during external editing (#318).** External open/edit now uses a connection-isolated temporary directory and includes the server address in the local filename. The edit watcher uploads changes to the exact original remote path instead of deriving a target from the prefixed temp name, so concurrent `nginx.conf` edits across servers cannot share a document or upload to the wrong server.
 

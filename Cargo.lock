@@ -3457,6 +3457,7 @@ dependencies = [
  "encoding_rs",
  "fontdb 0.16.2",
  "futures",
+ "glob",
  "hmac",
  "i-slint-backend-winit",
  "icu_provider",
