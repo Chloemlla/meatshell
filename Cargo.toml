@@ -11,6 +11,7 @@ rust-version = "1.75"
 
 [dependencies]
 slint = { version = "1.8", features = ["compat-1-2"] }
+
 # ICU4X (pulled in by Slint's text layout) spams stderr with raw `eprintln!`
 # ("ICU4X data error: No segmentation model for language: ja") because its
 # `log` shim falls back to eprintln when the `logging` feature is off. Turning
@@ -153,3 +154,8 @@ debug = 1
 
 [profile.dev.package."*"]
 opt-level = 1
+
+[patch.crates-io]
+# Avoid Slint/winit's AppKit DisplayLink selector on old macOS. The local
+# patched backend falls back to timer throttling on macOS only.
+i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
