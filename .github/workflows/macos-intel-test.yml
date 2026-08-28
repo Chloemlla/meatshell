@@ -6,7 +6,11 @@ on:
   # Actions API token. Ordinary source pushes do not trigger it.
   push:
     branches: [main]
-    paths: [.github/workflows/macos-intel-test.yml]
+    paths:
+      - .github/workflows/macos-intel-test.yml
+      - Cargo.toml
+      - Cargo.lock
+      - vendor/i-slint-backend-winit/**
 
 permissions:
   contents: read
