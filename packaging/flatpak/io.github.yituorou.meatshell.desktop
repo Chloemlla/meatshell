@@ -8,7 +8,8 @@ Comment[zh_CN]=轻量级 Rust + Slint SSH/SFTP 客户端
 Exec=meatshell
 Icon=io.github.yituorou.meatshell
 Terminal=false
-Categories=Network;System;TerminalEmulator;Utility;
+# Keep one freedesktop main category so GNOME app-grid indexing is stable.
+Categories=Network;TerminalEmulator;
 Keywords=ssh;sftp;terminal;shell;
 StartupNotify=true
 StartupWMClass=meatshell
