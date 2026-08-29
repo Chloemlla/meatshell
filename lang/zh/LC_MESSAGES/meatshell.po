@@ -369,6 +369,12 @@ msgstr "终端字符集"
 msgid "Use GBK for servers configured for GB2312 or GBK output."
 msgstr "远端使用 GB2312 或 GBK 输出时请选择 GBK。"
 
+msgid "Enable VT100 line drawing even in UTF-8 mode"
+msgstr "启用 VT100 线框绘制（即使 UTF-8 模式）"
+
+msgid "Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames."
+msgstr "服务器在 UTF-8 模式下仍通过 ESC(0 或 SO/SI 切换字符集时（如 top、mc 的边框），正确显示线框图形。"
+
 msgid "Local (-L)"
 msgstr "本地 -L"
 

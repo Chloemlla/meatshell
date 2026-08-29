@@ -24,6 +24,8 @@ fn make_buf(
         output_highlight: OutputHighlightPreset::Log,
         custom_highlight_rules: Vec::new(),
         json_format_output: false,
+        vt100_drawing: true,
+        charset: crate::terminal::CharsetTracker::default(),
         interactive_echo_until: std::time::Instant::now(),
         sel_anchor: None,
         sel_focus: None,
@@ -45,6 +47,7 @@ fn settings_modal_yields_macos_wheel_to_its_own_scroll_view() {
     assert!(!macos_terminal_wheel_can_target_terminal(true));
 }
 
+mod charset;
 mod colors;
 mod protocol;
 mod selection;
