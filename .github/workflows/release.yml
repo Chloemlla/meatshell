@@ -3,12 +3,16 @@ name: Release
 # Build native packages for Windows / Linux / macOS and an Android Beta APK.
 #  - Push a tag like `v0.2.3`  -> builds all platforms and attaches the archives
 #    to a GitHub Release.
+#  - Push to `main`            -> real-time multi-platform CI build; on success
+#    all archives are auto-released as a `v<version>-ci-<sha>` pre-release
+#    (Project-Lumen style "Automatic release").
 #  - Run manually (workflow_dispatch) -> builds all platforms and uploads them as
 #    downloadable workflow artifacts (no release created).
 
 on:
   push:
     tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -668,3 +672,65 @@ jobs:
         with:
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
+
+  # CI-version real-time build auto-release (Project-Lumen "Automatic release"
+  # pattern): after every successful push build, gather all platform archives and
+  # publish them as a pre-release at a `v<version>-ci-<short-sha>` tag. Tag
+  # pushes keep their official release path; manual dispatches keep the
+  # artifact-only behaviour. Pre-releases never become the "Latest" release.
+  ci-release:
+    name: ci-build-auto-release
+    needs:
+      - build
+      - build-android
+      - build-flatpak
+      - build-linux-aarch64-glibc228
+      - build-linux-x86_64-glibc228
+    if: github.event_name == 'push' && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute CI release tag
+        id: ci_tag
+        shell: bash
+        run: |
+          set -eu
+          VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          SHORT_SHA="${GITHUB_SHA::8}"
+          echo "ci_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ci_short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "ci_tag=v${VERSION}-ci-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts
+
+      - name: Flatten artifacts into release assets
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p release-assets
+          find ci-artifacts -type f -exec cp -n {} release-assets/ \;
+          # Branch builds package as "meatshell-main-..."; relabel with the real
+          # version so download names match the tag.
+          cd release-assets
+          for f in meatshell-main-*; do
+            [ -e "$f" ] || continue
+            mv "$f" "meatshell-${{ steps.ci_tag.outputs.ci_version }}-${f#meatshell-main-}"
+          done
+          echo "Assembled release assets:"
+          ls -lh
+
+      - name: Automatic release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.ci_tag.outputs.ci_tag }}
+          name: "MeatShell ${{ steps.ci_tag.outputs.ci_version }} CI build ${{ steps.ci_tag.outputs.ci_short_sha }}"
+          draft: false
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          files: release-assets/*
