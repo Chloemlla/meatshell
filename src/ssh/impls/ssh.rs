@@ -204,6 +204,7 @@ const ZMODEM_CANCEL: [u8; 16] = [
 
 const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
 const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
+#[cfg(test)]
 const PROMPT_SETUP_HISTORY_MARKER: &str = "__MEATSHELL_INTERNAL_SETUP_1";
 const PROMPT_SETUP_DONE: &str = "\u{1b}]699;ready\u{07}";
 const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MEATSHELL_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; printf \"\\033]699;ready\\007\"; __ms7'";
@@ -2266,17 +2267,12 @@ fn parse_monitor_block(
     // into a Set: skip a (total, available) we've already shown. `df` lists the real
     // mount first, so that's the one kept.
     let mut seen_fs: std::collections::HashSet<(u64, u64)> = std::collections::HashSet::new();
-    // Processes from `ps` (#23): top-by-CPU rows.
-    let mut procs: Vec<ProcInfo> = Vec::new();
-    let mut current_user = String::new();
     let mut sys_kv: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // The sample is split into sections by `echo` markers; everything before the
     // first marker is the cpu/mem/net block.
     enum Section {
         Top,
         Df,
-        Me,
-        Ps,
         Sys,
     }
     let mut section = Section::Top;
@@ -2289,14 +2285,6 @@ fn parse_monitor_block(
     for line in block.lines() {
         if line == "__DF__" {
             section = Section::Df;
-            continue;
-        }
-        if line == "__PS__" {
-            section = Section::Ps;
-            continue;
-        }
-        if line == "__ME__" {
-            section = Section::Me;
             continue;
         }
         if line == "__SYS__" {
@@ -2314,20 +2302,6 @@ fn parse_monitor_block(
                             disks.push((mount, avail, total));
                         }
                     }
-                }
-                continue;
-            }
-            Section::Ps => {
-                if procs.len() < MAX_MON_ENTRIES {
-                    if let Some(p) = parse_ps_line(line) {
-                        procs.push(p);
-                    }
-                }
-                continue;
-            }
-            Section::Me => {
-                if current_user.is_empty() {
-                    current_user = line.trim().chars().take(64).collect();
                 }
                 continue;
             }
@@ -2441,8 +2415,6 @@ fn parse_monitor_block(
         swap_total_kib: swap_total,
         net,
         disks,
-        current_user,
-        procs,
         sys,
     })
 }
@@ -3215,7 +3187,7 @@ mod monitor_hardening_tests {
     }
 
     #[test]
-    fn monitor_reports_effective_user_for_ownership_checks() {
+    fn monitor_block_with_process_sections_still_yields_resource_sample() {
         let block = "MemTotal: 1000 kB\nMemAvailable: 500 kB\n__DF__\n__ME__\nalice\n__PS__\n10 alice 1.0 2.0 sleep 30";
         let mut prev = None;
         let mut prev_net = HashMap::new();
@@ -3223,12 +3195,10 @@ mod monitor_hardening_tests {
         let event = parse_monitor_block(block, &mut prev, &mut prev_net, &mut at).unwrap();
         match event {
             super::SessionEvent::ResourceStats {
-                current_user,
-                procs,
-                ..
+                mem_total_kib, sys, ..
             } => {
-                assert_eq!(current_user, "alice");
-                assert_eq!(procs[0].user, "alice");
+                assert_eq!(mem_total_kib, 1000);
+                assert!(sys.is_none());
             }
             other => panic!("unexpected event: {other:?}"),
         }

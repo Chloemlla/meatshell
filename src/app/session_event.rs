@@ -133,8 +133,6 @@ pub(super) fn apply_session_event_to_window(
             swap_total_kib,
             net,
             disks,
-            current_user: _,
-            procs: _,
             sys,
         } => {
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {

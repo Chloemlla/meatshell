@@ -66,10 +66,6 @@ pub enum SessionEvent {
         net: Vec<(String, u64, u64)>,
         /// Per-filesystem (mount_point, available_bytes, total_bytes).
         disks: Vec<(String, u64, u64)>,
-        /// Effective login name reported by the remote host (`id -un`).
-        current_user: String,
-        /// Top processes by CPU (#23). Empty if the host's `ps` is unusable.
-        procs: Vec<ProcInfo>,
         /// Detailed system information for the detached system-info window.
         /// Detailed data is present only for the separately delayed one-shot
         /// system-information probe; lightweight resource samples leave it None.

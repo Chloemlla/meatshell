@@ -160,14 +160,7 @@ use crate::config::{
 use crate::i18n::t;
 use crate::layout::{LogicalRect, TerminalWheelHit};
 use crate::resource::system::{format_bytes_per_sec, format_mem};
-use crate::resource::{
-    LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
-};
-// Windows-only: resource_ui.rs's GPU fill (use super::*) references it behind
-// #[cfg(target_os = "windows")]; keeping it unconditional would warn unused on
-// the other platforms.
-#[cfg(windows)]
-use crate::resource::LocalGpuInfo;
+use crate::resource::{LocalSnap, NetHist, TabStatus, TabStatuses};
 use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
 use crate::sftp::{
