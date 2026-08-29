@@ -169,7 +169,14 @@ jobs:
         shell: bash
         run: |
           set -eu
-          VERSION="${GITHUB_REF_NAME:-dev}"
+          # Tag builds version from the tag (v0.7.1 -> 0.7.1); branch builds fall
+          # back to Cargo.toml because GITHUB_REF_NAME ("main") is not a valid
+          # Debian version and dpkg-deb would refuse to build the package.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          fi
           VERSION_NUM="${VERSION#v}"
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu) DEB_ARCH=amd64 ;;
