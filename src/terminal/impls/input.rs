@@ -8,6 +8,46 @@ pub(crate) fn normalize_pasted_newlines(text: &str) -> String {
     text.replace("\r\n", "\r").replace('\n', "\r")
 }
 
+/// Encode a terminal mouse event for the PTY using the encoding the remote
+/// application requested (X10 / SGR) — so btop, htop, mc and other mouse-aware
+/// TUI apps get click/drag/wheel events (see #terminal-mouse).
+///
+/// `btn` follows the xterm conventions (a vt100 `CellMouseButton`):
+///   0/1/2 = left / middle / right button press,
+///   32    = motion with no button,
+///   35    = motion with a button held,
+///   64/65 = wheel up / down.
+/// `release` marks a button-release event (only meaningful for `btn` 0–2):
+/// X10 encodes it as `btn + 3`, SGR keeps the same code but ends the report
+/// with a lowercase `m`.
+///
+/// Coordinates are 1-based grid cells clamped to the screen, matching how the
+/// remote draws its UI. `cols`/`rows` are the *screen* dimensions (not the
+/// visible viewport) so the report always points at the same cell the program
+/// rendered.
+pub(crate) fn encode_mouse_event(
+    btn: u8,
+    release: bool,
+    col: i32,
+    row: i32,
+    cols: u16,
+    rows: u16,
+    encoding: vt100::MouseProtocolEncoding,
+) -> Vec<u8> {
+    let c = (col.clamp(0, cols.saturating_sub(1) as i32) as u16 + 1).clamp(1, 223);
+    let r = (row.clamp(0, rows.saturating_sub(1) as i32) as u16 + 1).clamp(1, 223);
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            let final_byte = if release { b'm' } else { b'M' };
+            format!("\x1b[<{btn};{c};{r}{}", final_byte as char).into_bytes()
+        }
+        _ => {
+            let cb = btn as u16 + if release { 3 } else { 0 } + 32;
+            vec![0x1b, b'[', b'M', cb as u8, (c + 32) as u8, (r + 32) as u8]
+        }
+    }
+}
+
 /// Encode a command-bar submission and return the optional non-empty history
 /// entry separately. An empty bar still represents an Enter key press (#307),
 /// but must not add a blank command to persistent history.
@@ -232,4 +272,67 @@ pub(crate) fn c0_letter_key_down(codepoint: u32) -> bool {
         fn GetKeyState(nVirtKey: i32) -> i16;
     }
     unsafe { (GetKeyState(virtual_key) as u16) & 0x8000 != 0 }
+}
+
+#[cfg(test)]
+mod mouse_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn x10_left_press() {
+        // Left press (0) at cell (1,1) → Cb=32+0=32 → ESC [ M sp ! !
+        let bytes = encode_mouse_event(0, false, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Default);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
+    }
+
+    #[test]
+    fn x10_left_release() {
+        // Release adds 3 to the button code → Cb=32+3=35.
+        let bytes = encode_mouse_event(0, true, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Default);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 35, 33, 33]);
+    }
+
+    #[test]
+    fn x10_second_column_and_row() {
+        // Cell (1,2) → Cx=33+... wait 2 → 34; row 1 → 33.
+        let bytes = encode_mouse_event(0, false, 1, 0, 80, 24, vt100::MouseProtocolEncoding::Default);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 34, 33]);
+    }
+
+    #[test]
+    fn sgr_left_press() {
+        let bytes = encode_mouse_event(0, false, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        assert_eq!(bytes, b"\x1b[<0;1;1M");
+    }
+
+    #[test]
+    fn sgr_left_release_uses_lowercase_m() {
+        let bytes = encode_mouse_event(0, true, 0, 0, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        assert_eq!(bytes, b"\x1b[<0;1;1m");
+    }
+
+    #[test]
+    fn x10_wheel() {
+        let bytes = encode_mouse_event(64, false, 5, 3, 80, 24, vt100::MouseProtocolEncoding::Default);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 64 + 32, 5 + 1 + 32, 3 + 1 + 32]);
+    }
+
+    #[test]
+    fn sgr_wheel() {
+        let bytes = encode_mouse_event(64, false, 5, 3, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        assert_eq!(bytes, b"\x1b[<64;6;4M");
+    }
+
+    #[test]
+    fn coordinates_clamped_to_screen() {
+        // Negative / out-of-range columns clamp into the grid.
+        let bytes = encode_mouse_event(0, false, -5, 999, 80, 24, vt100::MouseProtocolEncoding::Sgr);
+        assert_eq!(bytes, b"\x1b[<0;1;24M");
+    }
+
+    #[test]
+    fn x10_drag_motion() {
+        let bytes = encode_mouse_event(32, false, 2, 2, 80, 24, vt100::MouseProtocolEncoding::Default);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32 + 32, 2 + 1 + 32, 2 + 1 + 32]);
+    }
 }

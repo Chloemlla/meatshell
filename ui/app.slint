@@ -58,6 +58,7 @@ export struct TerminalState {
     scroll-max: int,       // scrollback depth (max offset) — terminal scrollbar (#103)
     scroll-offset: int,    // current scrollback offset (0 = live bottom)
     is-alt-screen: bool,
+    mouse-tracked: bool,     // remote app wants mouse events (btop/htop/mc)
     find-matches: [TermMatch], // search-highlight rectangles
     selection: [TermMatch],    // drag-selection highlight rectangles
 
@@ -1032,6 +1033,8 @@ export component AppWindow inherits Window {
     // Wheel forwarded to an alt-screen program (#170): tab-id, dir (+1 up/-1 down), col, row.
     callback terminal-wheel(string, int, int, int);
     callback terminal-scroll-to(string /* tab-id */, int /* offset */); // scrollbar drag (#103)
+    // Mouse event forwarded to a mouse-tracking TUI app (#terminal-mouse).
+    callback terminal-mouse(string /* tab-id */, int /* kind */, int /* button */, int /* row */, int /* col */) -> bool;
     // Drag-selection lifecycle (grid row/col coordinates).
     callback term-select-start(string /* tab-id */, int /* row */, int /* col */, bool /* ctrl */, bool /* shift */);
     callback term-select-update(string /* tab-id */, int /* row */, int /* col */);
@@ -1812,6 +1815,7 @@ export component AppWindow inherits Window {
                         scroll-max: term.scroll-max;
                         scroll-offset: term.scroll-offset;
                         is-alt-screen: term.is-alt-screen;
+                        mouse-tracked: term.mouse-tracked;
                         find-matches: term.find-matches;
                         selection: term.selection;
                         sftp-panel-height: term.sftp-panel-height;
@@ -1964,6 +1968,7 @@ export component AppWindow inherits Window {
                         terminal-scroll(d) => { root.terminal-scroll(term.id, d); }
                         terminal-wheel(d, c, r) => { root.terminal-wheel(term.id, d, c, r); }
                         terminal-scroll-to(o) => { root.terminal-scroll-to(term.id, o); }
+                        terminal-mouse(kind, btn, r, c) => { root.terminal-mouse(term.id, kind, btn, r, c); }
                         select-start(r, c, ctrl, shift) => { root.term-select-start(term.id, r, c, ctrl, shift); }
                         select-update(r, c) => { root.term-select-update(term.id, r, c); }
                         select-end() => { root.term-select-end(term.id); }

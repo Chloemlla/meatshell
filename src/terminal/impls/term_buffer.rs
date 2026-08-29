@@ -484,6 +484,15 @@ impl TermBuffer {
         self.feed_batched(&stream);
     }
 
+    /// Refresh the cached `mouse_tracked` flag from the parser's current mouse
+    /// protocol state (the remote app enables it with e.g. `\x1b[?1000h` /
+    /// `\x1b[?1002h`).  Kept as a cached bool so the UI hot path doesn't need
+    /// to lock the parser to decide how a click behaves.
+    fn sync_mouse_tracked(&mut self) {
+        self.mouse_tracked =
+            self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None;
+    }
+
     /// Process one bounded batch and capture any lines that scrolled off the top
     /// (skipped for alt-screen programs like vim/nano).
     fn ingest_chunk(&mut self, bytes: &[u8]) {
@@ -498,6 +507,7 @@ impl TermBuffer {
         let is_fullscreen_refresh = has_cursor_home && has_erase_display;
 
         self.parser.process(bytes);
+        self.sync_mouse_tracked();
         let (is_alt, rows, cols) = {
             let s = self.parser.screen();
             let (r, c) = s.size();
@@ -590,6 +600,7 @@ impl TermBuffer {
                 cursor_col: cur_col as i32,
                 rows_used,
                 is_alt,
+                mouse_tracked: self.mouse_tracked,
                 scroll_max: if is_alt { 0 } else { self.history.len() as i32 },
                 scroll_offset: 0,
             };
@@ -640,6 +651,7 @@ impl TermBuffer {
             cursor_col: 0,
             rows_used: win as i32,
             is_alt: false,
+            mouse_tracked: self.mouse_tracked,
             scroll_max: self.history.len() as i32,
             scroll_offset: self.view_offset as i32,
         }
