@@ -158,26 +158,28 @@ meatshell cli help
 Common examples:
 
 ```bash
-# List saved sessions; the first column is the session-id used below
+# List saved sessions; the first column is the session-id used below.
+# A session display name works anywhere a session-id is accepted.
 meatshell cli sessions
 meatshell cli sessions --json
 
 # Show non-secret metadata for one session
-meatshell cli session <session-id>
+meatshell cli session <session-id-or-name>
 
 # Run a non-interactive SSH command; the remote command must follow --
-meatshell cli exec <session-id> -- free -h
-meatshell cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
+meatshell cli exec <session-id-or-name> -- free -h
+meatshell cli exec <session-id-or-name> --timeout 60 --json -- journalctl -n 100 --no-pager
 
 # Browse, read, and transfer remote files
-meatshell cli files <session-id> /var/log
-meatshell cli read <session-id> /var/log/example.log
-meatshell cli upload <session-id> ./local.txt /tmp
-meatshell cli download <session-id> /tmp/result.txt ./downloads
+meatshell cli files <session-id-or-name> /var/log
+meatshell cli read <session-id-or-name> /var/log/example.log
+meatshell cli upload <session-id-or-name> ./local.txt /tmp
+meatshell cli download <session-id-or-name> /tmp/result.txt ./downloads
 ```
 
-Get `<session-id>` from `meatshell cli sessions`. A download requires an existing
-local destination directory and will not overwrite a file with the same name.
+Get `<session-id-or-name>` from `meatshell cli sessions`; either the session id or
+its display name works. A download requires an existing local destination directory
+and will not overwrite a file with the same name.
 
 ### MCP
 
@@ -218,25 +220,25 @@ one complete line of JSON and complete initialization in this order:
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
 ```
 
-List saved sessions and obtain a `<session-id>`:
+List saved sessions and obtain a `<session-id-or-name>`:
 
 ```jsonl
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_sessions","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_session","arguments":{"session_id":"<session-id>"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_session","arguments":{"session_id":"<session-id-or-name>"}}}
 ```
 
 Run read-only OOM diagnostics and browse the heap-dump directory:
 
 ```jsonl
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"session_id":"<session-id>","command":"free -h; printf '\\n=== kernel OOM ===\\n'; dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -50 || true; printf '\\n=== Java ===\\n'; ps -ef | grep '[j]ava'","timeout_seconds":30,"max_output_bytes":1048576}}}
-{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_remote_files","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/heapdumps"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"run_command","arguments":{"session_id":"<session-id-or-name>","command":"free -h; printf '\\n=== kernel OOM ===\\n'; dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -50 || true; printf '\\n=== Java ===\\n'; ps -ef | grep '[j]ava'","timeout_seconds":30,"max_output_bytes":1048576}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_remote_files","arguments":{"session_id":"<session-id-or-name>","path":"/home/jeff/test/heapdumps"}}}
 ```
 
 Read a log or download a heap dump:
 
 ```jsonl
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
-{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id-or-name>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id-or-name>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
 ```
 
 `read_remote_text_file` accepts only bounded UTF-8 text. Use `download_file` for
@@ -252,10 +254,13 @@ Once configured, give the AI client a request such as:
 > delete files.
 
 MCP first uses `list_sessions` to find the matching saved session, then invokes
-remote-command or SFTP tools within the permissions you granted. If several
-sessions use the same host, include the GUI session name in the prompt. A good
-diagnostic prompt states the target host, log or dump paths, and whether restarts,
-configuration changes, or file downloads are allowed.
+remote-command or SFTP tools within the permissions you granted. Every tool's
+`session_id` argument also accepts the session's display name — pass the name
+directly to locate and operate a server without looking up its id; an ambiguous
+name returns an error listing the candidate ids. If several sessions use the same
+host, include the GUI session name in the prompt. A good diagnostic prompt states
+the target host, log or dump paths, and whether restarts, configuration changes,
+or file downloads are allowed.
 
 ## Project layout
 

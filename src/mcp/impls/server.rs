@@ -74,7 +74,7 @@ fn initialize(params: &Value) -> Value {
             "title": "MeatShell MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Manage saved MeatShell sessions and run permitted SSH automation without exposing stored secrets."
+        "instructions": "Manage saved MeatShell sessions and run permitted SSH automation without exposing stored secrets. Sessions can be referenced by their stable id or by their display name from list_sessions; only the session name is needed to operate a server."
     })
 }
 

@@ -134,11 +134,8 @@ fn sftp_context(
             "using saved credentials is disabled in Settings > Interface > MCP"
         ));
     }
-    let id = required_string(arguments, "session_id")?;
-    let session = store
-        .get(id)
-        .cloned()
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
+    let reference = required_string(arguments, "session_id")?;
+    let session = resolve_session(&store, reference)?.clone();
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("SFTP tools only support SSH sessions"));
     }
@@ -166,6 +163,52 @@ fn load_store(frontend: Frontend) -> Result<ConfigStore> {
     Ok(store)
 }
 
+/// Resolve a caller-supplied session reference: an exact id first, then an
+/// exact name, then a unique case-insensitive name match. Session names are
+/// not unique, so an ambiguous name is an error that lists the candidate ids
+/// so the caller can disambiguate.
+fn resolve_session<'a>(store: &'a ConfigStore, reference: &str) -> Result<&'a Session> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err(anyhow!("session id or name must not be empty"));
+    }
+    if let Some(session) = store.get(reference) {
+        return Ok(session);
+    }
+    let exact: Vec<&Session> = store
+        .sessions()
+        .iter()
+        .filter(|session| session.name == reference)
+        .collect();
+    match exact.len() {
+        1 => return Ok(exact[0]),
+        n if n > 1 => {
+            let ids = exact
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(anyhow!(
+                "session name is ambiguous ({n} matches), pass the session_id: {ids}"
+            ));
+        }
+        _ => {}
+    }
+    let case_insensitive: Vec<&Session> = store
+        .sessions()
+        .iter()
+        .filter(|session| session.name.eq_ignore_ascii_case(reference))
+        .collect();
+    match case_insensitive.len() {
+        1 => Ok(case_insensitive[0]),
+        0 => Err(anyhow!("session not found: {reference}")),
+        _ => Err(anyhow!(
+            "session name is ambiguous ({} matches), pass the session_id",
+            case_insensitive.len()
+        )),
+    }
+}
+
 fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     let group = optional_string(arguments, "group")?;
@@ -180,10 +223,8 @@ fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
 
 fn get_session(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
-    let id = required_string(arguments, "session_id")?;
-    let session = store
-        .get(id)
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
+    let reference = required_string(arguments, "session_id")?;
+    let session = resolve_session(&store, reference)?;
     Ok(safe_session(session))
 }
 
@@ -200,7 +241,7 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
         ));
     }
 
-    let id = required_string(arguments, "session_id")?;
+    let reference = required_string(arguments, "session_id")?;
     let command = required_string(arguments, "command")?;
     if command.trim().is_empty() {
         return Err(anyhow!("command must not be empty"));
@@ -212,10 +253,7 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
         .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES as u64)
         .clamp(1024, MAX_OUTPUT_BYTES as u64) as usize;
 
-    let session = store
-        .get(id)
-        .cloned()
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
+    let session = resolve_session(&store, reference)?.clone();
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("run_command only supports SSH sessions"));
     }
@@ -296,5 +334,53 @@ mod tests {
         assert_eq!(optional_u64(&json!({ "n": 12 }), "n").unwrap(), Some(12));
         assert!(optional_u64(&json!({ "n": -1 }), "n").is_err());
         assert!(optional_u64(&json!({ "n": "12" }), "n").is_err());
+    }
+
+    fn store_with(sessions: Vec<Session>) -> ConfigStore {
+        ConfigStore {
+            path: std::env::temp_dir().join("ms-automation-sessions.json"),
+            backup_dir: None,
+            cache: crate::config::ConfigFile {
+                sessions,
+                ..Default::default()
+            },
+            key: [7u8; 32],
+        }
+    }
+
+    fn session(id: &str, name: &str, host: &str) -> Session {
+        Session {
+            id: id.into(),
+            name: name.into(),
+            host: host.into(),
+            ..Session::new_empty()
+        }
+    }
+
+    #[test]
+    fn resolves_sessions_by_id_and_name() {
+        let store = store_with(vec![
+            session("id-a", "Alpha", "10.0.0.1"),
+            session("id-b", "Beta", "10.0.0.2"),
+        ]);
+
+        assert_eq!(resolve_session(&store, "id-a").unwrap().name, "Alpha");
+        assert_eq!(resolve_session(&store, "Alpha").unwrap().id, "id-a");
+        assert_eq!(resolve_session(&store, "beta").unwrap().id, "id-b");
+        assert!(resolve_session(&store, "Gamma").is_err());
+        assert!(resolve_session(&store, "").is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_session_names() {
+        let store = store_with(vec![
+            session("id-a", "prod", "10.0.0.1"),
+            session("id-b", "prod", "10.0.0.2"),
+        ]);
+
+        let message = resolve_session(&store, "prod").unwrap_err().to_string();
+        assert!(message.contains("ambiguous"));
+        assert!(message.contains("id-a"));
+        assert!(message.contains("id-b"));
     }
 }

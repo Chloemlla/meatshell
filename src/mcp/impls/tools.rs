@@ -20,7 +20,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string", "description": "Stable session id returned by list_sessions." }
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." }
                 },
                 "required": ["session_id"],
                 "additionalProperties": false
@@ -32,7 +32,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string", "description": "Stable session id returned by list_sessions." },
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." },
                     "command": { "type": "string", "minLength": 1 },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 },
                     "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 4194304, "default": 1048576 }
@@ -47,7 +47,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." },
                     "path": { "type": "string", "default": "." },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 }
                 },
@@ -61,7 +61,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." },
                     "path": { "type": "string", "minLength": 1 },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 30 }
                 },
@@ -75,7 +75,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." },
                     "local_path": { "type": "string", "minLength": 1 },
                     "remote_directory": { "type": "string", "minLength": 1 },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 120 }
@@ -90,7 +90,7 @@ pub(super) fn definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session id or display name from list_sessions. Only the session name is needed to operate a server." },
                     "remote_path": { "type": "string", "minLength": 1 },
                     "local_directory": { "type": "string", "minLength": 1 },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 300, "default": 120 }

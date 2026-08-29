@@ -23,12 +23,12 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         CliCommand::Session => {
             let id = args
                 .get(3)
-                .ok_or_else(|| anyhow!("usage: meatshell cli session <session-id> [--json]"))?;
+                .ok_or_else(|| anyhow!("usage: meatshell cli session <session-id-or-name> [--json]"))?;
             runtime.block_on(call_cli("get_session", &json!({ "session_id": id })))?
         }
         CliCommand::Exec => {
             let id = args.get(3).ok_or_else(|| {
-                anyhow!("usage: meatshell cli exec <session-id> [--timeout <seconds>] [--json] -- <command>")
+                anyhow!("usage: meatshell cli exec <session-id-or-name> [--timeout <seconds>] [--json] -- <command>")
             })?;
             let delimiter = args
                 .iter()
@@ -54,7 +54,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
         CliCommand::Files => {
             let id = args.get(3).ok_or_else(|| {
-                anyhow!("usage: meatshell cli files <session-id> [path] [--json]")
+                anyhow!("usage: meatshell cli files <session-id-or-name> [path] [--json]")
             })?;
             let path = args
                 .get(4)
@@ -68,10 +68,10 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
         CliCommand::Read => {
             let id = args.get(3).ok_or_else(|| {
-                anyhow!("usage: meatshell cli read <session-id> <remote-path> [--json]")
+                anyhow!("usage: meatshell cli read <session-id-or-name> <remote-path> [--json]")
             })?;
             let path = args.get(4).ok_or_else(|| {
-                anyhow!("usage: meatshell cli read <session-id> <remote-path> [--json]")
+                anyhow!("usage: meatshell cli read <session-id-or-name> <remote-path> [--json]")
             })?;
             runtime.block_on(call_cli(
                 "read_remote_text_file",
@@ -80,7 +80,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
         CliCommand::Upload => {
             let id = args.get(3).ok_or_else(|| {
-                anyhow!("usage: meatshell cli upload <session-id> <local-path> <remote-directory> [--json]")
+                anyhow!("usage: meatshell cli upload <session-id-or-name> <local-path> <remote-directory> [--json]")
             })?;
             let local_path = args.get(4).ok_or_else(|| anyhow!("missing local path"))?;
             let remote_directory = args
@@ -98,7 +98,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         }
         CliCommand::Download => {
             let id = args.get(3).ok_or_else(|| {
-                anyhow!("usage: meatshell cli download <session-id> <remote-path> <local-directory> [--json]")
+                anyhow!("usage: meatshell cli download <session-id-or-name> <remote-path> <local-directory> [--json]")
             })?;
             let remote_path = args.get(4).ok_or_else(|| anyhow!("missing remote path"))?;
             let local_directory = args
@@ -206,12 +206,12 @@ fn print_help() {
         "MeatShell CLI\n\n\
          Usage:\n\
            meatshell cli sessions [--group <name>] [--json]\n\
-           meatshell cli session <session-id> [--json]\n\
-           meatshell cli exec <session-id> [--timeout <seconds>] [--json] -- <command>\n\
-           meatshell cli files <session-id> [path] [--json]\n\
-           meatshell cli read <session-id> <remote-path> [--json]\n\
-           meatshell cli upload <session-id> <local-path> <remote-directory> [--json]\n\
-           meatshell cli download <session-id> <remote-path> <local-directory> [--json]"
+           meatshell cli session <session-id-or-name> [--json]\n\
+           meatshell cli exec <session-id-or-name> [--timeout <seconds>] [--json] -- <command>\n\
+           meatshell cli files <session-id-or-name> [path] [--json]\n\
+           meatshell cli read <session-id-or-name> <remote-path> [--json]\n\
+           meatshell cli upload <session-id-or-name> <local-path> <remote-directory> [--json]\n\
+           meatshell cli download <session-id-or-name> <remote-path> <local-directory> [--json]"
     );
 }
 
