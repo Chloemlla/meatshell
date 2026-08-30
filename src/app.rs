@@ -787,8 +787,6 @@ fn mcp_activity_row(value: &serde_json::Value) -> McpActivityRow {
             }
         }
     }
-    let detail: String = detail.chars().take(160).collect();
-
     let duration = match value.get("duration_ms") {
         Some(v) if v.is_number() => {
             let ms = v.as_f64().unwrap_or(0.0);

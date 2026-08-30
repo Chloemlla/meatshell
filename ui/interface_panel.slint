@@ -459,6 +459,7 @@ export component InterfacePanel inherits Rectangle {
     callback set-update-check-enabled(bool);   // startup new-version check (#184)
     callback set-mcp-permissions(bool, bool, bool, bool);
     in property <[McpActivityRow]> mcp-activity-rows;
+    property <int> mcp-expanded-row: -1;   // expanded activity row index, -1 = none
     callback mcp-activity-refresh();
     callback mcp-activity-clear();
     callback persist-wallpaper-overlay(float);   // save the overlay opacity
@@ -1685,11 +1686,11 @@ export component InterfacePanel inherits Rectangle {
                     text: root.lang-en ? "No MCP activity yet. It appears here in real time when an MCP client calls meatshell mcp serve." : "暂无 MCP 活动。MCP 客户端调用 meatshell mcp serve 后，这里会实时显示。";
                     color: Theme.text-muted; font-size: 12px * Theme.panel-font; wrap: word-wrap;
                 }
-                for r in root.mcp-activity-rows : Rectangle {
-                    height: 46px;
+                for r[i] in root.mcp-activity-rows : Rectangle {
+                    height: root.mcp-expanded-row == i ? max(46px, body.preferred-height) : 46px;
                     border-radius: Theme.radius-sm;
                     background: Theme.bg-root;
-                    VerticalLayout {
+                    body := VerticalLayout {
                         padding-left: 8px; padding-right: 8px; padding-top: 5px; padding-bottom: 5px;
                         spacing: 2px;
                         HorizontalLayout {
@@ -1699,12 +1700,28 @@ export component InterfacePanel inherits Rectangle {
                             Rectangle { width: 1px; background: Theme.border-subtle; }
                             Text { text: r.state == 2 ? "\u{E5CD}" : r.state == 0 ? "\u{E866}" : "\u{E876}"; color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.success; font-family: "Material Icons"; font-size: 13px; vertical-alignment: center; }
                             Text { text: r.tool; color: Theme.text-primary; font-size: 11px * Theme.panel-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Text { text: root.mcp-expanded-row == i ? "\u{E5CE}" : "\u{E5CF}"; color: Theme.text-muted; font-family: "Material Icons"; font-size: 13px; vertical-alignment: center; }
                         }
                         HorizontalLayout {
                             spacing: 6px;
                             if r.session != "" : Text { text: r.session; color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide; vertical-alignment: center; }
-                            Text { text: r.detail; color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.text-secondary; font-size: 11px * Theme.panel-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Text {
+                                text: r.detail;
+                                color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.text-secondary;
+                                font-size: 11px * Theme.panel-font;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                wrap: root.mcp-expanded-row == i ? word-wrap : no-wrap;
+                                overflow: root.mcp-expanded-row == i ? clip : elide;
+                            }
                             Text { text: r.duration; color: Theme.text-muted; font-size: 11px * Theme.panel-font; vertical-alignment: center; }
+                        }
+                    }
+                    TouchArea {
+                        width: 100%; height: 100%;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.mcp-expanded-row = root.mcp-expanded-row == i ? -1 : i;
                         }
                     }
                 }
