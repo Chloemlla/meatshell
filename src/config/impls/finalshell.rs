@@ -9,6 +9,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use des::cipher::{generic_array::GenericArray, BlockDecrypt, KeyInit};
 use des::Des;
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 use super::structs::{AuthMethod, Secret, Session, SessionKind};
 
@@ -136,9 +137,11 @@ fn decode_password(encoded: &str) -> Result<String> {
         bail!("password payload has an invalid length");
     }
     let (head, ciphertext) = blob.split_at(8);
-    let key = derive_des_key(head)?;
+    // Wrap the DES key and the decrypted plaintext in Zeroizing so the secret
+    // material is cleared from memory on drop (#51).
+    let key = Zeroizing::new(derive_des_key(head)?);
     let cipher = Des::new_from_slice(&key).expect("DES keys are always eight bytes");
-    let mut plaintext = ciphertext.to_vec();
+    let mut plaintext = Zeroizing::new(ciphertext.to_vec());
     for block in plaintext.chunks_exact_mut(8) {
         cipher.decrypt_block(GenericArray::from_mut_slice(block));
     }
@@ -147,7 +150,7 @@ fn decode_password(encoded: &str) -> Result<String> {
     // FinalShell has existed across both UTF-8-default and legacy Chinese JREs.
     // Match Java's `new String(bytes)` behaviour for the common encodings without
     // ever using a lossy conversion for a credential.
-    match String::from_utf8(plaintext) {
+    match String::from_utf8(plaintext.to_vec()) {
         Ok(value) => Ok(value),
         Err(err) => encoding_rs::GBK
             .decode_without_bom_handling_and_without_replacement(err.as_bytes())
@@ -197,11 +200,11 @@ fn derive_des_key(head: &[u8]) -> Result<[u8; 8]> {
         random.next_long(),
         java_byte(head[2]),
     ];
-    let mut key_material = Vec::with_capacity(values.len() * 8);
+    let mut key_material = Zeroizing::new(Vec::with_capacity(values.len() * 8));
     for value in values {
         key_material.extend_from_slice(&value.to_be_bytes());
     }
-    let digest = md5::compute(&key_material);
+    let digest = md5::compute(&key_material[..]);
     let mut key = [0_u8; 8];
     key.copy_from_slice(&digest.0[..8]);
     Ok(key)

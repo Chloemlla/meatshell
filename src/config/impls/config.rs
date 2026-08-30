@@ -138,6 +138,7 @@ fn migrate_legacy(legacy: &Path, portable: &Path) {
     if legacy == portable {
         return;
     }
+    let mut sessions_migrated = false;
     for name in ["sessions.json", "secret.key", "known_hosts"] {
         let src = legacy.join(name);
         let dst = portable.join(name);
@@ -155,6 +156,9 @@ fn migrate_legacy(legacy: &Path, portable: &Path) {
                         "migrated {name} to portable config dir {}",
                         portable.display()
                     );
+                    if name == "sessions.json" {
+                        sessions_migrated = true;
+                    }
                 }
                 Err(e) => tracing::warn!(
                     "data migration: failed to copy {} → {}: {e}",
@@ -163,6 +167,118 @@ fn migrate_legacy(legacy: &Path, portable: &Path) {
                 ),
             }
         }
+    }
+    // #50: once the sessions file has been copied to the portable dir, the
+    // legacy copy (and any `.json.broken` backup of an older corrupt config)
+    // may still hold pre-encryption plaintext passwords. Remove them so they
+    // don't linger on disk; only touch the legacy dir, never the portable copy.
+    if sessions_migrated {
+        for stale in ["sessions.json", "sessions.json.broken"] {
+            let stale_path = legacy.join(stale);
+            if stale_path.exists() {
+                match fs::remove_file(&stale_path) {
+                    Ok(()) => tracing::info!(
+                        "removed legacy plaintext {} after migration",
+                        stale_path.display()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "could not remove legacy plaintext {} after migration: {e}",
+                        stale_path.display()
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// Atomically write `contents` to `path`: write a unique sibling temp file
+/// (pid + random uuid, so concurrent instances/processes never collide on the
+/// temp name), then rename over the target. On any failure the temp file is
+/// removed. On Unix the temp file is created with mode `0600` so credentials
+/// never land world-readable (#47, #48, #52).
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .context("target path has no file name")?
+        .to_string_lossy();
+    let tmp = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+
+    #[cfg(unix)]
+    let write = (|| -> std::io::Result<()> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all().ok();
+        Ok(())
+    })();
+    #[cfg(not(unix))]
+    let write = fs::write(&tmp, contents);
+
+    if let Err(e) = write {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("failed to write {}", tmp.display()));
+    }
+    fs::rename(&tmp, path).with_context(|| format!("failed to finalise {}", path.display()))?;
+    Ok(())
+}
+
+/// Atomically copy `src` to `dst`: copy to a unique sibling temp file then
+/// rename over the destination, removing the temp on failure, so an interrupted
+/// backup never leaves a half-written key next to a freshly-written config (#52).
+fn atomic_copy(src: &Path, dst: &Path) -> Result<()> {
+    let file_name = dst
+        .file_name()
+        .context("backup target path has no file name")?
+        .to_string_lossy();
+    let tmp = dst.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    if let Err(e) = fs::copy(src, &tmp) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                src.display(),
+                tmp.display()
+            )
+        });
+    }
+    fs::rename(&tmp, dst).with_context(|| format!("failed to finalise {}", dst.display()))?;
+    Ok(())
+}
+
+/// Write the 32-byte encryption key, creating the file with mode `0600` in one
+/// step on Unix so there is no window where the key is world-readable between a
+/// separate write and chmod (#46). Windows %APPDATA% is owner-restricted by
+/// default ACLs, so a plain write is fine there.
+fn write_key_file(key_path: &Path, key: &[u8; 32]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = opts
+            .open(key_path)
+            .with_context(|| format!("failed to write {}", key_path.display()))?;
+        file.write_all(key)
+            .with_context(|| format!("failed to write {}", key_path.display()))?;
+        file.sync_all().ok();
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(key_path, key)
+            .with_context(|| format!("failed to write {}", key_path.display()))
     }
 }
 
@@ -410,6 +526,48 @@ impl ConfigStore {
         String::from_utf8(plain).ok()
     }
 
+    /// `true` when `value` is an encrypted blob that decrypts with the current
+    /// key (i.e. it is already stored encrypted and must be left untouched on
+    /// save). Used as the ciphertext test instead of a prefix match so a
+    /// plaintext password that literally begins with `enc:v1:` is still
+    /// encrypted (#49).
+    fn is_encrypted(&self, value: &str) -> bool {
+        !value.is_empty() && Self::try_decrypt(&self.key, value).is_some()
+    }
+
+    /// Count encrypted values in `cfg` that cannot be decrypted with the current
+    /// key — a symptom of a corrupt/regenerated `secret.key`. Surfaced at load
+    /// time so the problem is reported instead of silently keeping broken
+    /// ciphertext in the cache (#45).
+    fn count_undecryptable(&self, cfg: &ConfigFile) -> usize {
+        let mut count = 0;
+        for session in &cfg.sessions {
+            for value in [
+                session.password.as_str(),
+                session.private_key_inline.as_str(),
+            ] {
+                if value.starts_with(Self::ENC_PREFIX)
+                    && Self::try_decrypt(&self.key, value).is_none()
+                {
+                    count += 1;
+                }
+            }
+            for trigger in &session.triggers {
+                let value = trigger.response.as_str();
+                if value.starts_with(Self::ENC_PREFIX)
+                    && Self::try_decrypt(&self.key, value).is_none()
+                {
+                    count += 1;
+                }
+            }
+        }
+        let webdav = cfg.webdav_password.as_str();
+        if webdav.starts_with(Self::ENC_PREFIX) && Self::try_decrypt(&self.key, webdav).is_none() {
+            count += 1;
+        }
+        count
+    }
+
     // ── Key file management ───────────────────────────────────────────────
 
     /// Load the 32-byte key from `<config_dir>/secret.key`, or generate and
@@ -423,24 +581,46 @@ impl ConfigStore {
         if key_path.exists() {
             let bytes = fs::read(&key_path)
                 .with_context(|| format!("failed to read {}", key_path.display()))?;
+            // Force owner-only permission even on a pre-existing key: an earlier
+            // write-then-chmod race, a restore that didn't preserve the mode, or
+            // a filesystem that ignored it can leave the key world-readable (#46).
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Err(e) = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+                {
+                    tracing::warn!(
+                        "failed to set permissions on {}: {e}",
+                        key_path.display()
+                    );
+                }
+            }
             if bytes.len() == 32 {
                 let mut key = [0u8; 32];
                 key.copy_from_slice(&bytes);
                 return Ok(key);
             }
-            tracing::warn!("secret.key has wrong length — regenerating");
+            // Corrupt/truncated key: back it up before regenerating so the old
+            // credentials can still be recovered instead of being silently lost
+            // with no trace (#45).
+            let backup = key_path.with_extension("key.broken");
+            match fs::rename(&key_path, &backup) {
+                Ok(()) => tracing::error!(
+                    "secret.key has wrong length ({} bytes, expected 32); backed it up to {} and generated a new key — passwords saved with the old key can no longer be decrypted",
+                    bytes.len(),
+                    backup.display()
+                ),
+                Err(e) => tracing::error!(
+                    "secret.key has wrong length ({} bytes, expected 32) and could not be backed up to {}: {e}",
+                    bytes.len(),
+                    backup.display()
+                ),
+            }
         }
 
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);
-        fs::write(&key_path, &key)
-            .with_context(|| format!("failed to write {}", key_path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("failed to set permissions on {}", key_path.display()))?;
-        }
+        write_key_file(&key_path, &key)?;
         tracing::info!("generated new encryption key at {}", key_path.display());
         Ok(key)
     }
@@ -526,6 +706,15 @@ impl ConfigStore {
             cache,
             key,
         };
+        // #45: surface a corrupt/regenerated secret.key that makes stored
+        // ciphertext undecryptable instead of silently keeping broken values.
+        if store.count_undecryptable(&store.cache) > 0 {
+            tracing::error!(
+                "some saved passwords are encrypted with a key that no longer matches \
+                 (secret.key may have been corrupted and regenerated); those passwords \
+                 cannot be decrypted until they are re-entered"
+            );
+        }
         // Persist the migration so it runs exactly once (and so a later opt-out —
         // e.g. turning the welcome sidebar back off — isn't reverted next launch).
         if migrated {
@@ -1550,52 +1739,34 @@ impl ConfigStore {
         // Build a disk copy where every non-empty password is encrypted.
         let mut disk = self.cache.clone();
         for session in &mut disk.sessions {
-            if !session.password.is_empty()
-                && !session.password.as_str().starts_with(Self::ENC_PREFIX)
-            {
+            if !session.password.is_empty() && !self.is_encrypted(session.password.as_str()) {
                 let enc = Self::encrypt(&self.key, session.password.as_str())?;
                 session.password = Secret::new(enc);
             }
             if !session.private_key_inline.is_empty()
-                && !session
-                    .private_key_inline
-                    .as_str()
-                    .starts_with(Self::ENC_PREFIX)
+                && !self.is_encrypted(session.private_key_inline.as_str())
             {
                 let enc = Self::encrypt(&self.key, session.private_key_inline.as_str())?;
                 session.private_key_inline = Secret::new(enc);
             }
             for trigger in &mut session.triggers {
-                if !trigger.response.is_empty()
-                    && !trigger.response.as_str().starts_with(Self::ENC_PREFIX)
-                {
+                if !trigger.response.is_empty() && !self.is_encrypted(trigger.response.as_str()) {
                     let enc = Self::encrypt(&self.key, trigger.response.as_str())?;
                     trigger.response = Secret::new(enc);
                 }
             }
         }
         if !disk.webdav_password.is_empty()
-            && !disk.webdav_password.as_str().starts_with(Self::ENC_PREFIX)
+            && !self.is_encrypted(disk.webdav_password.as_str())
         {
             let enc = Self::encrypt(&self.key, disk.webdav_password.as_str())?;
             disk.webdav_password = Secret::new(enc);
         }
         let raw = serde_json::to_string_pretty(&disk)?;
-        // Write to a sibling temp file then rename — cheap atomicity.
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, &raw).with_context(|| format!("failed to write {}", tmp.display()))?;
-        // Restrict to owner-only before publishing (#34): sessions.json holds
-        // (encrypted) credentials, so it shouldn't be world-readable. Set 0600
-        // on the temp file so the permission is already in place at rename.
-        // Windows %APPDATA% is owner-restricted by default ACLs — no-op there.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("failed to set permissions on {}", tmp.display()))?;
-        }
-        fs::rename(&tmp, &self.path)
-            .with_context(|| format!("failed to finalise {}", self.path.display()))?;
+        // Write to a unique sibling temp file then rename — atomic, and
+        // concurrent instances/processes never collide on the temp name (#47,
+        // #48). On error the temp file is removed by `atomic_write`.
+        atomic_write(&self.path, raw.as_bytes())?;
         self.sync_backup(&raw);
         Ok(())
     }
@@ -1613,18 +1784,9 @@ impl ConfigStore {
         }
 
         let backup_sessions = backup_dir.join("sessions.json");
-        let tmp = backup_sessions.with_extension("json.tmp");
-        if let Err(e) = fs::write(&tmp, raw) {
-            tracing::warn!("failed to write {}: {e}", tmp.display());
+        if let Err(e) = atomic_write(&backup_sessions, raw.as_bytes()) {
+            tracing::warn!("failed to write {}: {e}", backup_sessions.display());
             return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-        }
-        if let Err(e) = fs::rename(&tmp, &backup_sessions) {
-            tracing::warn!("failed to finalise {}: {e}", backup_sessions.display());
         }
 
         if let Some(config_dir) = self.path.parent() {
@@ -1632,7 +1794,10 @@ impl ConfigStore {
                 let src = config_dir.join(name);
                 let dst = backup_dir.join(name);
                 if src.exists() {
-                    if let Err(e) = fs::copy(&src, &dst) {
+                    // #52: copy via a unique temp file + rename so an
+                    // interrupted backup never leaves a half-written key next to
+                    // a freshly-written config ("new ciphertext + old/half key").
+                    if let Err(e) = atomic_copy(&src, &dst) {
                         tracing::warn!(
                             "failed to sync {} to user config backup {}: {e}",
                             src.display(),
