@@ -1,6 +1,11 @@
 use super::verifier::WebDavAcceptAnyCertVerifier;
 
 impl ureq::rustls::client::danger::ServerCertVerifier for WebDavAcceptAnyCertVerifier {
+    /// Unconditionally accept the presented chain.
+    ///
+    /// This is deliberately fail-open and is ONLY safe because the verifier is
+    /// never wired into the default path — `webdav_agent` installs it solely for
+    /// the explicit "trust any cert" setting. Do not use it for regular HTTPS.
     fn verify_server_cert(
         &self,
         _end_entity: &ureq::rustls::pki_types::CertificateDer<'_>,

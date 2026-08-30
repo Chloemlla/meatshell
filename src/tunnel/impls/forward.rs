@@ -16,6 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
+use crate::i18n::t;
 use crate::ssh::{ClientHandler, SessionEvent};
 
 /// Emit a one-line notice into the terminal output stream.
@@ -35,6 +36,29 @@ fn bind_target(bind_addr: &str, bind_port: u16) -> String {
         format!("[{addr}]:{bind_port}")
     } else {
         format!("{addr}:{bind_port}")
+    }
+}
+
+/// Refuse to bind a forward to a non-loopback interface (#38): a `-D` (SOCKS5)
+/// on anything but loopback is an unauthenticated open proxy for the LAN, and a
+/// `-L` on a LAN address exposes a local port to the network. Empty (the
+/// default) and loopback literals stay allowed; everything else is rejected with
+/// a terminal notice. Returns `Some(reason)` when the bind must not proceed.
+fn bind_safety_error(bind_addr: &str) -> Option<&'static str> {
+    let a = bind_addr.trim();
+    if a.is_empty() {
+        return None; // empty → default 127.0.0.1
+    }
+    if a.eq_ignore_ascii_case("localhost") {
+        return None; // conventionally resolves to loopback
+    }
+    match a.parse::<std::net::IpAddr>() {
+        Ok(ip) if ip.is_loopback() => None,
+        // 0.0.0.0 / :: / LAN addresses, or an unresolvable hostname.
+        Ok(_) | Err(_) => Some(t(
+            "绑定到非回环地址已被拒绝(仅允许 127.0.0.1/::1):局域网开放代理或端口暴露有风险",
+            "non-loopback bind refused (loopback only): LAN open-proxy / port-exposure risk",
+        )),
     }
 }
 
@@ -68,6 +92,10 @@ pub fn spawn_local(
 ) -> JoinHandle<()> {
     let bind = bind_target(&bind_addr, bind_port);
     tokio::spawn(async move {
+        if let Some(reason) = bind_safety_error(&bind_addr) {
+            notice(&events, format!("-L {bind} {reason}"));
+            return;
+        }
         let listener = match TcpListener::bind(&bind).await {
             Ok(l) => l,
             Err(e) => {
@@ -111,6 +139,10 @@ pub fn spawn_dynamic(
 ) -> JoinHandle<()> {
     let bind = bind_target(&bind_addr, bind_port);
     tokio::spawn(async move {
+        if let Some(reason) = bind_safety_error(&bind_addr) {
+            notice(&events, format!("-D {bind} {reason}"));
+            return;
+        }
         let listener = match TcpListener::bind(&bind).await {
             Ok(l) => l,
             Err(e) => {
@@ -118,7 +150,9 @@ pub fn spawn_dynamic(
                 return;
             }
         };
-        notice(&events, format!("-D {bind} (SOCKS5)"));
+        notice(&events, format!(
+            "-D {bind} (SOCKS5, 无认证仅限本机 / no-auth, loopback only)"
+        ));
         loop {
             let (inbound, peer) = match listener.accept().await {
                 Ok(v) => v,
