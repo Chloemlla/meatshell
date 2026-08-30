@@ -8,6 +8,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **修复旧版 macOS 启动闪退。** 在 macOS 上禁用 Slint/winit 的 AppKit DisplayLink 帧节流，回退到计时器帧节流，避免旧系统收到不存在的 `displayLinkWithTarget:selector:` 消息。
 - **Fix startup crashes on older macOS.** Disable Slint/winit's AppKit DisplayLink frame throttling on macOS and use timer throttling instead, avoiding calls to the unavailable `displayLinkWithTarget:selector:` method on older systems.
 
+- **新增 MCP 活动审计。** GUI 的「设置 → 界面 → MCP」每 1 秒轮询 `mcp_activity.jsonl`，实时展示 AI 客户端通过 MCP 执行的活动（时间、调用方、工具、命令 / 路径、状态、耗时），支持 Refresh / Clear；`meatshell mcp serve` 每次被调用都会追加一条 JSON 记录，只写入白名单参数，命令内联的口令 / token 先脱敏、明文密钥不落盘，文件超过约 2 MiB 自动裁剪为最新 1000 条。
+- **Add an MCP activity audit.** Settings → Interface → MCP now polls `mcp_activity.jsonl` every second and shows the MCP calls an AI client has made (timestamp, caller, tool, command / path, status, duration) with Refresh / Clear actions. `meatshell mcp serve` appends one JSON record per invocation; only whitelisted arguments are logged, inline tokens / passwords in commands are redacted first, and plaintext secrets never reach the file, which is capped at about 2 MiB and trimmed to the newest 1000 records.
+
 ## [0.7.1] - 2026-08-29
 
 - **完善终端内 ZMODEM `rz` 上传（#308）。** 采用贡献者实现，补充完整关闭握手、远端跳过与握手失败反馈，并限制数据块大小以提升与 `lrzsz` 的兼容性；`sz` 下载保持不变。

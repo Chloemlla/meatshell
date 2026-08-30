@@ -108,6 +108,7 @@ open /Applications/meatshell.app
 - [x] Known-hosts (`known_hosts`) verification + first-connect confirmation
 - [x] Split panes for tabbed terminals
 - [x] Multiple windows: Ctrl+Shift+N (macOS ⌘⇧N) or the system "New window" entry (Windows taskbar / Linux desktop right-click), managed as a single Chrome-style process
+- [x] MCP activity audit: watch in real time what MCP-capable AI clients do through MCP (see [MCP activity audit](#mcp-activity-audit))
 
 Color emoji graphics are provided by [Twemoji](https://github.com/jdecked/twemoji)
 under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See
@@ -211,6 +212,22 @@ On Windows, `command` can be `C:\\path\\to\\meatshell.exe`. Restart or refresh
 the MCP client; the `meatshell` server should expose tools for session lookup,
 remote commands, directory listing, bounded text reads, uploads, and downloads.
 MCP configuration locations vary by AI client, so consult that client's docs.
+
+#### MCP activity audit
+
+`meatshell mcp serve` (a separate stdio process) appends one JSON line per
+invocation to `<data-dir>/mcp_activity.jsonl` — the same data directory as
+`sessions.json` (`config/mcp_activity.jsonl` beside the binary in portable mode).
+Open **Settings → Interface → MCP** and the panel polls every second to show
+"Recent MCP activity" live: timestamp, caller (from the `initialize` handshake's
+clientInfo, e.g. `claude-desktop/1.0.0`), tool, command / path, status, and
+duration, with Refresh and Clear buttons. Clear renames the old log aside as
+`mcp_activity.jsonl.bak` and starts fresh.
+
+Only whitelisted argument fields are recorded (`session_id` / `group` / `command`
+/ `path` / `local_path` / `remote_path`, …), inline secrets such as tokens and
+passwords in commands are redacted first, and plaintext keys never reach the log.
+The file is capped at about 2 MiB, keeping only the newest 1000 records.
 
 #### MCP JSON-RPC examples
 

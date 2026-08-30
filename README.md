@@ -103,6 +103,7 @@ open /Applications/meatshell.app
 - [x] 已知主机（`known_hosts`）校验 + 首次连接确认
 - [x] 多标签页终端分屏
 - [x] 多窗口：Ctrl+Shift+N（macOS ⌘⇧N）或系统入口“新建窗口”（Windows 任务栏 / Linux 桌面右键），Chrome 式单进程管理
+- [x] MCP 活动审计：设置 → 界面 → MCP 实时展示 AI 客户端通过 MCP 执行了什么（见 [MCP 活动审计](#mcp-活动审计)）
 
 彩色 emoji 图形来自 [Twemoji](https://github.com/jdecked/twemoji)，按
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 使用；完整署名见
@@ -198,6 +199,20 @@ CLI 的 `<session-id-or-name>` 可由 `meatshell cli sessions` 获取，传会�
 Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷新 MCP 客户端
 后，应能看到 `meatshell` 服务以及会话查询、远程命令、目录浏览、文本读取、上传和下载
 等工具。不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端文档为准。
+
+#### MCP 活动审计
+
+`meatshell mcp serve`（独立 stdio 进程）会把每次被调用追加为一行 JSON 到
+`<数据目录>/mcp_activity.jsonl`——数据目录与 `sessions.json` 相同（便携模式为
+可执行文件旁的 `config/mcp_activity.jsonl`）。打开 **设置 → 界面 → MCP**，面板
+会以 1 秒间隔轮询并实时展示「最近 MCP 活动」：时间、调用方（来自 `initialize`
+握手中的 clientInfo，如 `claude-desktop/1.0.0`）、工具、命令 / 路径、状态与
+耗时，并带有 Refresh / Clear 按钮。Clear 会把旧日志改名为
+`mcp_activity.jsonl.bak` 保留后重新开始。
+
+审计记录只写入白名单参数（`session_id` / `group` / `command` / `path` /
+`local_path` / `remote_path` 等），命令内联的口令、token 等会先脱敏，明文密钥
+不会落盘；文件超过约 2 MiB 时自动裁剪，只保留最新 1000 条。
 
 #### MCP JSON-RPC 示例
 
