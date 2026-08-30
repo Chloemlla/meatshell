@@ -1696,7 +1696,7 @@ export component InterfacePanel inherits Rectangle {
                             spacing: 6px;
                             Text { text: r.ts; color: Theme.text-muted; font-size: 11px * Theme.panel-font; font-family: Theme.term-font-family; vertical-alignment: center; }
                             Text { text: r.caller; color: Theme.text-secondary; font-size: 11px * Theme.panel-font; overflow: elide; vertical-alignment: center; }
-                            Rectangle { width: 1px; height: 12px; background: Theme.border-subtle; vertical-alignment: center; }
+                            Rectangle { width: 1px; background: Theme.border-subtle; }
                             Text { text: r.state == 2 ? "\u{E5CD}" : r.state == 0 ? "\u{E866}" : "\u{E876}"; color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.success; font-family: "Material Icons"; font-size: 13px; vertical-alignment: center; }
                             Text { text: r.tool; color: Theme.text-primary; font-size: 11px * Theme.panel-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                         }
