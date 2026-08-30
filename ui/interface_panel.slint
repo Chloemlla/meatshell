@@ -26,6 +26,16 @@ export struct WslProfileInfo {
     directory: string,
 }
 
+export struct McpActivityRow {
+    ts: string,       // "HH:MM:SS" local wall-clock
+    caller: string,   // client identity, e.g. "claude-desktop/1.0.0"
+    tool: string,     // tool name for tools/call, else the method ("initialize"/"tools/list")
+    session: string,  // session reference or ""
+    detail: string,   // command text / file path / error text (truncated in Rust)
+    state: int,       // 0 = running (tool_start), 1 = ok/connect/method, 2 = error
+    duration: string, // "1.2s" or ""
+}
+
 // One left-nav row (icon + label).
 component NavItem inherits Rectangle {
     in property <string> icon;
@@ -448,6 +458,9 @@ export component InterfacePanel inherits Rectangle {
     callback set-quick-commands-as-sidebar(bool);
     callback set-update-check-enabled(bool);   // startup new-version check (#184)
     callback set-mcp-permissions(bool, bool, bool, bool);
+    in property <[McpActivityRow]> mcp-activity-rows;
+    callback mcp-activity-refresh();
+    callback mcp-activity-clear();
     callback persist-wallpaper-overlay(float);   // save the overlay opacity
     callback set-wallpaper(string);    // none / builtin selection
     callback pick-wallpaper-file();    // open the OS file dialog (Rust)
@@ -1659,6 +1672,41 @@ export component InterfacePanel inherits Rectangle {
                     color: Theme.text-muted;
                     font-family: Theme.term-font-family;
                     font-size: 12px * Theme.panel-font;
+                }
+
+                Rectangle { height: 12px; }
+                SectionHeader { text: root.lang-en ? "RECENT MCP ACTIVITY" : "最近 MCP 活动"; height: 24px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    PrimaryButton { text: root.lang-en ? "Refresh" : "刷新"; clicked => { root.mcp-activity-refresh(); } }
+                    GhostButton { text: root.lang-en ? "Clear" : "清空"; clicked => { root.mcp-activity-clear(); } }
+                }
+                if root.mcp-activity-rows.length == 0 : Text {
+                    text: root.lang-en ? "No MCP activity yet. It appears here in real time when an MCP client calls meatshell mcp serve." : "暂无 MCP 活动。MCP 客户端调用 meatshell mcp serve 后，这里会实时显示。";
+                    color: Theme.text-muted; font-size: 12px * Theme.panel-font; wrap: word-wrap;
+                }
+                for r in root.mcp-activity-rows : Rectangle {
+                    height: 46px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-root;
+                    VerticalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 5px; padding-bottom: 5px;
+                        spacing: 2px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text { text: r.ts; color: Theme.text-muted; font-size: 11px * Theme.panel-font; font-family: Theme.term-font-family; vertical-alignment: center; }
+                            Text { text: r.caller; color: Theme.text-secondary; font-size: 11px * Theme.panel-font; overflow: elide; vertical-alignment: center; }
+                            Rectangle { width: 1px; height: 12px; background: Theme.border-subtle; vertical-alignment: center; }
+                            Text { text: r.state == 2 ? "\u{E5CD}" : r.state == 0 ? "\u{E866}" : "\u{E876}"; color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.success; font-family: "Material Icons"; font-size: 13px; vertical-alignment: center; }
+                            Text { text: r.tool; color: Theme.text-primary; font-size: 11px * Theme.panel-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            if r.session != "" : Text { text: r.session; color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide; vertical-alignment: center; }
+                            Text { text: r.detail; color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.text-secondary; font-size: 11px * Theme.panel-font; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                            Text { text: r.duration; color: Theme.text-muted; font-size: 11px * Theme.panel-font; vertical-alignment: center; }
+                        }
+                    }
                 }
             }
 

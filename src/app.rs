@@ -571,6 +571,100 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     std::process::exit(0);
 }
 
+/// Map one `mcp_activity.jsonl` audit record (a serde_json object written by the
+/// MCP server process) to a GUI row for the Settings → MCP activity feed.
+/// Fully-qualified `chrono` paths are used on purpose so we don't add a
+/// `use chrono::…` that could collide with an existing binding.
+fn mcp_activity_row(value: &serde_json::Value) -> McpActivityRow {
+    let str_of = |k: &str| -> String {
+        value
+            .get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let event = str_of("event");
+    let state = if event == "tool_start" {
+        0
+    } else if event == "tool_error" {
+        2
+    } else {
+        1 // connect / method / tool_done
+    };
+
+    // Tool name for tools/call, else the method, else the event name.
+    let tool = {
+        let t = str_of("tool");
+        if !t.is_empty() {
+            t
+        } else {
+            let m = str_of("method");
+            if !m.is_empty() {
+                m
+            } else {
+                event.clone()
+            }
+        }
+    };
+
+    // Prefer the error text for failed calls; otherwise the command, then the
+    // first non-empty path-ish field.
+    let mut detail = if event == "tool_error" {
+        str_of("error")
+    } else {
+        String::new()
+    };
+    if detail.is_empty() {
+        for k in [
+            "command",
+            "path",
+            "local_path",
+            "remote_path",
+            "remote_directory",
+            "local_directory",
+        ] {
+            let v = str_of(k);
+            if !v.is_empty() {
+                detail = v;
+                break;
+            }
+        }
+    }
+    let detail: String = detail.chars().take(160).collect();
+
+    let duration = match value.get("duration_ms") {
+        Some(v) if v.is_number() => {
+            let ms = v.as_f64().unwrap_or(0.0);
+            format!("{:.1}s", ms / 1000.0)
+        }
+        _ => String::new(),
+    };
+
+    let ts = value
+        .get("ts")
+        .and_then(serde_json::Value::as_str)
+        .map(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_else(|_| s.to_string())
+        })
+        .unwrap_or_default();
+
+    McpActivityRow {
+        ts: ts.into(),
+        caller: str_of("caller").into(),
+        tool: tool.into(),
+        session: str_of("session_id").into(),
+        detail: detail.into(),
+        state,
+        duration: duration.into(),
+    }
+}
+
 /// Build and wire one application window. Called for the first window by
 /// `run()` and for every subsequent window by the new-window entry points.
 /// `at` pins the window to a physical screen position (tab detach); without
@@ -2341,6 +2435,40 @@ fn open_window(
             }
         });
     }
+
+    // Recent MCP activity feed: poll mcp_activity.jsonl (written by the
+    // `meatshell mcp serve` stdio process) and show the newest records on the
+    // Settings → MCP page. Polled while the interface panel is open.
+    let mcp_activity_rows: Rc<VecModel<McpActivityRow>> = Rc::new(VecModel::default());
+    window.set_mcp_activity_rows(ModelRc::from(mcp_activity_rows.clone()));
+    let activity_weak = window.as_weak();
+    let activity_rows = mcp_activity_rows.clone();
+    let refresh = move || {
+        if let Some(w) = activity_weak.upgrade() {
+            if !w.get_interface_open() {
+                return;
+            }
+            let mut rows = Vec::new();
+            for value in crate::mcp::tail_activity(200) {
+                rows.push(mcp_activity_row(&value));
+            }
+            rows.reverse(); // newest first
+            activity_rows.set_vec(rows);
+        }
+    };
+    refresh();
+    let activity_timer = slint::Timer::default();
+    activity_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(1000),
+        refresh.clone(),
+    );
+    window_timers.borrow_mut().push(activity_timer);
+    window.on_mcp_activity_refresh(refresh.clone());
+    window.on_mcp_activity_clear(move || {
+        crate::mcp::clear_activity();
+        refresh();
+    });
 
     // Open-source libraries shown in the About popup.
     {

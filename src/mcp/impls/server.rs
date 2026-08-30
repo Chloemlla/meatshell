@@ -1,7 +1,10 @@
 use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde_json::{json, Value};
+
+use super::ActivityLog;
 
 const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
@@ -16,6 +19,8 @@ pub(crate) fn run_stdio() -> Result<()> {
         .enable_all()
         .build()
         .context("create MCP runtime")?;
+    let activity = ActivityLog::open();
+    let mut caller = String::from("unknown");
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -24,16 +29,181 @@ pub(crate) fn run_stdio() -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => runtime.block_on(handle(request)),
+            Ok(request) => {
+                remember_caller(&request, &mut caller);
+                record_usage_start(&activity, &request, &caller);
+                let started = std::time::Instant::now();
+                let response = runtime.block_on(handle(request.clone()));
+                record_usage_end(&activity, &request, &caller, started, &response);
+                response
+            }
             Err(error) => Some(error_response(Value::Null, -32700, &error.to_string())),
         };
         if let Some(response) = response {
-            serde_json::to_writer(&mut stdout, &response).context("write MCP response")?;
-            stdout.write_all(b"\n").context("finish MCP response")?;
-            stdout.flush().context("flush MCP response")?;
+            write_response(&mut stdout, &response)?;
         }
     }
     Ok(())
+}
+
+fn write_response(stdout: &mut impl std::io::Write, response: &Value) -> Result<()> {
+    serde_json::to_writer(&mut *stdout, response).context("write MCP response")?;
+    stdout.write_all(b"\n").context("finish MCP response")?;
+    stdout.flush().context("flush MCP response")?;
+    Ok(())
+}
+
+/// Remember the MCP client's identity from the `initialize` handshake so it can
+/// be attached to every audit record.
+fn remember_caller(request: &Value, caller: &mut String) {
+    if request.get("method").and_then(Value::as_str) != Some("initialize") {
+        return;
+    }
+    let Some(client_info) = request.pointer("/params/clientInfo") else {
+        return;
+    };
+    let name = client_info.get("name").and_then(Value::as_str).unwrap_or("");
+    let version = client_info
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    *caller = if name.is_empty() {
+        "unknown".to_string()
+    } else if version.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}/{version}")
+    };
+}
+
+/// Record the start of a tracked request (connect, tool call, tools/list).
+fn record_usage_start(activity: &ActivityLog, request: &Value, caller: &str) {
+    if request.get("id").is_none() {
+        return;
+    }
+    let method = request.get("method").and_then(Value::as_str);
+    let event = match method {
+        Some("tools/call") => "tool_start",
+        Some("initialize") => "connect",
+        Some("tools/list") => "method",
+        _ => return,
+    };
+    activity.record(&base_record(request, caller, event, Utc::now()));
+}
+
+/// Record the completion of a `tools/call` with its duration (and error, if any).
+fn record_usage_end(
+    activity: &ActivityLog,
+    request: &Value,
+    caller: &str,
+    started: std::time::Instant,
+    response: &Option<Value>,
+) {
+    if request.get("method").and_then(Value::as_str) != Some("tools/call")
+        || request.get("id").is_none()
+    {
+        return;
+    }
+    let is_error = response_is_error(response);
+    let event = if is_error { "tool_error" } else { "tool_done" };
+    let mut record = base_record(request, caller, event, Utc::now());
+    record["duration_ms"] = json!(started.elapsed().as_millis() as u64);
+    if is_error {
+        record["error"] = json!(truncate(&response_error_text(response), 500));
+    }
+    activity.record(&record);
+}
+
+/// Build the shared audit record shape. For `tools/call`, copies the tool name
+/// and only whitelisted string arguments — never the whole arguments object,
+/// which could carry secrets.
+fn base_record(
+    request: &Value,
+    caller: &str,
+    event: &str,
+    ts: chrono::DateTime<chrono::Utc>,
+) -> Value {
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let mut record = json!({
+        "ts": ts.to_rfc3339(),
+        "caller": caller,
+        "event": event,
+        "method": method,
+    });
+    if let Some(id) = request.get("id") {
+        record["id"] = id.clone();
+    }
+    if method == "tools/call" {
+        if let Some(tool) = request.pointer("/params/name").and_then(Value::as_str) {
+            record["tool"] = json!(tool);
+        }
+        const WHITELISTED_KEYS: &[&str] = &[
+            "session_id",
+            "group",
+            "command",
+            "path",
+            "local_path",
+            "remote_path",
+            "remote_directory",
+            "local_directory",
+        ];
+        if let Some(arguments) = request
+            .pointer("/params/arguments")
+            .and_then(Value::as_object)
+        {
+            for key in WHITELISTED_KEYS {
+                if let Some(Value::String(value)) = arguments.get(*key) {
+                    record[*key] = json!(value);
+                }
+            }
+        }
+    }
+    record
+}
+
+/// A `tools/call` response counts as an error when the response object carries
+/// an `"error"` member or `/result/isError == true`. A `None` response (a
+/// notification) is not an error.
+fn response_is_error(response: &Option<Value>) -> bool {
+    let Some(response) = response else {
+        return false;
+    };
+    if response.get("error").is_some() {
+        return true;
+    }
+    matches!(
+        response.pointer("/result/isError"),
+        Some(Value::Bool(true))
+    )
+}
+
+/// Best-effort human-readable error text from a tool response.
+fn response_error_text(response: &Option<Value>) -> String {
+    let Some(response) = response else {
+        return "unknown error".to_string();
+    };
+    if let Some(text) = response
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+    {
+        return text.to_string();
+    }
+    if let Some(message) = response
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return message.to_string();
+    }
+    if let Some(error) = response.get("error") {
+        return error.to_string();
+    }
+    "unknown error".to_string()
+}
+
+/// Truncate `s` to at most `max` chars.
+fn truncate(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
 }
 
 async fn handle(request: Value) -> Option<Value> {

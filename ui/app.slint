@@ -25,7 +25,7 @@ import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "ter
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, McpActivityRow } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -666,6 +666,9 @@ export component AppWindow inherits Window {
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
     callback set-mcp-permissions(bool, bool, bool, bool);
+    in property <[McpActivityRow]> mcp-activity-rows;
+    callback mcp-activity-refresh();
+    callback mcp-activity-clear();
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
@@ -4694,6 +4697,9 @@ export component AppWindow inherits Window {
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;
                     mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
+                    mcp-activity-rows: root.mcp-activity-rows;
+                    mcp-activity-refresh() => { root.mcp-activity-refresh(); }
+                    mcp-activity-clear() => { root.mcp-activity-clear(); }
                     wallpaper-overlay <=> root.wallpaper-overlay;
                     current-wallpaper: root.current-wallpaper;
                     custom-wallpaper-name: root.custom-wallpaper-name;
