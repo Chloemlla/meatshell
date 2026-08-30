@@ -14,6 +14,7 @@
 //! There is no SFTP and no resource monitor — a Telnet console is a raw pipe.
 
 use anyhow::{Context, Result};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -35,6 +36,12 @@ const SE: u8 = 240;
 const OPT_ECHO: u8 = 1;
 const OPT_SGA: u8 = 3; // suppress go-ahead → character-at-a-time mode
 const OPT_NAWS: u8 = 31; // negotiate about window size
+
+// Subnegotiation caps: a peer that opens `IAC SB` and never sends `IAC SE`
+// would otherwise leave the parser stuck dropping every later data byte
+// forever (#44). Enforce a byte count and a wall-clock bound.
+const MAX_SUBNEG_BYTES: usize = 4096;
+const MAX_SUBNEG_DURATION: Duration = Duration::from_secs(30);
 
 pub fn spawn_telnet_session(
     runtime: &tokio::runtime::Handle,
@@ -76,8 +83,11 @@ enum TnState {
     Data,
     Iac,
     Opt(u8), // saw IAC <DO/DONT/WILL/WONT>, awaiting option byte
-    Sub,     // inside subnegotiation, awaiting IAC
-    SubIac,  // inside subnegotiation, saw IAC (awaiting SE)
+    // Inside subnegotiation: `bytes` counts bytes consumed since `IAC SB`
+    // (including the option byte), `since` is when the sub block started, so
+    // a peer that never sends `IAC SE` can't swallow data forever (#44).
+    Sub { bytes: usize, since: Instant },
+    SubIac { bytes: usize, since: Instant }, // saw IAC inside sub (awaiting SE)
 }
 
 fn naws_subneg(cols: u32, rows: u32) -> Vec<u8> {
@@ -227,6 +237,14 @@ async fn run_telnet(
 /// `data`, and any negotiation responses we owe go into `replies`.
 fn process_incoming(input: &[u8], state: &mut TnState, data: &mut Vec<u8>, replies: &mut Vec<u8>) {
     for &b in input {
+        // A stalled subnegotiation (IAC SB with no IAC SE) would otherwise
+        // swallow every later data byte forever. Force back to Data once it
+        // grows too large or drags on too long, then process `b` normally (#44).
+        if let TnState::Sub { bytes, since } | TnState::SubIac { bytes, since } = *state {
+            if bytes >= MAX_SUBNEG_BYTES || since.elapsed() > MAX_SUBNEG_DURATION {
+                *state = TnState::Data;
+            }
+        }
         match *state {
             TnState::Data => {
                 if b == IAC {
@@ -242,7 +260,12 @@ fn process_incoming(input: &[u8], state: &mut TnState, data: &mut Vec<u8>, repli
                     *state = TnState::Data;
                 }
                 DO | DONT | WILL | WONT => *state = TnState::Opt(b),
-                SB => *state = TnState::Sub,
+                SB => {
+                    *state = TnState::Sub {
+                        bytes: 0,
+                        since: Instant::now(),
+                    };
+                }
                 // Standalone commands (GA, NOP, DM, …) — ignore.
                 _ => *state = TnState::Data,
             },
@@ -250,19 +273,31 @@ fn process_incoming(input: &[u8], state: &mut TnState, data: &mut Vec<u8>, repli
                 respond_negotiation(cmd, b, replies);
                 *state = TnState::Data;
             }
-            TnState::Sub => {
-                // Skip subnegotiation payload until IAC SE.
+            TnState::Sub { bytes, since } => {
+                // Count every payload byte (including the option byte that
+                // follows SB) so a long malformed block is bounded (#44).
                 if b == IAC {
-                    *state = TnState::SubIac;
+                    *state = TnState::SubIac {
+                        bytes: bytes + 1,
+                        since,
+                    };
+                } else {
+                    *state = TnState::Sub {
+                        bytes: bytes + 1,
+                        since,
+                    };
                 }
             }
-            TnState::SubIac => {
-                // IAC SE ends the block; IAC IAC is an escaped data byte we drop
-                // (we don't interpret any subnegotiation payloads).
+            TnState::SubIac { bytes, since } => {
                 if b == SE {
                     *state = TnState::Data;
                 } else {
-                    *state = TnState::Sub;
+                    // IAC followed by non-SE (e.g. escaped IAC IAC): stay in the
+                    // sub block, count it, and keep scanning for a real SE.
+                    *state = TnState::Sub {
+                        bytes: bytes + 1,
+                        since,
+                    };
                 }
             }
         }

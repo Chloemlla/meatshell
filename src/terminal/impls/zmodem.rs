@@ -63,6 +63,14 @@ const CANFDX: u8 = 0x01;
 const CANOVIO: u8 = 0x02;
 const CANFC32: u8 = 0x20;
 
+// Hard caps against an untrusted/erroring ZMODEM sender. A data subpacket is
+// bounded so a peer that never sends a terminator can't grow memory without
+// limit (#39), and a session is bounded in file count and total bytes so a
+// peer that streams more data than it declared can't fill the disk (#40).
+const MAX_SUBPACKET: usize = 1024 * 1024; // 1 MiB per data subpacket
+const MAX_FILES: usize = 64; // files per receive session
+const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB per session
+
 /// Receive one or more files via ZMODEM. `first` is the channel chunk that
 /// triggered detection (it contains the leading ZRQINIT).
 ///
@@ -88,6 +96,8 @@ pub async fn receive(
 
     let mut rx = Rx::new(channel, first);
     let mut received = 0u32;
+    let mut total_bytes: u64 = 0;
+    let mut files_opened: usize = 0;
     let mut cur: Option<CurFile> = None;
     // A header already read ahead (e.g. the next ZFILE peeked after a ZEOF).
     let mut pending: Option<(u8, [u8; 4])> = None;
@@ -104,6 +114,10 @@ pub async fn receive(
                     .await?
             }
             ZFILE => {
+                if files_opened >= MAX_FILES {
+                    bail!("zmodem: too many files in one transfer (max {MAX_FILES})");
+                }
+                files_opened += 1;
                 // Data subpacket: "name\0size mtime mode ...".
                 let (sub, _end) = rx.read_subpacket(true).await?;
                 let nul = sub.iter().position(|&b| b == 0).unwrap_or(sub.len());
@@ -114,6 +128,9 @@ pub async fn receive(
                     .and_then(|s| s.split_whitespace().next().map(str::to_owned))
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
+                if total_bytes.saturating_add(size) > MAX_TOTAL_BYTES {
+                    bail!("zmodem: transfer would exceed {MAX_TOTAL_BYTES} total bytes");
+                }
                 let path = dest.join(&name);
                 let file = tokio::fs::File::create(&path)
                     .await
@@ -126,14 +143,32 @@ pub async fn receive(
                     id,
                     size,
                     written: 0,
+                    path,
+                    committed: false,
                 });
                 rx.send_hex(ZRPOS, 0u32.to_le_bytes()).await?;
             }
             ZDATA => loop {
                 let (chunk, end) = rx.read_subpacket(true).await?;
                 if let Some(c) = cur.as_mut() {
+                    // Stop if the sender streams more than the size it declared
+                    // (the declared size falls back to 0 when the ZFILE info
+                    // fails to parse), and cap the whole session so a broken
+                    // peer can't fill the disk (#40).
+                    if c.written.saturating_add(chunk.len() as u64) > c.size {
+                        bail!(
+                            "zmodem: {} exceeds its declared size ({} bytes)",
+                            c.name,
+                            c.size
+                        );
+                    }
+                    let new_total = total_bytes.saturating_add(chunk.len() as u64);
+                    if new_total > MAX_TOTAL_BYTES {
+                        bail!("zmodem: transfer exceeds {MAX_TOTAL_BYTES} total bytes");
+                    }
                     c.file.write_all(&chunk).await.context("write file")?;
                     c.written += chunk.len() as u64;
+                    total_bytes = new_total;
                     emit(
                         events,
                         &c.id,
@@ -159,6 +194,9 @@ pub async fn receive(
             ZEOF => {
                 if let Some(mut c) = cur.take() {
                     c.file.flush().await.context("flush file")?;
+                    // Completed file is kept; only un-finished files are
+                    // removed on drop (#41).
+                    c.committed = true;
                     emit(
                         events,
                         &c.id,
@@ -241,6 +279,19 @@ struct CurFile {
     id: String,
     size: u64,
     written: u64,
+    path: PathBuf,
+    committed: bool,
+}
+
+impl Drop for CurFile {
+    fn drop(&mut self) {
+        // A file that never reached ZEOF is partial: remove it so a broken or
+        // cancelled transfer (CRC error, timeout, ZCAN/ZABORT, …) doesn't leave
+        // garbage in Downloads (#41).
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Reader/writer over the SSH channel with a byte buffer and ZMODEM helpers.
@@ -367,7 +418,7 @@ impl<'a> Rx<'a> {
         loop {
             let b = self.byte().await?;
             if b != ZDLE {
-                data.push(b);
+                push_subpacket_byte(&mut data, b)?;
                 continue;
             }
             let e = self.byte().await?;
@@ -392,9 +443,9 @@ impl<'a> Rx<'a> {
                     }
                     return Ok((data, e));
                 }
-                ZRUB0 => data.push(0x7f),
-                ZRUB1 => data.push(0xff),
-                _ => data.push(e ^ 0x40),
+                ZRUB0 => push_subpacket_byte(&mut data, 0x7f)?,
+                ZRUB1 => push_subpacket_byte(&mut data, 0xff)?,
+                _ => push_subpacket_byte(&mut data, e ^ 0x40)?,
             }
         }
     }
@@ -425,6 +476,16 @@ impl<'a> Rx<'a> {
         self.ch.data(&out[..]).await.context("zmodem send header")?;
         Ok(())
     }
+}
+
+/// Push one data byte onto a subpacket, refusing to grow past the cap so a
+/// peer that never sends a terminator can't exhaust memory (#39).
+fn push_subpacket_byte(data: &mut Vec<u8>, byte: u8) -> Result<()> {
+    if data.len() >= MAX_SUBPACKET {
+        bail!("zmodem: data subpacket exceeds {MAX_SUBPACKET} bytes");
+    }
+    data.push(byte);
+    Ok(())
 }
 
 /// True for bytes that make up a ZMODEM hex close frame (ZFIN) or the "OO"

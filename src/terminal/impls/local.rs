@@ -108,7 +108,7 @@ async fn run_local(
         label
     )));
 
-    {
+    let reader_handle = {
         let reader_events = events.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -135,8 +135,8 @@ async fn run_local(
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
     while let Some(cmd) = commands.recv().await {
         match cmd {
@@ -175,6 +175,13 @@ async fn run_local(
             }
         }
     }
+    // Ensure the child is gone (Close already killed it; this also covers the
+    // channel-closed path), drop the PTY master to close the read side, and
+    // join the reader thread so its handle and event sender are released
+    // rather than leaked (#43).
+    let _ = child.lock().unwrap().kill();
+    drop(pair.master);
+    let _ = reader_handle.join();
     Ok(())
 }
 

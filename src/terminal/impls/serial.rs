@@ -8,11 +8,12 @@
 //! Unlike SSH there is no remote PTY, no SFTP and no resource monitor — a
 //! serial line is just a raw byte pipe to a switch / router / MCU console.
 //! The `serialport` crate is blocking, so the read side runs on a dedicated OS
-//! thread and writes happen via `spawn_blocking`.
+//! thread and writes go through a dedicated writer thread that is joined on
+//! exit so the write handle is always released (#42).
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -140,7 +141,39 @@ async fn run_serial(
     let writer = port
         .try_clone()
         .context("failed to clone serial handle for writing")?;
-    let writer = Arc::new(Mutex::new(writer));
+
+    // A dedicated writer thread owns the write-side handle so a stalled write
+    // can never outlive the session: it polls a stop flag between writes and
+    // we join it on exit, guaranteeing the handle is released so Windows can
+    // reopen the port without "port in use" (#42).
+    let writer_stop = Arc::new(AtomicBool::new(false));
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<(
+        Vec<u8>,
+        tokio::sync::oneshot::Sender<std::io::Result<()>>,
+    )>();
+    let writer_thread = {
+        let writer_stop = writer_stop.clone();
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            loop {
+                if writer_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                match write_rx.recv() {
+                    Ok((bytes, reply)) => {
+                        // No explicit `flush()`: on Unix that maps to `tcdrain`,
+                        // which blocks until every byte is physically transmitted
+                        // and would hang forever while flow control is stopped.
+                        // The driver buffers the bytes and transmits them in order
+                        // as the peer drains, which is all a terminal needs (#42).
+                        let result = stoppable_write_all(&mut *writer, &bytes, &writer_stop);
+                        let _ = reply.send(result);
+                    }
+                    Err(_) => break, // sender dropped → session closing
+                }
+            }
+        })
+    };
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(
@@ -188,18 +221,18 @@ async fn run_serial(
             SessionCommand::RawInput(bytes) => {
                 // Never log keystroke bytes — they can be passwords (#15).
                 tracing::debug!("serial write len={} bytes", bytes.len());
-                let w = writer.clone();
-                // Hardware flow control with a stopped peer wedges write_all
-                // forever; the timeout keeps Close serviceable so the task
-                // can still finish on shutdown.
-                let res = tokio::time::timeout(
-                    Duration::from_secs(30),
-                    tokio::task::spawn_blocking(move || {
-                        let mut guard = w.lock().unwrap();
-                        guard.write_all(&bytes).and_then(|_| guard.flush())
-                    }),
-                )
-                .await;
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                if write_tx.send((bytes, reply_tx)).is_err() {
+                    let _ = events.send(SessionEvent::Closed(
+                        t("串口写入失败", "serial write failed").into(),
+                    ));
+                    break;
+                }
+                // Hardware flow control with a stopped peer wedges the write;
+                // the writer thread aborts it on the port's write timeout, and
+                // this outer bound keeps Close serviceable. If it trips, the
+                // writer is marked for stop so its handle is released (#42).
+                let res = tokio::time::timeout(Duration::from_secs(30), reply_rx).await;
                 match res {
                     Ok(Ok(Ok(()))) => {}
                     Ok(Ok(Err(e))) => {
@@ -216,6 +249,10 @@ async fn run_serial(
                         break;
                     }
                     Err(_) => {
+                        // The writer is still stalled past the bound; mark it
+                        // for stop so it aborts and releases the port handle
+                        // promptly, then close (#42).
+                        writer_stop.store(true, Ordering::Relaxed);
                         let _ = events.send(SessionEvent::Closed(
                             t("串口写入超时", "serial write timed out").into(),
                         ));
@@ -242,12 +279,50 @@ async fn run_serial(
         }
     }
 
+    // Stop the writer thread first so the write-side handle is released even
+    // if a write is still stalled, then stop the reader (#42).
+    writer_stop.store(true, Ordering::Relaxed);
+    drop(write_tx);
+    let _ = writer_thread.join();
+
     // Stop the reader thread and wait for it to drain.
     running.store(false, Ordering::Relaxed);
     let _ = reader_handle.join();
     let _ = events.send(SessionEvent::Closed(
         t("串口已关闭", "serial port closed").into(),
     ));
+    Ok(())
+}
+
+/// `write_all` that aborts as soon as `stop` is set, so the writer thread can
+/// be joined (and its serial handle released) even while a peer's flow control
+/// has stopped. Each `write` call is bounded by the port's write timeout, so
+/// the abort is quick (#42).
+fn stoppable_write_all(
+    writer: &mut dyn serialport::SerialPort,
+    bytes: &[u8],
+    stop: &AtomicBool,
+) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < bytes.len() {
+        if stop.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "serial write aborted by close",
+            ));
+        }
+        match writer.write(&bytes[written..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "serial write returned 0 bytes",
+                ))
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
     Ok(())
 }
 
