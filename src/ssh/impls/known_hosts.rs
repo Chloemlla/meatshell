@@ -12,11 +12,24 @@
 //!     `host:port ssh-ed25519 AAAA...`
 //! i.e. the `host:port` id followed by the key in its OpenSSH one-line form.
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use ssh_key::{HashAlg, PublicKey};
 use super::structs::HostKeyStatus;
+
+/// Serializes `remember()`'s read-modify-write cycles so two sessions that
+/// finish their first host-key confirmation at the same time can't overwrite
+/// each other's just-appended entries (#27).
+static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Uniquifies the atomic-replace temp name within this process (combined with
+/// the PID it is unique across processes too), so a stale temp file from a
+/// crashed run can't collide with a live one (#27).
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// `host:port` lookup key.
 fn id(host: &str, port: u16) -> String {
@@ -85,11 +98,40 @@ pub fn verify(host: &str, port: u16, key: &PublicKey) -> HostKeyStatus {
 
 /// Remember (or replace) the key for `host:port`. Rewrites the file with any
 /// stale entry for the same id removed, then appends the new one.
+///
+/// The rewrite is serialized process-wide and applied by writing a unique temp
+/// file in the same directory then atomically renaming it over the target, so a
+/// crash mid-write never tears the file and concurrent first-confirmations can't
+/// clobber each other (#27). Before writing we refuse a pre-planted symlink or
+/// directory at the target path, so a malicious symlink can't redirect the write
+/// (TOFU takeover, #28).
 pub fn remember(host: &str, port: u16, key: &PublicKey) -> Result<()> {
     let p = path().context("could not determine config directory")?;
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).context("create config dir")?;
+    let parent = p.parent().context("known_hosts path has no parent directory")?;
+    std::fs::create_dir_all(parent).context("create config dir")?;
+
+    // One writer at a time: the rewrite below is read-modify-write.
+    let _guard = KNOWN_HOSTS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Refuse to follow a pre-planted symlink / directory (TOFU takeover, #28).
+    match std::fs::symlink_metadata(&p) {
+        Ok(md) => {
+            if md.file_type().is_symlink() {
+                bail!(
+                    "refusing to write known_hosts through a symbolic link: {}",
+                    p.display()
+                );
+            }
+            if md.is_dir() {
+                bail!("known_hosts path is a directory: {}", p.display());
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("stat {}", p.display())),
     }
+
     let id = id(host, port);
     let line = openssh_line(key);
     let mut out = String::new();
@@ -106,6 +148,36 @@ pub fn remember(host: &str, port: u16, key: &PublicKey) -> Result<()> {
     out.push(' ');
     out.push_str(&line);
     out.push('\n');
-    std::fs::write(&p, out).with_context(|| format!("write {}", p.display()))?;
-    Ok(())
+
+    // Atomic replace: write + fsync a unique temp file, then rename over the
+    // target (#27). The target is replaced atomically, never followed.
+    let tmp = parent.join(format!(
+        "known_hosts.tmp.{}.{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("create {}", tmp.display()))?;
+        f.write_all(out.as_bytes())
+            .with_context(|| format!("write {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("sync {}", tmp.display()))?;
+        drop(f);
+        std::fs::rename(&tmp, &p)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), p.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }

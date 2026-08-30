@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use russh::client::{self, Handle, Handler, Msg};
 use russh::keys::key::PrivateKeyWithHashAlg;
@@ -16,11 +16,20 @@ use russh::{Channel, ChannelId, ChannelMsg, Disconnect};
 use ssh_key::{HashAlg, PublicKey};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
+use zeroize::Zeroizing;
 
 use crate::config::{AuthMethod, PortForward, Secret, Session, SessionTrigger};
 use crate::i18n::t;
 
 use super::structs::*;
+
+/// Safety valve for `suppress_echo` (#29): if the shell-integration completion
+/// marker never arrives (e.g. the `channel.data(prompt_setup)` write failed or
+/// the remote shell never executed the setup command), stop hiding terminal
+/// output after this much wall-clock time…
+const SUPPRESS_ECHO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// …or after this much suppressed output has accumulated.
+const SUPPRESS_ECHO_MAX_BYTES: u64 = 256 * 1024;
 
 struct RuntimeTrigger {
     rule: SessionTrigger,
@@ -1054,6 +1063,14 @@ async fn connect_ssh(
     }
 
     // Connect directly, or tunnel through a SOCKS5 / HTTP proxy (issue #7).
+    // Refuse `https://` explicitly so the user is told TLS proxies aren't
+    // supported instead of silently connecting around them (#25).
+    if session.proxy.trim().to_ascii_lowercase().starts_with("https://") {
+        bail!(
+            "HTTPS proxy is not supported; refusing to tunnel CONNECT in plaintext \
+             — use an HTTP or SOCKS5 proxy instead"
+        );
+    }
     let handle = match crate::ssh::proxy::resolve(&session.proxy) {
         Some(p) => {
             let _ = events.send(SessionEvent::Status(format!(
@@ -1101,6 +1118,9 @@ pub(crate) async fn authenticate_session(
         Some(c) => c,
         None => return Ok(AuthResult::Cancelled),
     };
+    // Hold the password copy in a zeroized buffer so it doesn't linger in freed
+    // heap after authentication completes (#30).
+    let password = Zeroizing::new(password);
 
     let authed = match session.auth {
         AuthMethod::Password => {
@@ -1549,6 +1569,10 @@ async fn run_session(
     // True from injecting PROMPT_SETUP until the echoed setup line has been
     // received and stripped; output is buffered (not shown) during that window.
     let mut suppress_echo = false;
+    // #29: when suppression started and how many bytes have been hidden, so a
+    // missing completion marker can't black out the session forever.
+    let mut suppress_echo_started: Option<std::time::Instant> = None;
+    let mut suppress_echo_bytes: u64 = 0;
     // Buffers output while `suppress_echo` so the (long) echoed setup line can be
     // stripped even when it splits across reads (#98).
     let mut echo_buf = String::new();
@@ -1960,6 +1984,8 @@ async fn run_session(
                         {
                             prompt_injected = true;
                             suppress_echo = true;
+                            suppress_echo_started = Some(std::time::Instant::now());
+                            suppress_echo_bytes = 0;
                             // A separate exec probe already confirmed bash or zsh.
                             // Keep buffering until the hook's OSC 7 arrives: slow
                             // Linux/macOS PTYs may echo this command after several
@@ -2002,15 +2028,31 @@ async fn run_session(
                         // buffer remains bounded while preserving split markers.
                         let mut text = if suppress_echo {
                             echo_buf.push_str(&chunk);
-                        if let Some(tail) = take_after_prompt_setup_done(&mut echo_buf) {
-                            suppress_echo = false;
-                            late_prompt_echo_pending = false;
-                            if let Some(cwd) = extract_osc7_path(&tail) {
-                                tracing::debug!("OSC7 cwd={:?}", cwd);
-                                let _ = events.send(SessionEvent::CwdChanged(cwd));
-                            }
-                            tail
-                        } else {
+                            suppress_echo_bytes =
+                                suppress_echo_bytes.saturating_add(chunk.len() as u64);
+                            if let Some(tail) = take_after_prompt_setup_done(&mut echo_buf) {
+                                suppress_echo = false;
+                                suppress_echo_started = None;
+                                late_prompt_echo_pending = false;
+                                if let Some(cwd) = extract_osc7_path(&tail) {
+                                    tracing::debug!("OSC7 cwd={:?}", cwd);
+                                    let _ = events.send(SessionEvent::CwdChanged(cwd));
+                                }
+                                tail
+                            } else if suppress_echo_started
+                                .map(|started| started.elapsed() >= SUPPRESS_ECHO_TIMEOUT)
+                                .unwrap_or(false)
+                                || suppress_echo_bytes >= SUPPRESS_ECHO_MAX_BYTES
+                            {
+                                // The completion marker never arrived (setup write
+                                // failed / the shell never executed it). Flush the
+                                // buffered setup echo and resume normal rendering
+                                // instead of hiding the session's output forever (#29).
+                                suppress_echo = false;
+                                suppress_echo_started = None;
+                                late_prompt_echo_pending = false;
+                                std::mem::take(&mut echo_buf)
+                            } else {
                                 bound_prompt_setup_echo(&mut echo_buf);
                                 continue; // keep buffering; show nothing yet
                             }
@@ -2709,18 +2751,29 @@ where
                 for p in &prompts {
                     // Use the stored password for the first password-like
                     // challenge; ask the user for everything else (MFA codes).
+                    // Answers are held as `Zeroizing<String>` so the password /
+                    // MFA answer doesn't linger in plaintext while we wait for
+                    // further prompts (#30).
                     if !password_used && !password.is_empty() && !looks_like_mfa(&p.prompt) {
-                        responses.push(password.to_string());
+                        responses.push(Zeroizing::new(password.to_string()));
                         password_used = true;
                     } else {
                         match ask_mfa_prompt(session_id, host, &p.prompt, p.echo, events).await {
-                            Some(answer) => responses.push(answer),
+                            Some(answer) => responses.push(Zeroizing::new(answer)),
                             None => return Ok(false), // user cancelled
                         }
                     }
                 }
+                // russh takes `Vec<String>` by value; hand it plain strings built
+                // from the zeroized holders. Consuming each holder with
+                // `to_string()` drops it right there, so the password / MFA answer
+                // copies we held are zeroized once they leave our hands (#30).
+                let plain: Vec<String> = responses
+                    .into_iter()
+                    .map(|z| z.to_string())
+                    .collect();
                 res = handle
-                    .authenticate_keyboard_interactive_respond(responses)
+                    .authenticate_keyboard_interactive_respond(plain)
                     .await?;
             }
         }

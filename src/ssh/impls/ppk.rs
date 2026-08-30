@@ -19,9 +19,12 @@ type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 const PPK_PREFIX: &[u8] = b"PuTTY-User-Key-File-";
 const MAX_PPK_SIZE: usize = 16 * 1024 * 1024;
-const MAX_ARGON_MEMORY_KIB: u32 = 1024 * 1024;
-const MAX_ARGON_PASSES: u32 = 1000;
-const MAX_ARGON_PARALLELISM: u32 = 64;
+// Tight practical ceilings for Argon2 parameters so a hostile/glitched PPK can't
+// make the client allocate ~1 GiB and burn CPU (local DoS, #31). PuTTY's own
+// defaults are far below these (e.g. 8 MiB / 16 passes / 1 thread).
+const MAX_ARGON_MEMORY_KIB: u32 = 256 * 1024; // 256 MiB
+const MAX_ARGON_PASSES: u32 = 32;
+const MAX_ARGON_PARALLELISM: u32 = 8;
 
 #[derive(Debug)]
 struct Ppk {

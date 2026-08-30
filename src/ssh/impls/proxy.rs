@@ -6,8 +6,10 @@
 //!
 //! * **SOCKS5** (`socks5://` / `socks5h://`) via `tokio-socks`; after the
 //!   handshake we unwrap to the inner `TcpStream`.
-//! * **HTTP / HTTPS CONNECT** (`http://` / `https://`): we issue an HTTP
-//!   `CONNECT host:port` and reuse the same socket as the tunnel.
+//! * **HTTP CONNECT** (`http://`): we issue an HTTP `CONNECT host:port` and reuse
+//!   the same socket as the tunnel. `https://` proxies are *rejected* (see
+//!   [`parse`]) because there is no TLS-proxy support — silently downgrading
+//!   them to plaintext would leak the `Proxy-Authorization` credentials.
 //!
 //! The proxy is taken from the per-session setting, falling back to the standard
 //! `ALL_PROXY` / `all_proxy` environment variable.
@@ -16,6 +18,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use zeroize::Zeroizing;
 
 use crate::config::Secret;
 use super::structs::{ProxyConfig, ProxyKind};
@@ -26,12 +29,24 @@ use super::structs::{ProxyConfig, ProxyKind};
 pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
     let s = session_proxy.trim();
     if !s.is_empty() {
-        return parse(s);
+        return match parse(s) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("proxy config rejected: {e:#}");
+                None
+            }
+        };
     }
     for var in ["ALL_PROXY", "all_proxy"] {
         if let Ok(v) = std::env::var(var) {
             if !v.trim().is_empty() {
-                return parse(v.trim());
+                return match parse(v.trim()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("proxy config rejected: {e:#}");
+                        None
+                    }
+                };
             }
         }
     }
@@ -39,12 +54,19 @@ pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
 }
 
 /// Parse a proxy URL: `scheme://[user:pass@]host:port`.
-fn parse(url: &str) -> Option<ProxyConfig> {
+fn parse(url: &str) -> Result<Option<ProxyConfig>> {
     let (scheme, rest) = url.split_once("://").unwrap_or(("socks5", url));
     let kind = match scheme.to_ascii_lowercase().as_str() {
         "socks5" | "socks5h" | "socks" => ProxyKind::Socks5,
-        "http" | "https" => ProxyKind::Http,
-        _ => return None,
+        "http" => ProxyKind::Http,
+        // No TLS-proxy support here: refusing the scheme is safer than silently
+        // downgrading to a plaintext CONNECT tunnel, which would send the proxy
+        // credentials (`Proxy-Authorization: Basic`) in clear text (#25).
+        "https" => bail!(
+            "HTTPS proxy ({scheme}://) is not supported; refusing to tunnel CONNECT \
+             in plaintext — use an HTTP or SOCKS5 proxy instead"
+        ),
+        _ => return Ok(None),
     };
     // Optional userinfo before '@'.
     let (auth, hostport) = match rest.rsplit_once('@') {
@@ -55,17 +77,23 @@ fn parse(url: &str) -> Option<ProxyConfig> {
         None => (None, rest),
     };
     let hostport = hostport.trim_end_matches('/');
-    let (host, port) = hostport.rsplit_once(':')?;
-    let port: u16 = port.parse().ok()?;
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some(v) => v,
+        None => return Ok(None), // not `host:port` → no proxy
+    };
+    let port: u16 = match port.parse() {
+        Ok(v) => v,
+        Err(_) => return Ok(None), // non-numeric port → no proxy
+    };
     if host.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(ProxyConfig {
+    Ok(Some(ProxyConfig {
         kind,
         host: host.to_string(),
         port,
         auth,
-    })
+    }))
 }
 
 /// Human-readable description of where we're connecting (for status messages).
@@ -106,10 +134,18 @@ async fn connect_http(cfg: &ProxyConfig, host: &str, port: u16) -> Result<TcpStr
         .await
         .with_context(|| format!("connect to HTTP proxy {}:{} failed", cfg.host, cfg.port))?;
 
-    let mut req = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n");
+    // The request carries `Proxy-Authorization: Basic base64(user:pass)`; hold
+    // both the token and the assembled request in zeroized buffers so the proxy
+    // credentials don't linger in freed heap after the send (#26).
+    let mut req = Zeroizing::new(format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+    ));
     if let Some((u, p)) = &cfg.auth {
-        let token = base64::engine::general_purpose::STANDARD.encode(format!("{u}:{}", p.as_str()));
-        req.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
+        let creds = Zeroizing::new(format!("{u}:{}", p.as_str()));
+        let token = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(&*creds));
+        req.push_str("Proxy-Authorization: Basic ");
+        req.push_str(&*token);
+        req.push_str("\r\n");
     }
     req.push_str("Proxy-Connection: keep-alive\r\n\r\n");
     s.write_all(req.as_bytes())
