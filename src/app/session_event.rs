@@ -1,5 +1,11 @@
 use super::*;
 
+/// Cap on transfer rows kept in the Transfers panel. Completed/failed rows
+/// used to accumulate forever, making every new transfer an O(n) scan and
+/// slowing the UI over a long session; evict the oldest finished rows once
+/// the list exceeds this (#11).
+const MAX_TRANSFER_ROWS: usize = 100;
+
 pub(super) fn apply_session_event_to_window(
     win: &AppWindow,
     window_id: u64,
@@ -14,14 +20,20 @@ pub(super) fn apply_session_event_to_window(
     let tabs_rc = win.get_tabs();
     let terminals_rc = win.get_terminals();
     // `ModelRc::as_any` lets us downcast to the concrete `VecModel<T>`.
-    let tabs = tabs_rc
+    // A `.slint` structure change would otherwise make these `expect`s panic
+    // the whole UI thread; degrade by skipping the event instead (#15).
+    let Some(tabs) = tabs_rc
         .as_any()
         .downcast_ref::<VecModel<TabInfo>>()
-        .expect("tabs model must be a VecModel");
-    let terminals = terminals_rc
+    else {
+        return;
+    };
+    let Some(terminals) = terminals_rc
         .as_any()
         .downcast_ref::<VecModel<TerminalState>>()
-        .expect("terminals model must be a VecModel");
+    else {
+        return;
+    };
 
     let update_terminal = |mutator: &dyn Fn(&mut TerminalState)| {
         for i in 0..terminals.row_count() {
@@ -83,8 +95,10 @@ pub(super) fn apply_session_event_to_window(
         SessionEvent::Connected => {
             update_tab(&|t| t.connected = true);
             update_terminal(&|t| t.status = crate::i18n::t("已连接", "Connected").into());
-            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
-                st.state = 1;
+            if let Ok(mut guard) = statuses.lock() {
+                if let Some(st) = guard.get_mut(tab_id) {
+                    st.state = 1;
+                }
             }
             if win.get_active_tab_id().as_str() == tab_id
                 && (sidebar_updates_visible(win) || win.get_system_info_window_open())
@@ -116,8 +130,10 @@ pub(super) fn apply_session_event_to_window(
             update_terminal(&|t| {
                 t.status = format!("{} — {reason}", crate::i18n::t("已断开", "Disconnected")).into()
             });
-            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
-                st.state = 2;
+            if let Ok(mut guard) = statuses.lock() {
+                if let Some(st) = guard.get_mut(tab_id) {
+                    st.state = 2;
+                }
             }
             if win.get_active_tab_id().as_str() == tab_id
                 && (sidebar_updates_visible(win) || win.get_system_info_window_open())
@@ -135,24 +151,26 @@ pub(super) fn apply_session_event_to_window(
             disks,
             sys,
         } => {
-            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
-                st.cpu = cpu_percent;
-                st.mem_used_kib = mem_used_kib;
-                st.mem_total_kib = mem_total_kib;
-                st.swap_used_kib = swap_used_kib;
-                st.swap_total_kib = swap_total_kib;
-                st.net = net;
-                st.disks = disks;
-                if let Some(sys) = sys {
-                    st.sys = sys;
+            if let Ok(mut guard) = statuses.lock() {
+                if let Some(st) = guard.get_mut(tab_id) {
+                    st.cpu = cpu_percent;
+                    st.mem_used_kib = mem_used_kib;
+                    st.mem_total_kib = mem_total_kib;
+                    st.swap_used_kib = swap_used_kib;
+                    st.swap_total_kib = swap_total_kib;
+                    st.net = net;
+                    st.disks = disks;
+                    if let Some(sys) = sys {
+                        st.sys = sys;
+                    }
+                    // A sample means the channel is alive → treat as connected.
+                    if st.state != 1 {
+                        st.state = 1;
+                    }
+                    // Append the selected interface's total rate to its sparkline.
+                    let (_, rx, tx) = selected_iface(st);
+                    push_ring(&mut st.net_hist, (rx + tx) as f32);
                 }
-                // A sample means the channel is alive → treat as connected.
-                if st.state != 1 {
-                    st.state = 1;
-                }
-                // Append the selected interface's total rate to its sparkline.
-                let (_, rx, tx) = selected_iface(st);
-                push_ring(&mut st.net_hist, (rx + tx) as f32);
             }
             if win.get_active_tab_id().as_str() == tab_id
                 && (sidebar_updates_visible(win) || win.get_system_info_window_open())
@@ -164,11 +182,13 @@ pub(super) fn apply_session_event_to_window(
             current_user,
             procs,
         } => {
-            if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
-                if !current_user.is_empty() {
-                    st.user = current_user;
+            if let Ok(mut guard) = statuses.lock() {
+                if let Some(st) = guard.get_mut(tab_id) {
+                    if !current_user.is_empty() {
+                        st.user = current_user;
+                    }
+                    st.procs = procs;
                 }
-                st.procs = procs;
             }
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_process_model(win, statuses);
@@ -368,6 +388,26 @@ pub(super) fn apply_session_event_to_window(
                 match found {
                     Some(i) => model.set_row_data(i, rec),
                     None => model.insert(0, rec), // newest at top
+                }
+                // Keep the list bounded: evict the oldest finished rows once the
+                // cap is exceeded, leaving active/preparing rows in place (#11).
+                let mut count = model.row_count();
+                while count > MAX_TRANSFER_ROWS {
+                    let evict = (0..count)
+                        .rev()
+                        .find(|&i| {
+                            model
+                                .row_data(i)
+                                .map(|r| r.state != 0 && r.state != 3)
+                                .unwrap_or(true)
+                        });
+                    match evict {
+                        Some(i) => {
+                            model.remove(i);
+                            count -= 1;
+                        }
+                        None => break, // all remaining rows are active: keep them
+                    }
                 }
                 // Drive the breathing indicator on the Transfers toolbar button:
                 // `true` while any row is active (0) or preparing (3); flips back

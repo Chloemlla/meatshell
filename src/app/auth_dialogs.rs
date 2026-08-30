@@ -276,7 +276,21 @@ pub(super) fn resolve_front_cred(win: &AppWindow, window_id: u64, accept: bool) 
         if let Some(pos) = q.iter().position(|p| p.window_id == window_id) {
             let p = q.remove(pos).expect("position checked above");
             CRED_DECIDED.with(|d| {
-                d.borrow_mut().insert(p.session_id.clone(), reply.clone());
+                let mut d = d.borrow_mut();
+                // "Remember" persists the password (encrypted) to the config,
+                // and the SSH layer reads it back from there before it ever
+                // prompts again — so the run-lifetime cache does not need to
+                // keep the plaintext. Drop it to avoid the password lingering
+                // in memory for the whole run (#24).
+                let remembered = reply
+                    .as_ref()
+                    .map(|(_, _, remember)| *remember)
+                    .unwrap_or(false);
+                if remembered {
+                    d.remove(&p.session_id);
+                } else {
+                    d.insert(p.session_id.clone(), reply.clone());
+                }
             });
             if let Some((ref u, ref pw, true)) = reply {
                 persist_credentials(&p.session_id, u, pw, p.need_user, p.need_password);

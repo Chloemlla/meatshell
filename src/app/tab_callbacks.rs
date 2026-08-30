@@ -152,14 +152,25 @@ pub(super) fn wire_tab_callbacks(
             if let Some(handle) = handles.borrow_mut().remove(&id) {
                 handle.close();
             }
-            if let Some(sftp) = sftp_handles.lock().unwrap().remove(&id) {
-                sftp.close();
+            // Close-sends are non-blocking channel messages; only the shared
+            // lock needs poison-safe handling so a panicked background thread
+            // can't crash the UI thread's close-tab callback (#20).
+            if let Ok(mut sftp_handles) = sftp_handles.lock() {
+                if let Some(sftp) = sftp_handles.remove(&id) {
+                    sftp.close();
+                }
             }
-            sftp_last_cwd.lock().unwrap().remove(&id);
-            if let Some(gate) = render_gates.lock().unwrap().remove(&id) {
-                gate.close();
+            if let Ok(mut last_cwd) = sftp_last_cwd.lock() {
+                last_cwd.remove(&id);
             }
-            bufs.lock().unwrap().remove(&id);
+            if let Ok(mut gates) = render_gates.lock() {
+                if let Some(gate) = gates.remove(&id) {
+                    gate.close();
+                }
+            }
+            if let Ok(mut bufs) = bufs.lock() {
+                bufs.remove(&id);
+            }
             if let Ok(mut routes) = tab_routes.lock() {
                 routes.remove(&id);
             }

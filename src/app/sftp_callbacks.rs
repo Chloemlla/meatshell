@@ -134,22 +134,40 @@ pub(super) fn wire_sftp_callbacks(
                 })
                 .unwrap_or_default();
             if !always_ask && !preset.is_empty() {
-                if let Ok(handles) = sftp_handles.lock() {
-                    if let Some(h) = handles.get(&tab_id) {
-                        if let Some(ref dir) = arc_dir {
-                            h.download_archive(dir.clone(), arc_names.clone(), preset);
-                        } else if let Some(conflict) =
-                            choose_download_conflict(&remote_path, &preset)
-                        {
-                            h.download(remote_path, preset, conflict);
-                        }
-                        // Pop the transfers panel so progress is visible (user
-                        // request: any download opens the download popup).
-                        if let Some(w) = weak.upgrade() {
-                            w.set_download_open(true);
+                // Run the preset download on a background thread: the conflict
+                // dialog is a native modal and must not freeze the event loop,
+                // matching the picker branch below (#16). The conflict decision
+                // is made *before* taking the shared sftp_handles lock so the
+                // modal dialog never holds it while the user decides (#17).
+                let thread_arc_dir = arc_dir.clone();
+                let thread_arc_names = arc_names.clone();
+                let thread_remote = remote_path.clone();
+                let thread_tab = tab_id.clone();
+                let thread_sftp_handles = sftp_handles.clone();
+                let thread_weak = weak.clone();
+                std::thread::spawn(move || {
+                    let conflict = if thread_arc_dir.is_some() {
+                        None
+                    } else {
+                        choose_download_conflict(&thread_remote, &preset)
+                    };
+                    if let Ok(handles) = thread_sftp_handles.lock() {
+                        if let Some(h) = handles.get(&thread_tab) {
+                            if let Some(ref dir) = thread_arc_dir {
+                                h.download_archive(
+                                    dir.clone(),
+                                    thread_arc_names.clone(),
+                                    preset,
+                                );
+                            } else if let Some(conflict) = conflict {
+                                h.download(thread_remote, preset, conflict);
+                            }
                         }
                     }
-                }
+                    // Pop the transfers panel so progress is visible (user
+                    // request: any download opens the download popup).
+                    let _ = thread_weak.upgrade_in_event_loop(|w| w.set_download_open(true));
+                });
                 return;
             }
             let sftp_handles = sftp_handles.clone();
@@ -157,13 +175,19 @@ pub(super) fn wire_sftp_callbacks(
             std::thread::spawn(move || {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     let local_dir = dir.to_string_lossy().to_string();
+                    // Decide the conflict before taking the shared lock — the
+                    // modal dialog must not hold sftp_handles while waiting
+                    // for the user (#17).
+                    let conflict = if arc_dir.is_some() {
+                        None
+                    } else {
+                        choose_download_conflict(&remote_path, &local_dir)
+                    };
                     if let Ok(handles) = sftp_handles.lock() {
                         if let Some(h) = handles.get(&tab_id) {
                             if let Some(ref rdir) = arc_dir {
                                 h.download_archive(rdir.clone(), arc_names.clone(), local_dir);
-                            } else if let Some(conflict) =
-                                choose_download_conflict(&remote_path, &local_dir)
-                            {
+                            } else if let Some(conflict) = conflict {
                                 h.download(remote_path, local_dir, conflict);
                             }
                         }
@@ -425,20 +449,42 @@ pub(super) fn wire_sftp_callbacks(
             let preset = w.get_download_dir().to_string();
             let always_ask = w.get_download_always_ask();
             if !always_ask && !preset.is_empty() {
-                if let Ok(handles) = sftp_handles.lock() {
-                    if let Some(h) = handles.get(tab_id.as_str()) {
-                        if single {
-                            if let Some(conflict) =
-                                choose_download_conflict(&paths[0], &preset)
-                            {
-                                h.download(paths[0].clone(), preset.clone(), conflict);
+                // Same as the plain download path: run on a background thread so
+                // the conflict dialog + transfer never freeze the UI, and decide
+                // the conflict before taking the shared lock (#16, #17).
+                let sftp_handles_t = sftp_handles.clone();
+                let weak_t = weak.clone();
+                let tab_t = tab_id.to_string();
+                let thread_paths = paths.clone();
+                let thread_remote_dir = remote_dir.clone();
+                let thread_names = names.clone();
+                std::thread::spawn(move || {
+                    let conflict = if single {
+                        choose_download_conflict(&thread_paths[0], &preset)
+                    } else {
+                        None
+                    };
+                    if let Ok(handles) = sftp_handles_t.lock() {
+                        if let Some(h) = handles.get(&tab_t) {
+                            if single {
+                                if let Some(conflict) = conflict {
+                                    h.download(
+                                        thread_paths[0].clone(),
+                                        preset.clone(),
+                                        conflict,
+                                    );
+                                }
+                            } else {
+                                h.download_archive(
+                                    thread_remote_dir.clone(),
+                                    thread_names.clone(),
+                                    preset.clone(),
+                                );
                             }
-                        } else {
-                            h.download_archive(remote_dir.clone(), names.clone(), preset.clone());
                         }
                     }
-                }
-                w.set_download_open(true);
+                    let _ = weak_t.upgrade_in_event_loop(|w| w.set_download_open(true));
+                });
             } else {
                 let sftp_handles = sftp_handles.clone();
                 let weak2 = weak.clone();
@@ -446,12 +492,17 @@ pub(super) fn wire_sftp_callbacks(
                 std::thread::spawn(move || {
                     if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                         let dir = dir.to_string_lossy().to_string();
+                        // Conflict decision outside the shared lock — a modal
+                        // dialog must not hold sftp_handles while waiting (#17).
+                        let conflict = if single {
+                            choose_download_conflict(&paths[0], &dir)
+                        } else {
+                            None
+                        };
                         if let Ok(handles) = sftp_handles.lock() {
                             if let Some(h) = handles.get(&tab) {
                                 if single {
-                                    if let Some(conflict) =
-                                        choose_download_conflict(&paths[0], &dir)
-                                    {
+                                    if let Some(conflict) = conflict {
                                         h.download(paths[0].clone(), dir.clone(), conflict);
                                     }
                                 } else {

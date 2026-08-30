@@ -274,9 +274,19 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                                 // only move bytes from the terminal buffer into that
                                 // channel and inflate memory, so catch up first and
                                 // pace once the stream's tail is within reach.
-                                if !has_immediate_ui_events
-                                    && remaining_output_bytes <= PACED_LOCAL_BACKLOG_LIMIT
-                                    && shell_rx.len() <= PACED_QUEUE_EVENT_LIMIT
+                                // A batch carrying an immediate UI event must not
+                                // disable that pacing wholesale: a fast firehose
+                                // that happens to coincide with a prompt would
+                                // otherwise run the pump unthrottled and pile
+                                // unbounded batches onto the UI event queue (#10).
+                                let within_reach = remaining_output_bytes
+                                    <= PACED_LOCAL_BACKLOG_LIMIT
+                                    && shell_rx.len() <= PACED_QUEUE_EVENT_LIMIT;
+                                let overloaded = remaining_output_bytes
+                                    > PACED_LOCAL_BACKLOG_LIMIT
+                                    || shell_rx.len() > PACED_QUEUE_EVENT_LIMIT;
+                                if (!has_immediate_ui_events && within_reach)
+                                    || (has_immediate_ui_events && overloaded)
                                 {
                                     wait_for_ui_flush(ticket);
                                 }

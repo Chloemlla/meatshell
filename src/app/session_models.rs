@@ -380,11 +380,22 @@ pub(super) fn wsl_available() -> bool {
 
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        std::process::Command::new("wsl.exe")
-            .arg("--status")
-            .creation_flags(0x08000000)
-            .status()
-            .map(|s| s.success())
+        // `wsl.exe --status` can hang for a long time on first launch (WSL
+        // distribution initialization). Probe it on a helper thread with a
+        // hard timeout so the very first session-list sync can never freeze
+        // the UI thread indefinitely (#9). The `OnceLock` still caches the
+        // result so the probe runs at most once per process.
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let available = std::process::Command::new("wsl.exe")
+                .arg("--status")
+                .creation_flags(0x08000000)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let _ = tx.send(available);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(3))
             .unwrap_or(false)
     })
 }

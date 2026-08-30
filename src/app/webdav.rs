@@ -217,6 +217,23 @@ fn webdav_ensure_parent_dirs(agent: &ureq::Agent, url: &str, auth: Option<&str>)
     Ok(())
 }
 
+/// Refuse to send WebDAV credentials over plaintext `http://` — the Basic
+/// password would travel cleartext on the LAN and could be sniffed (#23).
+/// `https://` is always allowed; `http://` is only accepted for anonymous
+/// access (empty username *and* password).
+fn webdav_check_http_creds(base: &str, username: &str, password: &str) -> Result<()> {
+    if base.trim().starts_with("http://") && (!username.is_empty() || !password.is_empty()) {
+        anyhow::bail!(
+            "{}",
+            t(
+                "不允许经明文 http:// 传输 WebDAV 账号密码，请改用 https://；确需 http 请留空账号密码",
+                "Refusing to send WebDAV credentials over plaintext http:// — use https://, or leave the credentials empty for anonymous http"
+            )
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn webdav_put_json(
     base_url: &str,
     remote_path: &str,
@@ -225,6 +242,7 @@ pub(super) fn webdav_put_json(
     accept_invalid_certs: bool,
     json: String,
 ) -> Result<()> {
+    webdav_check_http_creds(base_url, username, password)?;
     let url = webdav_url(base_url, remote_path)?;
     let agent = webdav_agent(accept_invalid_certs);
     let auth = webdav_auth_header(username, password);
@@ -243,6 +261,7 @@ pub(super) fn webdav_get_json(
     password: &str,
     accept_invalid_certs: bool,
 ) -> Result<String> {
+    webdav_check_http_creds(base_url, username, password)?;
     let url = webdav_url(base_url, remote_path)?;
     let agent = webdav_agent(accept_invalid_certs);
     let auth = webdav_auth_header(username, password);

@@ -78,7 +78,11 @@ const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
-    bufs.lock().unwrap().get(tab_id).cloned()
+    if let Ok(bufs) = bufs.lock() {
+        bufs.get(tab_id).cloned()
+    } else {
+        None
+    }
 }
 
 fn tab_render_interval(bufs: &TermBuffers, tab_id: &str) -> std::time::Duration {
@@ -104,13 +108,19 @@ fn with_term_buf<R>(
     f: impl FnOnce(&mut TermBuffer) -> R,
 ) -> Option<R> {
     let h = term_buf(bufs, tab_id)?;
-    let mut guard = h.lock().unwrap();
+    let Ok(mut guard) = h.lock() else {
+        return None;
+    };
     Some(f(&mut guard))
 }
 
 fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) -> Vec<u8> {
     if let Some(h) = term_buf(bufs, tab_id) {
-        h.lock().unwrap().ingest(chunk)
+        if let Ok(mut buf) = h.lock() {
+            buf.ingest(chunk)
+        } else {
+            Vec::new()
+        }
     } else {
         Vec::new()
     }
@@ -189,6 +199,147 @@ use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
 use crate::ui::*;
 use crate::webdav::WebDavAcceptAnyCertVerifier;
 
+/// Persist the config immediately, logging (instead of silently dropping) any
+/// write error. Silent write failures meant sessions/settings were lost on
+/// disk-full / permission errors (#8).
+fn persist_config(store: &ConfigStore) {
+    if let Err(e) = store.save() {
+        tracing::warn!("failed to save config: {e:#}");
+    }
+}
+
+/// Debounced config writer (#3): routine UI-triggered mutations coalesce into
+/// one write per quiet window instead of a full rewrite per event. Close-path
+/// saves bypass this (via `persist_config`) so the final write is never lost.
+struct ConfigWriter {
+    store: Rc<RefCell<ConfigStore>>,
+    dirty: Cell<bool>,
+    armed: Cell<bool>,
+}
+
+thread_local! {
+    static CONFIG_WRITER: RefCell<Option<Rc<ConfigWriter>>> = RefCell::new(None);
+}
+
+impl ConfigWriter {
+    fn register(store: Rc<RefCell<ConfigStore>>) {
+        CONFIG_WRITER.with(|w| {
+            *w.borrow_mut() = Some(Rc::new(ConfigWriter {
+                store,
+                dirty: Cell::new(false),
+                armed: Cell::new(false),
+            }));
+        });
+    }
+
+    fn schedule_save(self: &Rc<Self>) {
+        self.dirty.set(true);
+        if self.armed.replace(true) {
+            return; // a write is already pending and will pick this change up
+        }
+        let me = self.clone();
+        slint::Timer::single_shot(std::time::Duration::from_millis(250), move || {
+            me.flush();
+        });
+    }
+
+    fn flush(&self) {
+        self.armed.set(false);
+        if self.dirty.replace(false) {
+            persist_config(&self.store.borrow());
+        }
+    }
+}
+
+/// Queue a debounced config save for the process store (#3).
+fn schedule_config_save() {
+    CONFIG_WRITER.with(|w| {
+        if let Some(writer) = w.borrow().as_ref() {
+            writer.schedule_save();
+        }
+    });
+}
+
+/// Single background clipboard writer (#4). Every copy is routed through one
+/// worker thread so arboard's `set().wait()` (which on Linux blocks until
+/// another app takes clipboard ownership) can never accumulate threads.
+struct ClipboardWorker {
+    pending: Mutex<Option<String>>,
+    cv: std::sync::Condvar,
+}
+
+impl ClipboardWorker {
+    fn spawn() -> Arc<Self> {
+        let worker = Arc::new(ClipboardWorker {
+            pending: Mutex::new(None),
+            cv: std::sync::Condvar::new(),
+        });
+        let me = worker.clone();
+        std::thread::Builder::new()
+            .name("clipboard".into())
+            .spawn(move || loop {
+                let mut pending = match me.pending.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
+                while pending.is_none() {
+                    pending = match me.cv.wait(pending) {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                }
+                let text = pending.take().expect("wait loop guarantees Some");
+                drop(pending);
+                clipboard_set_text(text);
+            })
+            .expect("failed to spawn clipboard worker thread");
+        worker
+    }
+
+    fn submit(&self, text: String) {
+        let mut pending = match self.pending.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        *pending = Some(text);
+        self.cv.notify_one();
+    }
+}
+
+/// Queue `text` for the clipboard. The latest submission wins if the worker is
+/// still busy writing an earlier one (#4).
+fn copy_to_clipboard(text: String) {
+    static CLIPBOARD_WORKER: OnceLock<Arc<ClipboardWorker>> = OnceLock::new();
+    let worker = CLIPBOARD_WORKER.get_or_init(ClipboardWorker::spawn);
+    worker.submit(text);
+}
+
+/// JoinHandles of window-scoped background tasks (dialog connection tests,
+/// process actions) so closing the window aborts them instead of leaving them
+/// to linger on the shared runtime until the process exits (#5).
+static WINDOW_BG_TASKS: OnceLock<Mutex<HashMap<u64, Vec<tokio::task::JoinHandle<()>>>>> =
+    OnceLock::new();
+
+fn track_bg_task(window_id: u64, handle: tokio::task::JoinHandle<()>) {
+    let map = WINDOW_BG_TASKS.get_or_init(Default::default);
+    if let Ok(mut map) = map.lock() {
+        map.entry(window_id).or_default().push(handle);
+    }
+}
+
+fn abort_window_bg_tasks(window_id: u64) {
+    let Some(map) = WINDOW_BG_TASKS.get() else {
+        return;
+    };
+    if let Ok(mut map) = map.lock() {
+        if let Some(tasks) = map.remove(&window_id) {
+            for task in tasks {
+                task.abort();
+            }
+        }
+    }
+}
+
 fn tab_title_len(title: &str) -> i32 {
     title
         .chars()
@@ -214,10 +365,14 @@ fn teardown_window(
     sys_weak: &slint::Weak<SystemInfoWindow>,
 ) {
     abort_window_prompts(window_id);
+    abort_window_bg_tasks(window_id);
     {
         let mut sessions = handles.borrow_mut();
         for handle in sessions.values() {
             handle.close();
+            // Forcefully cancel the session task so a handshake or reconnect
+            // that is still in flight cannot linger until process exit (#5).
+            handle.join.abort();
         }
         sessions.clear();
     }
@@ -459,6 +614,8 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // Reachable from the Slint-thread event handler for recording terminal
     // commands into history (#113).
     HISTORY_STORE.with(|s| *s.borrow_mut() = Some(store.clone()));
+    // Debounced config writer for routine UI mutations (#3).
+    ConfigWriter::register(store.clone());
 
     let core = Rc::new(AppCore {
         runtime,
@@ -792,7 +949,7 @@ fn open_window(
     {
         proc_win.on_copy_pid(move |pid: SharedString| {
             let text = pid.to_string();
-            std::thread::spawn(move || clipboard_set_text(text));
+            copy_to_clipboard(text);
         });
     }
     {
@@ -968,7 +1125,7 @@ fn open_window(
             settings.set_mcp_use_saved_credentials(credentials);
             settings.set_mcp_allow_commands(commands);
             settings.set_mcp_allow_file_transfers(files);
-            let _ = settings.save();
+            persist_config(&settings);
         });
     }
 
@@ -1020,7 +1177,7 @@ fn open_window(
             flag.store(follow, std::sync::atomic::Ordering::Relaxed);
             let mut s = store.borrow_mut();
             s.set_sftp_follow_cd(follow);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
 
@@ -1032,7 +1189,7 @@ fn open_window(
         window.on_set_cmd_bar_hidden(move |hidden| {
             let mut s = store.borrow_mut();
             s.set_cmd_bar_hidden(hidden);
-            let _ = s.save();
+            persist_config(&s);
             drop(s);
             registry.broadcast_config_changed();
         });
@@ -1049,7 +1206,7 @@ fn open_window(
         window.on_set_download_always_ask(move |ask| {
             let mut s = store.borrow_mut();
             s.set_download_always_ask(ask);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1057,7 +1214,7 @@ fn open_window(
         window.on_set_paste_confirm_enabled(move |enabled| {
             let mut s = store.borrow_mut();
             s.set_paste_confirm_enabled(enabled);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1065,7 +1222,7 @@ fn open_window(
         window.on_set_extra_paste_shortcuts_enabled(move |enabled| {
             let mut s = store.borrow_mut();
             s.set_extra_paste_shortcuts_enabled(enabled);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1075,7 +1232,7 @@ fn open_window(
         window.on_set_zen_mode(move |enabled| {
             let mut s = store.borrow_mut();
             s.set_zen_mode(enabled);
-            let _ = s.save();
+            persist_config(&s);
             let sidebar_visible = weak
                 .upgrade()
                 .map(|window| !window.get_sidebar_collapsed())
@@ -1155,7 +1312,7 @@ fn open_window(
         window.on_set_collapse_sidebar_default(move |v| {
             let mut s = store.borrow_mut();
             s.set_collapse_sidebar_default(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1163,7 +1320,7 @@ fn open_window(
         window.on_set_quick_commands_as_sidebar(move |v| {
             let mut s = store.borrow_mut();
             s.set_quick_commands_as_sidebar(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1173,7 +1330,7 @@ fn open_window(
         window.on_set_update_check_enabled(move |v| {
             let mut s = store.borrow_mut();
             s.set_update_check_enabled(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1183,7 +1340,7 @@ fn open_window(
         window.on_set_renderer_mode(move |mode: SharedString| {
             let mut s = store.borrow_mut();
             s.set_renderer_mode(mode.to_string());
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1191,7 +1348,7 @@ fn open_window(
         window.on_persist_sidebar_width(move |w| {
             let mut s = store.borrow_mut();
             s.set_sidebar_width(w);
-            let _ = s.save();
+            schedule_config_save();
         });
     }
     {
@@ -1201,7 +1358,7 @@ fn open_window(
         window.on_set_sidebar_collapsed(move |v| {
             let mut s = store.borrow_mut();
             s.set_sidebar_collapsed(v);
-            let _ = s.save();
+            persist_config(&s);
             let zen = weak.upgrade().map(|window| window.get_zen_mode()).unwrap_or(false);
             for handle in handles.borrow().values() {
                 handle.set_resource_monitoring(!v && !zen);
@@ -1213,7 +1370,7 @@ fn open_window(
         window.on_persist_welcome_sidebar_width(move |w| {
             let mut s = store.borrow_mut();
             s.set_welcome_sidebar_width(w);
-            let _ = s.save();
+            schedule_config_save();
         });
     }
     {
@@ -1221,7 +1378,7 @@ fn open_window(
         window.on_persist_welcome_sidebar_dock(move |dock| {
             let mut s = store.borrow_mut();
             s.set_welcome_sidebar_dock(dock.to_string());
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1229,7 +1386,7 @@ fn open_window(
         window.on_set_welcome_collapsed(move |v| {
             let mut s = store.borrow_mut();
             s.set_welcome_collapsed(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1237,7 +1394,7 @@ fn open_window(
         window.on_persist_wallpaper_overlay(move |v| {
             let mut s = store.borrow_mut();
             s.set_wallpaper_overlay(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
     {
@@ -1245,7 +1402,7 @@ fn open_window(
         window.on_set_collapse_sftp_default(move |v| {
             let mut s = store.borrow_mut();
             s.set_collapse_sftp_default(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
 
@@ -1257,7 +1414,7 @@ fn open_window(
         window.on_set_sync_upload_enabled(move |v| {
             let mut s = store.borrow_mut();
             s.set_sync_upload(v);
-            let _ = s.save();
+            persist_config(&s);
         });
     }
 
@@ -1291,13 +1448,14 @@ fn open_window(
                     remote_path.to_string(),
                     accept_invalid_certs,
                 );
-                let _ = s.save();
+                persist_config(&s);
             },
         );
     }
     {
         let weak = window.as_weak();
         let store = store.clone();
+        let webdav_rt = runtime.clone();
         window.on_webdav_upload(move || {
             let Some(w) = weak.upgrade() else { return };
             let enabled = w.get_webdav_enabled();
@@ -1316,14 +1474,26 @@ fn open_window(
                     remote_path.clone(),
                     accept_invalid_certs,
                 );
-                let _ = s.save();
+                persist_config(&s);
             }
             if !enabled {
                 w.set_webdav_status(t("请先启用 WebDAV 同步", "enable WebDAV sync first").into());
                 return;
             }
-            let res = store.borrow().export_json().and_then(|(json, count)| {
-                webdav_put_json(
+            let (json, count) = match store.borrow().export_json() {
+                Ok(v) => v,
+                Err(e) => {
+                    w.set_webdav_status(
+                        format!("{}: {}", t("上传失败", "upload failed"), e).into(),
+                    );
+                    return;
+                }
+            };
+            let weak = weak.clone();
+            webdav_rt.spawn_blocking(move || {
+                // Blocking HTTP + JSON export run off the UI thread; the status
+                // message is written back through the event loop (#1).
+                let res = webdav_put_json(
                     &url,
                     &remote_path,
                     &username,
@@ -1331,13 +1501,17 @@ fn open_window(
                     accept_invalid_certs,
                     json,
                 )
-                .map(|_| count)
+                .map(|_| count);
+                let msg = match res {
+                    Ok(n) => format!("{} {}", t("已上传连接", "uploaded connections"), n),
+                    Err(e) => format!("{}: {}", t("上传失败", "upload failed"), e),
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                });
             });
-            let msg = match res {
-                Ok(n) => format!("{} {}", t("已上传连接", "uploaded connections"), n),
-                Err(e) => format!("{}: {}", t("上传失败", "upload failed"), e),
-            };
-            w.set_webdav_status(msg.into());
         });
     }
     {
@@ -1352,7 +1526,7 @@ fn open_window(
                 if !s.set_terminal_cursor_color(value.as_str()) {
                     return false;
                 }
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_term_cursor_color(color);
@@ -1395,7 +1569,7 @@ fn open_window(
                         color: color.to_string(),
                         enabled: true,
                     });
-                    let _ = s.save();
+                    persist_config(&s);
                     w.set_output_highlight_rules(output_highlight_rule_model(&s));
                     apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
                 }
@@ -1412,7 +1586,7 @@ fn open_window(
             let Some(w) = weak.upgrade() else { return };
             let mut s = store.borrow_mut();
             s.remove_output_highlight_rule(index.max(0) as usize);
-            let _ = s.save();
+            persist_config(&s);
             w.set_output_highlight_rules(output_highlight_rule_model(&s));
             apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
             w.set_output_highlight_rule_status("".into());
@@ -1426,7 +1600,7 @@ fn open_window(
             let Some(w) = weak.upgrade() else { return };
             let mut s = store.borrow_mut();
             s.set_output_highlight_rule_enabled(index.max(0) as usize, enabled);
-            let _ = s.save();
+            persist_config(&s);
             w.set_output_highlight_rules(output_highlight_rule_model(&s));
             apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
         });
@@ -1439,7 +1613,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_font_family(family.to_string());
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_family(family);
@@ -1458,7 +1632,7 @@ fn open_window(
                 let mut s = store.borrow_mut();
                 s.set_output_highlight_enabled(enabled);
                 s.set_output_highlight_preset(preset.clone());
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 apply_output_highlight(&w, &bufs, enabled, &preset);
@@ -1472,10 +1646,14 @@ fn open_window(
             {
                 let mut settings = store.borrow_mut();
                 settings.set_json_format_output(enabled);
-                let _ = settings.save();
+                persist_config(&settings);
             }
-            for buffer in bufs.lock().unwrap().values() {
-                buffer.lock().unwrap().json_format_output = enabled;
+            if let Ok(bufs) = bufs.lock() {
+                for buffer in bufs.values() {
+                    if let Ok(mut buf) = buffer.lock() {
+                        buf.json_format_output = enabled;
+                    }
+                }
             }
         });
     }
@@ -1487,7 +1665,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_font_size(size as u32);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_size(size as f32);
@@ -1500,7 +1678,7 @@ fn open_window(
         window.on_persist_sftp_tree_width(move |width| {
             let mut s = store.borrow_mut();
             s.set_sftp_tree_width(width);
-            let _ = s.save();
+            schedule_config_save();
         });
     }
     {
@@ -1511,7 +1689,7 @@ fn open_window(
                 let mut s = store.borrow_mut();
                 s.set_terminal_line_spacing(spacing);
                 let normalized = s.terminal_line_spacing();
-                let _ = s.save();
+                persist_config(&s);
                 normalized
             };
             if let Some(w) = weak.upgrade() {
@@ -1526,7 +1704,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_terminal_bold(bold);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_bold(bold);
@@ -1541,7 +1719,7 @@ fn open_window(
                 let mut s = store.borrow_mut();
                 s.set_terminal_cursor_style(style.to_string());
                 let normalized = s.terminal_cursor_style().to_string();
-                let _ = s.save();
+                persist_config(&s);
                 normalized
             };
             if let Some(w) = weak.upgrade() {
@@ -1558,7 +1736,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_ui_scale(clamped);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_ui_scale(clamped as f32 / 100.0);
@@ -1573,7 +1751,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_panel_font(clamped);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_panel_font(clamped as f32 / 100.0);
@@ -1610,7 +1788,7 @@ fn open_window(
                 if let Some(dark) = selected_builtin_theme {
                     s.set_theme_pref(if dark { "dark" } else { "light" }.to_string());
                 }
-                let _ = s.save();
+                persist_config(&s);
             }
             // Only the theme flip needs cross-window propagation; the wallpaper
             // image itself is not synced to other windows (YAGNI).
@@ -1639,7 +1817,7 @@ fn open_window(
                 }
                 let mut s = store.borrow_mut();
                 s.set_wallpaper(id);
-                let _ = s.save();
+                persist_config(&s);
             }
         });
     }
@@ -1694,7 +1872,7 @@ fn open_window(
                     distribution.to_string(),
                     directory.to_string(),
                 );
-                let _ = s.save();
+                persist_config(&s);
                 if let Some(w) = weak.upgrade() {
                     w.set_wsl_profiles(wsl_profile_model(&s));
                     sync_sessions_for_window(&weak, &s, &sessions_model);
@@ -1712,7 +1890,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.remove_wsl_profile(id.as_str());
-                let _ = s.save();
+                persist_config(&s);
                 if let Some(w) = weak.upgrade() {
                     w.set_wsl_profiles(wsl_profile_model(&s));
                     sync_sessions_for_window(&weak, &s, &sessions_model);
@@ -1721,11 +1899,78 @@ fn open_window(
             registry.broadcast_config_changed();
         });
     }
+
+    /// UI-thread poller for an in-flight WebDAV download. Called (via a
+    /// self-re-arming single-shot timer) until the background fetch hands back
+    /// the JSON, then imports it into the store and refreshes the session list.
+    /// The HTTP fetch itself runs on the blocking pool so the UI thread is never
+    /// blocked by the round-trip (#1).
+    fn poll_webdav_download(
+        poll: Rc<RefCell<Option<std::sync::mpsc::Receiver<Result<String>>>>>,
+        weak: slint::Weak<AppWindow>,
+        store: Rc<RefCell<ConfigStore>>,
+        sessions_model: Rc<slint::VecModel<SessionInfo>>,
+        registry: Rc<WindowRegistry<slint::Weak<AppWindow>>>,
+    ) {
+        // The borrow on `poll` must end before the Empty branch re-arms the
+        // timer (the closure moves `poll`), so scope the try_recv and only
+        // schedule the retry after the borrow is released.
+        let mut reschedule = false;
+        {
+            let mut slot = poll.borrow_mut();
+            let Some(rx) = slot.as_mut() else { return };
+            match rx.try_recv() {
+                Ok(Ok(json)) => {
+                    *slot = None;
+                    let res = store.borrow_mut().import_json(&json);
+                    let msg = match res {
+                        Ok((added, skipped)) => {
+                            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                            registry.broadcast_config_changed();
+                            format!(
+                                "{} {}, {} {}",
+                                t("已导入", "imported"),
+                                added,
+                                t("跳过", "skipped"),
+                                skipped
+                            )
+                        }
+                        Err(e) => format!("{}: {}", t("下载失败", "download failed"), e),
+                    };
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                }
+                Ok(Err(e)) => {
+                    *slot = None;
+                    let msg = format!("{}: {}", t("下载失败", "download failed"), e);
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Fetch still in flight: poll again shortly.
+                    reschedule = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    *slot = None;
+                }
+            }
+        }
+        if reschedule {
+            slint::Timer::single_shot(
+                std::time::Duration::from_millis(100),
+                move || poll_webdav_download(poll.clone(), weak, store, sessions_model, registry),
+            );
+        }
+    }
+
     {
         let weak = window.as_weak();
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         let registry = registry.clone();
+        let webdav_rt = runtime.clone();
         window.on_webdav_download(move || {
             let Some(w) = weak.upgrade() else { return };
             let enabled = w.get_webdav_enabled();
@@ -1744,35 +1989,35 @@ fn open_window(
                     remote_path.clone(),
                     accept_invalid_certs,
                 );
-                let _ = s.save();
+                persist_config(&s);
             }
             if !enabled {
                 w.set_webdav_status(t("请先启用 WebDAV 同步", "enable WebDAV sync first").into());
                 return;
             }
-            let res = webdav_get_json(
-                &url,
-                &remote_path,
-                &username,
-                &password,
-                accept_invalid_certs,
-            )
-            .and_then(|json| store.borrow_mut().import_json(&json));
-            let msg = match res {
-                Ok((added, skipped)) => {
-                    sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
-                    registry.broadcast_config_changed();
-                    format!(
-                        "{} {}, {} {}",
-                        t("已导入", "imported"),
-                        added,
-                        t("跳过", "skipped"),
-                        skipped
-                    )
-                }
-                Err(e) => format!("{}: {}", t("下载失败", "download failed"), e),
-            };
-            w.set_webdav_status(msg.into());
+            // Fetch the remote JSON off the UI thread; the store import + model
+            // refresh happen on the event loop via the poller below (#1).
+            let (tx, rx) = std::sync::mpsc::channel::<Result<String>>();
+            let webdav_rt = webdav_rt.clone();
+            webdav_rt.spawn_blocking(move || {
+                let res = webdav_get_json(
+                    &url,
+                    &remote_path,
+                    &username,
+                    &password,
+                    accept_invalid_certs,
+                );
+                let _ = tx.send(res);
+            });
+            let poll: Rc<RefCell<Option<std::sync::mpsc::Receiver<Result<String>>>>> =
+                Rc::new(RefCell::new(Some(rx)));
+            poll_webdav_download(
+                poll,
+                weak.clone(),
+                store.clone(),
+                sessions_model.clone(),
+                registry.clone(),
+            );
         });
     }
 
@@ -2097,7 +2342,7 @@ fn open_window(
                 };
 
                 let done_weak = proc_weak.clone();
-                runtime.spawn(async move {
+                track_bg_task(window_id, runtime.spawn(async move {
                     let result = response
                         .await
                         .unwrap_or_else(|_| crate::ssh::ProcessKillResult {
@@ -2111,7 +2356,7 @@ fn open_window(
                             pw.set_action_status(result.message.into());
                         }
                     });
-                });
+                }));
             },
         );
     }
@@ -2171,7 +2416,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_language(crate::i18n::current_code().to_string());
-                let _ = s.save();
+                persist_config(&s);
             }
             registry.broadcast_config_changed();
             // Re-translate the welcome tab's dynamic title.
@@ -2214,7 +2459,7 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_theme_pref(pref.to_string());
-                let _ = s.save();
+                persist_config(&s);
             }
             registry.broadcast_config_changed();
         });
@@ -2313,7 +2558,7 @@ fn open_window(
         {
             let mut s = store.borrow_mut();
             s.set_download_dir(dl);
-            let _ = s.save();
+            persist_config(&s);
         }
     }
     window.set_download_dir(store.borrow().download_dir().to_string().into());
@@ -2326,7 +2571,7 @@ fn open_window(
                 {
                     let mut s = store.borrow_mut();
                     s.set_download_dir(dir.clone());
-                    let _ = s.save();
+                    persist_config(&s);
                 }
                 if let Some(w) = weak.upgrade() {
                     w.set_download_dir(dir.into());
@@ -2442,19 +2687,35 @@ fn open_window(
     let mcp_activity_rows: Rc<VecModel<McpActivityRow>> = Rc::new(VecModel::default());
     window.set_mcp_activity_rows(ModelRc::from(mcp_activity_rows.clone()));
     let activity_weak = window.as_weak();
-    let activity_rows = mcp_activity_rows.clone();
+    let activity_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let activity_runtime = runtime.clone();
     let refresh = move || {
         if let Some(w) = activity_weak.upgrade() {
             if !w.get_interface_open() {
                 return;
             }
+        } else {
+            return;
+        }
+        if activity_busy.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return; // previous poll still running
+        }
+        let weak = activity_weak.clone();
+        let busy = activity_busy.clone();
+        activity_runtime.spawn_blocking(move || {
+            let values = crate::mcp::tail_activity(200);
             let mut rows = Vec::new();
-            for value in crate::mcp::tail_activity(200) {
-                rows.push(mcp_activity_row(&value));
+            for value in &values {
+                rows.push(mcp_activity_row(value));
             }
             rows.reverse(); // newest first
-            activity_rows.set_vec(rows);
-        }
+            let _ = slint::invoke_from_event_loop(move || {
+                busy.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some(w) = weak.upgrade() {
+                    w.set_mcp_activity_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+                }
+            });
+        });
     };
     refresh();
     let activity_timer = slint::Timer::default();
@@ -2604,13 +2865,18 @@ fn open_window(
     let exit_confirmed = Rc::new(Cell::new(false));
 
     // --- System sampler (1 Hz) ------------------------------------------
-    let sampler = Rc::new(Mutex::new(SystemSampler::new()));
+    // The sysinfo refresh runs on the blocking pool so a slow disk/sysinfo
+    // read never stalls the UI thread; only the sidebar repaint stays on the
+    // event loop (#2).
+    let sampler = Arc::new(Mutex::new(SystemSampler::new()));
     let weak = window.as_weak();
     let tick_sampler = sampler.clone();
     let tick_statuses = tab_statuses.clone();
     let tick_local = local_snap.clone();
     let tick_net = local_net_hist.clone();
     let tick_activity = activity.clone();
+    let tick_runtime = runtime.clone();
+    let tick_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut bg_tick = 0u32;
     let timer = slint::Timer::default();
     timer.start(
@@ -2633,22 +2899,40 @@ fn open_window(
                 }
                 WinActivity::Active => {}
             }
-            let snap = {
-                let mut s = tick_sampler.lock().expect("sampler poisoned");
-                s.sample()
-            };
-            // Append the raw local throughput to the bottom-graph ring buffer
-            // (normalisation happens at display time so the graph auto-scales).
-            push_ring(&mut tick_net.lock().unwrap(), snap.net_bytes_per_sec as f32);
-            // Stash the local sample; the sidebar shows it on the welcome tab
-            // and in the bottom network graph.
-            *tick_local.lock().unwrap() = snap.clone();
-
-            // Everything (status, CPU/mem/swap, both graphs) follows the
-            // active tab; refresh_sidebar reads the stores we just updated.
-            if sidebar_updates_visible(&window) {
-                refresh_sidebar(&window, &tick_statuses, &tick_local, &tick_net);
+            if tick_busy.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                return; // previous sample still running
             }
+            let sampler = tick_sampler.clone();
+            let statuses = tick_statuses.clone();
+            let local = tick_local.clone();
+            let net = tick_net.clone();
+            let weak2 = weak.clone();
+            let busy = tick_busy.clone();
+            tick_runtime.spawn_blocking(move || {
+                let snap = match sampler.lock() {
+                    Ok(mut s) => s.sample(),
+                    Err(p) => p.into_inner().sample(),
+                };
+                // Append the raw local throughput to the bottom-graph ring buffer
+                // (normalisation happens at display time so the graph auto-scales).
+                push_ring(
+                    &mut net.lock().unwrap_or_else(|p| p.into_inner()),
+                    snap.net_bytes_per_sec as f32,
+                );
+                // Stash the local sample; the sidebar shows it on the welcome tab
+                // and in the bottom network graph.
+                *local.lock().unwrap_or_else(|p| p.into_inner()) = snap.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    busy.store(false, std::sync::atomic::Ordering::Relaxed);
+                    // Everything (status, CPU/mem/swap, both graphs) follows the
+                    // active tab; refresh_sidebar reads the stores we just updated.
+                    if let Some(window) = weak2.upgrade() {
+                        if sidebar_updates_visible(&window) {
+                            refresh_sidebar(&window, &statuses, &local, &net);
+                        }
+                    }
+                });
+            });
         },
     );
     // Keep the timer alive as long as this window exists: it lives in the
@@ -3814,7 +4098,7 @@ fn wire_session_callbacks(
                     added += 1;
                 }
                 if added > 0 {
-                    let _ = s.save();
+                    persist_config(&s);
                 }
             }
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
@@ -3846,7 +4130,15 @@ fn wire_session_callbacks(
                 let res = store.borrow().export_to(&path);
                 if let Some(w) = weak.upgrade() {
                     let hint = match res {
-                        Ok(n) => format!("{} {}", t("已导出连接", "exported"), n),
+                        Ok(n) => format!(
+                            "{} {}. {}",
+                            t("已导出连接", "exported"),
+                            n,
+                            t(
+                                "注意：密码仅可逆混淆，非加密，请妥善保管导出文件",
+                                "Note: passwords are reversibly obfuscated, NOT encrypted; keep the exported file safe"
+                            )
+                        ),
                         Err(e) => format!("{}: {}", t("导出失败", "export failed"), e),
                     };
                     w.set_ssh_import_hint(hint.into());
@@ -3881,7 +4173,7 @@ fn wire_session_callbacks(
                     added += 1;
                 }
                 if added > 0 {
-                    let _ = s.save();
+                    persist_config(&s);
                 }
             }
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
@@ -4435,7 +4727,7 @@ fn wire_session_callbacks(
                     draft.baud_rate as u32
                 };
                 let weak_done = weak.clone();
-                runtime.spawn(async move {
+                track_bg_task(window_id, runtime.spawn(async move {
                     let message = match tokio::task::spawn_blocking(move || {
                         serialport::new(&port_name, baud)
                             .timeout(std::time::Duration::from_millis(800))
@@ -4452,7 +4744,7 @@ fn wire_session_callbacks(
                             w.set_dialog_test_status(message.into());
                         }
                     });
-                });
+                }));
                 return;
             }
 
@@ -4479,7 +4771,7 @@ fn wire_session_callbacks(
             if kind == "ssh" {
                 let jump = resolve_jump(&store, &session);
                 let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-                runtime.spawn(async move {
+                track_bg_task(window_id, runtime.spawn(async move {
                     let mut test = Box::pin(test_session_auth(session, jump, events_tx));
                     let result = loop {
                         tokio::select! {
@@ -4561,13 +4853,13 @@ fn wire_session_callbacks(
                             w.set_dialog_test_status(message.into());
                         }
                     });
-                });
+                }));
                 return;
             }
 
             let host = session.host;
             let port = session.port;
-            runtime.spawn(async move {
+            track_bg_task(window_id, runtime.spawn(async move {
                 let target = format!("{host}:{port}");
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(3),
@@ -4584,7 +4876,7 @@ fn wire_session_callbacks(
                         w.set_dialog_test_status(message.into());
                     }
                 });
-            });
+            }));
         });
     }
 
@@ -5079,7 +5371,7 @@ fn save_layout(win: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         // do not issue a new native resize while the window is shutting down.
         s.set_window_size(w, h);
     }
-    let _ = s.save();
+    persist_config(&s);
 }
 
 /// Zen is a transient per-window state. Closing a window while it is on must
@@ -5092,7 +5384,7 @@ pub(super) fn clear_zen_on_close(win: &AppWindow, store: &Rc<RefCell<ConfigStore
     }
     let mut s = store.borrow_mut();
     s.set_zen_mode(false);
-    let _ = s.save();
+    persist_config(&s);
 }
 
 /// Every quick-command group name (used to start with all groups collapsed, #55):
@@ -5375,7 +5667,7 @@ fn wire_key_input(
                 if let Some(line) = history_line {
                     let mut s = store_rc.borrow_mut();
                     s.push_command_history(line);
-                    let _ = s.save();
+                    schedule_config_save();
                     if let Some(w) = weak.upgrade() {
                         w.set_command_history(history_model(&s));
                     }
@@ -5387,7 +5679,7 @@ fn wire_key_input(
     {
         window.on_copy_text(move |text: SharedString| {
             let t = text.to_string();
-            std::thread::spawn(move || clipboard_set_text(t));
+            copy_to_clipboard(t);
         });
     }
     // Delete a history entry (#96). The command-history model remains in
@@ -5401,7 +5693,7 @@ fn wire_key_input(
                 let idx = i as usize;
                 if idx < s.command_history().len() {
                     s.remove_command_history(idx);
-                    let _ = s.save();
+                    persist_config(&s);
                 }
             }
             if let Some(w) = weak.upgrade() {
@@ -5434,7 +5726,7 @@ fn wire_key_input(
                 let mut s = store_rc.borrow_mut();
                 if let Some(idx) = s.command_history().iter().position(|c| c == cmd.as_str()) {
                     s.remove_command_history(idx);
-                    let _ = s.save();
+                    persist_config(&s);
                 }
             }
             if let Some(w) = weak.upgrade() {
@@ -5474,7 +5766,7 @@ fn wire_key_input(
                         send_enter,
                     });
                     s.set_quick_commands(v);
-                    let _ = s.save();
+                    persist_config(&s);
                 }
                 if let Some(w) = weak.upgrade() {
                     w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -5495,7 +5787,7 @@ fn wire_key_input(
                     v.remove(i);
                 }
                 s.set_quick_commands(v);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -5564,7 +5856,7 @@ fn wire_key_input(
                             send_enter,
                         },
                     );
-                    let _ = s.save();
+                    persist_config(&s);
                 }
                 if let Some(w) = weak.upgrade() {
                     w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -5590,7 +5882,7 @@ fn wire_key_input(
                     };
                     v.insert(index as usize + 1, dup);
                     s.set_quick_commands(v);
-                    let _ = s.save();
+                    persist_config(&s);
                 }
             }
             if let Some(w) = weak.upgrade() {
@@ -5617,7 +5909,7 @@ fn wire_key_input(
                     c.group = target;
                 }
                 s.set_quick_commands(v);
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -5637,7 +5929,7 @@ fn wire_key_input(
                 let changed = reorder_quick_command(&mut commands, index as usize, move_up);
                 if changed {
                     s.set_quick_commands(commands);
-                    let _ = s.save();
+                    persist_config(&s);
                 }
                 changed
             };
@@ -5661,7 +5953,7 @@ fn wire_key_input(
                 } else {
                     s.rename_quick_group(&orig.to_string(), name.to_string());
                 }
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -5677,7 +5969,7 @@ fn wire_key_input(
             {
                 let mut s = store_rc.borrow_mut();
                 s.remove_quick_group(&name.to_string());
-                let _ = s.save();
+                persist_config(&s);
             }
             if let Some(w) = weak.upgrade() {
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
@@ -6141,7 +6433,7 @@ fn wire_key_input(
             // Windows backend opens the clipboard and pumps Win32 messages;
             // doing that on the Slint/winit event-loop thread re-enters the
             // message loop and dead-locks the whole UI.
-            std::thread::spawn(move || clipboard_set_text(text));
+            copy_to_clipboard(text);
         });
     }
 
@@ -6502,7 +6794,7 @@ fn wire_key_input(
             match text {
                 Some(t) if !t.is_empty() => {
                     // Auto-copy on release (select-to-copy, PuTTY style).
-                    std::thread::spawn(move || clipboard_set_text(t));
+                    copy_to_clipboard(t);
                 }
                 _ => {}
             }
@@ -6524,7 +6816,7 @@ fn wire_key_input(
             })
             .flatten();
             if let Some(text) = text.filter(|text| !text.is_empty()) {
-                std::thread::spawn(move || clipboard_set_text(text));
+                copy_to_clipboard(text);
             }
             if let Some(win) = weak.upgrade() {
                 refresh_terminal_selection(&win, &bufs_sel, &tid);

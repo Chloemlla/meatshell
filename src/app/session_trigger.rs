@@ -29,6 +29,19 @@ pub(super) fn validated_triggers(
     drafts: &[TriggerDraft],
     saved_responses: &[Secret],
 ) -> std::result::Result<Vec<crate::config::SessionTrigger>, String> {
+    // `saved_responses` is kept index-aligned with `drafts` by the dialog
+    // callbacks (add/delete touch both vectors at the same index), so the
+    // positional lookup below is the "original index" association. Guard that
+    // invariant explicitly: if the vectors ever drift apart, fail loudly here
+    // instead of silently pairing a saved response with the wrong expect and
+    // sending an unintended password to the remote (#13).
+    if drafts.len() > saved_responses.len() {
+        return Err(t(
+            "触发器数据不一致，请重新打开编辑对话框",
+            "Trigger data is inconsistent; please reopen the editor.",
+        )
+        .to_string());
+    }
     let mut out = Vec::new();
     for (index, draft) in drafts.iter().enumerate() {
         if draft.expect.trim().is_empty() && draft.response.is_empty() {
