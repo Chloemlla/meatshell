@@ -19,8 +19,10 @@ pub(crate) fn tail_activity(limit: usize) -> Vec<serde_json::Value> {
     ActivityLog::open().tail(limit)
 }
 
-/// Truncate the audit log (not delete), so a running MCP process keeps appending.
+/// Clear the audit log. The old file is moved aside and a fresh one created, so
+/// a running MCP process keeps appending and a reader never sees a half-written
+/// file (#57).
 #[allow(dead_code)]
 pub(crate) fn clear_activity() {
-    let _ = std::fs::File::create(crate::config::data_dir().join("mcp_activity.jsonl"));
+    ActivityLog::open().clear();
 }

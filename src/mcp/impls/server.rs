@@ -2,6 +2,7 @@ use std::io::{BufRead, Write};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use regex::Regex;
 use serde_json::{json, Value};
 
 use super::ActivityLog;
@@ -19,29 +20,69 @@ pub(crate) fn run_stdio() -> Result<()> {
         .enable_all()
         .build()
         .context("create MCP runtime")?;
-    let activity = ActivityLog::open();
-    let mut caller = String::from("unknown");
+    let activity = std::sync::Arc::new(ActivityLog::open());
+    let stdout = std::sync::Arc::new(std::sync::Mutex::new(std::io::stdout()));
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().lock();
+    let mut caller = String::from("unknown");
+    let mut in_flight: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     for line in stdin.lock().lines() {
         let line = line.context("read MCP request")?;
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => {
-                remember_caller(&request, &mut caller);
-                record_usage_start(&activity, &request, &caller);
-                let started = std::time::Instant::now();
-                let response = runtime.block_on(handle(request.clone()));
-                record_usage_end(&activity, &request, &caller, started, &response);
-                response
+        let request = match serde_json::from_str::<Value>(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = error_response(Value::Null, -32700, &error.to_string());
+                let mut out = stdout.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Err(write_error) = write_response(&mut *out, &response) {
+                    tracing::warn!("mcp: write parse-error response: {write_error}");
+                }
+                continue;
             }
-            Err(error) => Some(error_response(Value::Null, -32700, &error.to_string())),
         };
-        if let Some(response) = response {
-            write_response(&mut stdout, &response)?;
-        }
+
+        // Update the caller identity synchronously (so `initialize` is reflected
+        // in the very next audit record), then snapshot it for the worker task.
+        remember_caller(&request, &mut caller);
+        let caller_snapshot = caller.clone();
+        record_usage_start(&activity, &request, &caller_snapshot);
+
+        // Handle each request on the shared multi-thread runtime so one slow
+        // SFTP/command call no longer blocks every subsequent request (#58).
+        // Responses may complete out of order — JSON-RPC matches them by id —
+        // and each is written as a single newline-terminated line under the
+        // stdout mutex, so lines are never interleaved. Concurrency is bounded
+        // by the runtime's own worker pool.
+        let activity = std::sync::Arc::clone(&activity);
+        let stdout = std::sync::Arc::clone(&stdout);
+        let started = std::time::Instant::now();
+        in_flight.push(runtime.spawn(async move {
+            let response = handle(request.clone()).await;
+            record_usage_end(&activity, &request, &caller_snapshot, started, &response);
+            if let Some(response) = response {
+                let mut out = stdout.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Err(error) = write_response(&mut *out, &response) {
+                    tracing::warn!("mcp: write response: {error}");
+                }
+            }
+        }));
+    }
+
+    // stdin reached EOF: wait briefly for in-flight requests so the audit log
+    // receives their completion records before the process exits. Bounded so a
+    // stuck request cannot delay shutdown indefinitely.
+    if !in_flight.is_empty() {
+        let drain = async move {
+            for handle in in_flight {
+                let _ = handle.await;
+            }
+        };
+        let _ = runtime.block_on(tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            drain,
+        ));
     }
     Ok(())
 }
@@ -153,7 +194,14 @@ fn base_record(
         {
             for key in WHITELISTED_KEYS {
                 if let Some(Value::String(value)) = arguments.get(*key) {
-                    record[*key] = json!(value);
+                    let text = if *key == "command" {
+                        // Commands can carry inline secrets (tokens, passwords);
+                        // redact them before they reach the shared audit file (#56).
+                        redact_command(value)
+                    } else {
+                        value.clone()
+                    };
+                    record[*key] = json!(text);
                 }
             }
         }
@@ -204,6 +252,43 @@ fn response_error_text(response: &Option<Value>) -> String {
 /// Truncate `s` to at most `max` chars.
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
+}
+
+/// Redact common inline-secret patterns from a command before it is written to
+/// the shared audit file (#56). The audit log is world-readable on disk, so a
+/// command like `curl -H "Authorization: Bearer ..."` or `echo pw | sudo -S`
+/// must not leave the secret in plaintext. Best-effort: an unrecognized secret
+/// pattern would still appear, which keeps this a redaction layer rather than a
+/// guarantee.
+fn redact_command(command: &str) -> String {
+    let mut redacted = command.to_string();
+    // Authorization: Bearer/Basic <token>
+    redacted = redact(
+        &redacted,
+        r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)\S+",
+        "$1***",
+    );
+    // token=/key=/secret=/password= assignments and query args.
+    redacted = redact(
+        &redacted,
+        r#"(?i)(\b(?:token|access_token|api[_-]?key|secret|password|passwd|pwd)\b\s*[=:]\s*['"]?)[^\s'"&]+"#,
+        "$1***",
+    );
+    // echo/printf '...' | sudo -S  (password piped into sudo/su).
+    redacted = redact(
+        &redacted,
+        r#"(?i)((?:echo|printf)\s+['"]?)[^\s'"]+(['"]?\s*\|\s*(?:sudo|su)\s+-[sS]\b)"#,
+        "$1***$2",
+    );
+    redacted
+}
+
+/// Apply `re` to `input`; on a pattern compile error, return `input` unchanged.
+fn redact(input: &str, pattern: &str, replacement: &str) -> String {
+    match Regex::new(pattern) {
+        Ok(re) => re.replace_all(input, replacement).into_owned(),
+        Err(_) => input.to_string(),
+    }
 }
 
 async fn handle(request: Value) -> Option<Value> {

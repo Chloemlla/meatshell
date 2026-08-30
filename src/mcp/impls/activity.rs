@@ -88,7 +88,21 @@ impl ActivityLog {
         body.push(new_line.to_string());
         let mut body = body.join("\n");
         body.push('\n');
-        std::fs::write(&self.path, body)
+
+        // Write a temp file in the same directory, then atomically rename it
+        // over the live file (#57): a concurrent reader (the GUI tail) never
+        // sees a half-written file. Cross-process access is still unlocked by
+        // design; the rename is the atomicity boundary, and the unique temp name
+        // prevents two MCP processes from clobbering each other's temp.
+        let temp = temp_path(&self.path);
+        std::fs::write(&temp, body)?;
+        match std::fs::rename(&temp, &self.path) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(error)
+            }
+        }
     }
 
     /// Read the file and return the newest up to `limit` records in
@@ -113,6 +127,34 @@ impl ActivityLog {
         records.drain(..start);
         records
     }
+
+    /// Clear the audit log by moving the old file aside and starting a fresh
+    /// one. Renaming (rather than truncating in place) guarantees a concurrent
+    /// reader never observes a half-written file (#57). Cross-process access is
+    /// still unlocked: a GUI tail or a second MCP process may briefly read the
+    /// renamed backup or the fresh empty file, which is acceptable for a
+    /// best-effort audit view.
+    pub(crate) fn clear(&self) {
+        let _guard = self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let backup = self.path.with_file_name("mcp_activity.jsonl.bak");
+        let _ = std::fs::rename(&self.path, &backup);
+        let _ = std::fs::File::create(&self.path);
+    }
+}
+
+/// A unique temp path in the same directory as `path`, so the later rename is
+/// atomic (same filesystem). The pid + timestamp suffix keeps concurrent MCP
+/// processes from colliding on the temp name (#57).
+fn temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("mcp_activity.jsonl");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.with_file_name(format!(".{name}.{}.{nanos}.tmp", std::process::id()))
 }
 
 #[cfg(test)]

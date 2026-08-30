@@ -37,6 +37,9 @@ async fn upload_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
             local_path.display()
         ));
     }
+    if frontend == Frontend::Mcp {
+        enforce_upload_sandbox(&local_path)?;
+    }
     let remote_directory = required_string(arguments, "remote_directory")?;
     super::sftp::transfer(
         session,
@@ -65,35 +68,52 @@ async fn download_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
             local_directory.display()
         ));
     }
+    // The destination file name is the last segment of the remote path, split on
+    // both separators; it must be a plain, non-traversing name (#53).
     let file_name = remote_path
-        .trim_end_matches('/')
-        .rsplit('/')
+        .trim_end_matches(['/', '\\'])
+        .rsplit(|c| c == '/' || c == '\\')
         .next()
         .filter(|name| !name.is_empty())
         .ok_or_else(|| anyhow!("remote_path must identify a file"))?;
-    if local_directory.join(file_name).exists() {
+    validate_download_file_name(file_name)?;
+
+    // Resolve the real destination the SFTP worker writes (it sanitizes the
+    // basename), normalize the directory, and assert the target stays inside it.
+    let canonical_dir = local_directory
+        .canonicalize()
+        .context("canonicalize local download directory")?;
+    let target = crate::sftp::download_target_path(&remote_path, &canonical_dir.to_string_lossy());
+    if !target.starts_with(&canonical_dir) {
         return Err(anyhow!(
-            "download destination already exists: {}",
-            local_directory.join(file_name).display()
+            "download destination escapes local_directory: {}",
+            target.display()
         ));
     }
+    // Refuse to overwrite, matching the tool's documented promise (#53).
+    if target.exists() {
+        return Err(anyhow!(
+            "download destination already exists: {}",
+            target.display()
+        ));
+    }
+
     let mut result = super::sftp::transfer(
         session,
         jump,
         crate::sftp::SftpCommand::Download {
             remote: remote_path.to_string(),
-            local_dir: local_directory.to_string_lossy().into_owned(),
-            conflict: crate::sftp::DownloadConflict::Replace,
+            local_dir: canonical_dir.to_string_lossy().into_owned(),
+            // Never overwrite an existing file, even in the race between the
+            // exists() check above and the actual write (#53).
+            conflict: crate::sftp::DownloadConflict::KeepBoth,
         },
         false,
         timeout,
     )
     .await?;
     if let Some(object) = result.as_object_mut() {
-        object.insert(
-            "local_path".to_string(),
-            json!(local_directory.join(file_name).to_string_lossy()),
-        );
+        object.insert("local_path".to_string(), json!(target.to_string_lossy()));
     }
     Ok(result)
 }
@@ -105,6 +125,111 @@ fn enforce_transfer_permissions(store: &ConfigStore, frontend: Frontend) -> Resu
         ));
     }
     Ok(())
+}
+
+/// #54: MCP upload sources must come from inside a controlled directory — the
+/// process working directory — and must not traverse out of it. The MCP server
+/// is an external stdio process whose caller is not authenticated, so an
+/// unrestricted `local_path` would let a prompt-injected agent exfiltrate
+/// arbitrary local files (e.g. `~/.ssh/id_rsa`) to a saved remote host.
+fn enforce_upload_sandbox(local_path: &std::path::Path) -> Result<()> {
+    use std::path::Component;
+
+    if local_path.components().any(|component| component == Component::ParentDir) {
+        return Err(anyhow!(
+            "upload source must not contain '..': {}",
+            local_path.display()
+        ));
+    }
+    let cwd = std::env::current_dir()
+        .context("resolve the MCP upload sandbox (process working directory)")?;
+    let canonical_cwd = cwd.canonicalize().unwrap_or(cwd);
+    let canonical_source = local_path
+        .canonicalize()
+        .context("canonicalize upload source")?;
+    if !canonical_source.starts_with(&canonical_cwd) {
+        tracing::warn!(
+            "mcp upload_file rejected: source {} is outside the allowed transfer directory {}",
+            canonical_source.display(),
+            canonical_cwd.display()
+        );
+        return Err(anyhow!(
+            "upload source is outside the allowed transfer directory (process working directory): {}",
+            local_path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a derived download file name that could escape the destination
+/// directory: blank names, names containing `..`, or anything that is not a
+/// single plain path segment (#53).
+fn validate_download_file_name(file_name: &str) -> Result<()> {
+    if file_name.trim().is_empty() {
+        return Err(anyhow!("remote file name must not be blank"));
+    }
+    if file_name.contains("..") {
+        return Err(anyhow!(
+            "remote file name must not contain '..': {file_name:?}"
+        ));
+    }
+    let as_path = std::path::Path::new(file_name);
+    if as_path.is_absolute() || as_path.components().count() != 1 || as_path.file_name().is_none() {
+        return Err(anyhow!(
+            "remote file name must be a plain file name, not a path: {file_name:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// #55: second gate for MCP command execution. Besides the `mcp_allow_commands`
+/// config switch, an operator can restrict which sessions and command prefixes
+/// the MCP server may run via environment variables:
+///   - `MEATSHELL_MCP_ALLOWED_SESSIONS`: comma-separated session ids or names.
+///   - `MEATSHELL_MCP_COMMAND_PREFIXES`: comma-separated command prefixes.
+/// A set variable is enforced (fail closed); an unset variable leaves the
+/// existing behaviour unchanged so authorized use keeps working. Every command
+/// execution is also audited with session + caller by the MCP server.
+fn enforce_mcp_command_gate(session: &Session, command: &str) -> Result<()> {
+    if let Some(allowlist) = nonempty_env("MEATSHELL_MCP_ALLOWED_SESSIONS") {
+        let allowed: Vec<&str> = allowlist
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        let permitted = allowed
+            .iter()
+            .any(|entry| *entry == session.id.as_str() || *entry == session.name.as_str());
+        if !permitted {
+            return Err(anyhow!(
+                "session is not in the MCP command allowlist (MEATSHELL_MCP_ALLOWED_SESSIONS): {}",
+                session.name
+            ));
+        }
+    }
+    if let Some(prefixes) = nonempty_env("MEATSHELL_MCP_COMMAND_PREFIXES") {
+        let allowed: Vec<&str> = prefixes
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        let trimmed = command.trim_start();
+        let permitted = allowed.iter().any(|prefix| trimmed.starts_with(prefix));
+        if !permitted {
+            return Err(anyhow!(
+                "command does not match any allowed prefix (MEATSHELL_MCP_COMMAND_PREFIXES)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Read an env var and return `Some` only when it is present and non-empty.
+fn nonempty_env(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    }
 }
 
 async fn list_remote_files(arguments: &Value, frontend: Frontend) -> Result<Value> {
@@ -256,6 +381,9 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let session = resolve_session(&store, reference)?.clone();
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("run_command only supports SSH sessions"));
+    }
+    if frontend == Frontend::Mcp {
+        enforce_mcp_command_gate(&session, command)?;
     }
     let jump = if session.jump_session_id.trim().is_empty() {
         None
