@@ -369,6 +369,12 @@ msgstr "Terminal character encoding"
 msgid "Use GBK for servers configured for GB2312 or GBK output."
 msgstr "Use GBK for servers configured for GB2312 or GBK output."
 
+msgid "Enable VT100 line drawing even in UTF-8 mode"
+msgstr "Enable VT100 line drawing even in UTF-8 mode"
+
+msgid "Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames."
+msgstr "Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames."
+
 msgid "Local (-L)"
 msgstr "Local (-L)"
 

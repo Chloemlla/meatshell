@@ -36,10 +36,14 @@ Download `meatshell-*-windows-x86_64.zip`, unzip, and run `meatshell.exe`.
 tar -xzf meatshell-*-linux-x86_64.tar.gz
 cd meatshell-*-linux-x86_64
 ./meatshell                                  # run it directly
-# Optional: install the app icon + launcher entry (shows the icon in the dock /
-# app list — no argument needed, it finds the binary next to the script)
+# Optional: system-wide install of the binary, icon, and launcher (requires sudo)
 chmod +x install-linux.sh && ./install-linux.sh
 ```
+
+The installer places the binary at `/usr/local/bin/meatshell`, the launcher at
+`/usr/local/share/applications/meatshell.desktop`, and the icon at
+`/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`. It also removes a
+stale same-named user launcher left by older tarball installers.
 
 > Requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+). On Wayland you may need to
 > log out/in once after installing the icon.

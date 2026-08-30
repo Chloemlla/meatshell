@@ -34,9 +34,13 @@ JVM 压到几十 MB 原生级别。
 tar -xzf meatshell-*-linux-x86_64.tar.gz
 cd meatshell-*-linux-x86_64
 ./meatshell                                  # 直接运行
-# 可选：装应用图标 + 启动器入口（Dock / 应用列表里显示图标，无需传参）
+# 可选：系统级安装程序、图标和启动器入口（需要 sudo）
 chmod +x install-linux.sh && ./install-linux.sh
 ```
+
+一键安装会将程序安装到 `/usr/local/bin/meatshell`，启动器安装到
+`/usr/local/share/applications/meatshell.desktop`，图标安装到
+`/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`，并清理旧版 tar 包留下的用户级同名启动器。
 
 > 需要 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+）。Wayland 下首次装完图标可能要注销重登一次。
 

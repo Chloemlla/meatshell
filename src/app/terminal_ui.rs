@@ -73,21 +73,20 @@ pub(super) fn validate_output_highlight_rule(
     Ok(())
 }
 
-/// Build the filtered history-view rows for the dropdown, newest first. The
-/// command-history model itself remains oldest first so ↑/↓ recall keeps its
-/// existing shell-like navigation semantics (#55, #101, #331).
+/// Build the filtered history-view rows for the dropdown, oldest first with the
+/// newest command at the bottom (#55, #101). The command-history model shares
+/// the same storage order so ↑/↓ recall keeps its shell-like semantics.
 pub(super) fn history_view_rows(history: &[String], query: &str) -> Vec<SharedString> {
     let q = query.trim().to_lowercase();
     history
         .iter()
-        .rev()
         .filter(|command| q.is_empty() || command.to_lowercase().contains(&q))
         .map(|command| command.clone().into())
         .collect()
 }
 
 /// Build the filtered history-view model for the dropdown: case-insensitive
-/// substring matches of `query`, ordered from newest to oldest (#101, #331).
+/// substring matches of `query`, ordered from oldest to newest (#101).
 pub(super) fn history_view_model(store: &ConfigStore, query: &str) -> ModelRc<SharedString> {
     let rows = history_view_rows(store.command_history(), query);
     ModelRc::from(Rc::new(VecModel::from(rows)))
@@ -196,6 +195,7 @@ pub(super) fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &
         row.cursor_col = cc;
         row.rows_used = ru;
         row.is_alt_screen = alt;
+        row.mouse_tracked = b.mouse_tracked;
         row.find_matches = fm.clone();
         row.selection = sm.clone();
         row.scroll_max = smax;

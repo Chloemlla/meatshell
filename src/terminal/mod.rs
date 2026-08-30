@@ -5,6 +5,8 @@ mod state;
 mod input;
 #[path = "impls/json_output.rs"]
 mod json_output;
+#[path = "impls/charset.rs"]
+mod charset;
 #[path = "impls/encoding.rs"]
 mod encoding;
 #[path = "impls/local.rs"]
@@ -31,11 +33,12 @@ pub(crate) use input::c0_letter_key_down;
 #[cfg(test)]
 pub(crate) use input::normalize_pasted_newlines;
 pub(crate) use input::{
-    bare_ctrl_marker_workaround_enabled, encode_command_bar_input, encode_pasted_text,
-    is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
+    bare_ctrl_marker_workaround_enabled, encode_command_bar_input, encode_mouse_event,
+    encode_pasted_text, is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
     should_drop_bare_ctrl_marker,
     terminal_uses_bracketed_paste,
 };
+pub(crate) use charset::CharsetTracker;
 pub(crate) use encoding::TerminalEncoding;
 pub(crate) use json_output::format_json_output;
 #[cfg(any(target_os = "windows", test))]
