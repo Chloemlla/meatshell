@@ -314,6 +314,23 @@ impl TermBuffer {
                         self.csi_pending.clear();
                         self.csi_pending.push(byte);
                         self.csi_state = CsiState::Esc;
+                    } else if self.vt100_drawing && byte == 0x0e {
+                        // SO: shift output to G1 (#376). Swallowed before the
+                        // parser, which has no charset support.
+                        self.charset.shift_out();
+                    } else if self.vt100_drawing && byte == 0x0f {
+                        // SI: back to G0.
+                        self.charset.shift_in();
+                    } else if self.vt100_drawing {
+                        // DEC Special Graphics maps 0x60–0x7e (always standalone
+                        // ASCII in a UTF-8 stream) to box-drawing Unicode (#376).
+                        match self.charset.map(byte) {
+                            Some(ch) => {
+                                let mut buf = [0u8; 4];
+                                display.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
+                            None => display.push(byte),
+                        }
                     } else {
                         display.push(byte);
                     }
@@ -322,6 +339,16 @@ impl TermBuffer {
                     if byte == b'[' {
                         self.csi_pending.push(byte);
                         self.csi_state = CsiState::Csi;
+                    } else if byte == b']' {
+                        // OSC: keep buffering so its payload is never
+                        // charset-translated while DEC graphics is active.
+                        self.csi_pending.push(byte);
+                        self.csi_state = CsiState::Osc;
+                    } else if matches!(byte, b'(' | b')' | b'*' | b'+') {
+                        // SCS designator intro (`ESC ( 0`, …); the final byte
+                        // completes it (#376).
+                        self.csi_pending.push(byte);
+                        self.csi_state = CsiState::Designate(byte);
                     } else {
                         display.extend(self.csi_pending.drain(..));
                         if byte == 0x1b {
@@ -330,6 +357,46 @@ impl TermBuffer {
                             display.push(byte);
                             self.csi_state = CsiState::Normal;
                         }
+                    }
+                }
+                CsiState::Designate(set) => {
+                    if byte == 0x1b {
+                        // Malformed: a new escape interrupts the designator.
+                        // Pass the buffered bytes through and start over.
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_pending.push(byte);
+                        self.csi_state = CsiState::Esc;
+                    } else {
+                        self.csi_pending.push(byte);
+                        if self.vt100_drawing {
+                            self.charset.designate(set, byte);
+                        }
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_state = CsiState::Normal;
+                    }
+                }
+                CsiState::Osc => {
+                    self.csi_pending.push(byte);
+                    if byte == 0x07 {
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_state = CsiState::Normal;
+                    } else if byte == 0x1b {
+                        self.csi_state = CsiState::OscEsc;
+                    } else if self.csi_pending.len() > 4096 {
+                        // Malformed/unbounded OSC: stop buffering, same escape
+                        // hatch as the CSI arm below.
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_state = CsiState::Normal;
+                    }
+                }
+                CsiState::OscEsc => {
+                    self.csi_pending.push(byte);
+                    if byte == b'\\' {
+                        // ST terminator.
+                        display.extend(self.csi_pending.drain(..));
+                        self.csi_state = CsiState::Normal;
+                    } else {
+                        self.csi_state = CsiState::Osc;
                     }
                 }
                 CsiState::Csi => {

@@ -3630,6 +3630,7 @@ fn wire_session_callbacks(
             w.set_dialog_parity("none".into());
             w.set_dialog_flow("none".into());
             w.set_dialog_encoding("UTF-8".into());
+            w.set_dialog_vt100_drawing(false);
             w.set_dialog_disable_shell_integration(false);
             w.set_dialog_note("".into());
             w.set_dialog_editing(false);
@@ -3864,6 +3865,7 @@ fn wire_session_callbacks(
                 w.set_dialog_parity(session.parity.clone().into());
                 w.set_dialog_flow(session.flow_control.clone().into());
                 w.set_dialog_encoding(session.encoding.clone().into());
+                w.set_dialog_vt100_drawing(session.vt100_drawing);
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
                 w.set_dialog_note(session.note.clone().into());
                 w.set_dialog_editing(true);
@@ -4265,6 +4267,7 @@ fn wire_session_callbacks(
                 parity: draft.parity.to_string(),
                 flow_control: draft.flow_control.to_string(),
                 encoding: draft.encoding.to_string(),
+                vt100_drawing: draft.vt100_drawing,
                 forwards,
                 triggers,
                 disable_shell_integration: draft.disable_shell_integration,
@@ -4728,6 +4731,8 @@ fn wire_session_callbacks(
                     output_highlight,
                     custom_highlight_rules,
                     json_format_output: store.borrow().json_format_output(),
+                    vt100_drawing: session.vt100_drawing,
+                    charset: crate::terminal::CharsetTracker::default(),
                     interactive_echo_until: std::time::Instant::now(),
                     sel_anchor: None,
                     sel_focus: None,

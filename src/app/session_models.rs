@@ -466,6 +466,7 @@ pub(super) fn session_from_draft(
         parity: draft.parity.to_string(),
         flow_control: draft.flow_control.to_string(),
         encoding: draft.encoding.to_string(),
+        vt100_drawing: draft.vt100_drawing,
         forwards,
         triggers,
         disable_shell_integration: draft.disable_shell_integration,

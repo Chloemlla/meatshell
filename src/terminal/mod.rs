@@ -5,6 +5,8 @@ mod state;
 mod input;
 #[path = "impls/json_output.rs"]
 mod json_output;
+#[path = "impls/charset.rs"]
+mod charset;
 #[path = "impls/encoding.rs"]
 mod encoding;
 #[path = "impls/local.rs"]
@@ -36,6 +38,7 @@ pub(crate) use input::{
     should_drop_bare_ctrl_marker,
     terminal_uses_bracketed_paste,
 };
+pub(crate) use charset::CharsetTracker;
 pub(crate) use encoding::TerminalEncoding;
 pub(crate) use json_output::format_json_output;
 #[cfg(any(target_os = "windows", test))]

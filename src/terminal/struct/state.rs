@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
+use crate::terminal::charset::CharsetTracker;
 use crate::ui::TermSpan;
 
 #[cfg(any(target_os = "windows", test))]
@@ -18,6 +19,10 @@ pub(crate) struct TermBuffer {
     pub(crate) output_highlight: OutputHighlightPreset,
     pub(crate) custom_highlight_rules: Vec<CompiledOutputRule>,
     pub(crate) json_format_output: bool,
+    /// Honor VT100 line-drawing (DEC Special Graphics) via SCS designators and
+    /// SO/SI even when the session encoding is UTF-8 (#376, PuTTY's option).
+    pub(crate) vt100_drawing: bool,
+    pub(crate) charset: CharsetTracker,
     pub(crate) interactive_echo_until: std::time::Instant,
     pub(crate) sel_anchor: Option<(usize, u16)>,
     pub(crate) sel_focus: Option<(usize, u16)>,
@@ -46,6 +51,13 @@ pub(crate) enum CsiState {
     Normal,
     Esc,
     Csi,
+    /// Buffering an SCS designator (`ESC ( X`, `ESC ) X`, …); payload holds the
+    /// designator intro byte. Bytes still pass through to the display verbatim.
+    Designate(u8),
+    /// Buffering an OSC string (`ESC ] … BEL/ST`) so its payload is never
+    /// charset-translated. Bytes still pass through to the display verbatim.
+    Osc,
+    OscEsc,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

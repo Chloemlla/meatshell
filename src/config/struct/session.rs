@@ -59,6 +59,10 @@ fn default_encoding() -> String {
     "UTF-8".to_string()
 }
 
+fn default_vt100_drawing() -> bool {
+    false
+}
+
 /// How a session authenticates.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -152,6 +156,12 @@ pub struct Session {
     #[serde(default = "default_encoding")]
     pub encoding: String,
 
+    /// Honor VT100 line drawing (DEC Special Graphics via `ESC ( 0` and SO/SI)
+    /// even when the encoding is UTF-8 (#376). PuTTY's "Enable VT100 line
+    /// drawing even in UTF-8 mode"; opt-in, off for new/existing sessions.
+    #[serde(default = "default_vt100_drawing")]
+    pub vt100_drawing: bool,
+
     // --- SSH port forwarding / tunnels (#56) --------------------------------
     /// Tunnels established automatically when this SSH session connects.
     #[serde(default)]
@@ -237,6 +247,7 @@ impl Session {
             parity: default_parity(),
             flow_control: default_flow(),
             encoding: default_encoding(),
+            vt100_drawing: default_vt100_drawing(),
             forwards: Vec::new(),
             triggers: Vec::new(),
             disable_shell_integration: false,
