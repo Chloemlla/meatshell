@@ -28,6 +28,7 @@ fn make_buf(
         sel_anchor: None,
         sel_focus: None,
         sel_ranges: Vec::new(),
+        mouse_tracked: false,
         history: history.iter().map(|s| hist_line(s)).collect(),
         prev: Vec::new(),
         view_offset,

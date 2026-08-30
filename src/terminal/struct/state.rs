@@ -22,6 +22,11 @@ pub(crate) struct TermBuffer {
     pub(crate) sel_anchor: Option<(usize, u16)>,
     pub(crate) sel_focus: Option<(usize, u16)>,
     pub(crate) sel_ranges: Vec<((usize, u16), (usize, u16))>,
+    /// Whether the remote application is tracking the mouse (vt100
+    /// `mouse_protocol_mode() != None`). When true, clicks and drags are
+    /// forwarded to the PTY instead of starting a local drag-selection, so
+    /// btop/htop/mc can be operated with the mouse (#terminal-mouse).
+    pub(crate) mouse_tracked: bool,
     pub(crate) history: VecDeque<Line>,
     pub(crate) prev: Vec<Line>,
     pub(crate) view_offset: usize,
@@ -97,6 +102,7 @@ pub(crate) struct BuiltScreen {
     pub(crate) cursor_col: i32,
     pub(crate) rows_used: i32,
     pub(crate) is_alt: bool,
+    pub(crate) mouse_tracked: bool,
     pub(crate) scroll_max: i32,
     pub(crate) scroll_offset: i32,
 }

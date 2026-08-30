@@ -176,10 +176,10 @@ use crate::ssh::{
 use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
     bare_ctrl_marker_workaround_enabled, cell_prefix, compile_output_rules,
-    encode_command_bar_input, encode_pasted_text, is_terminal_interrupt, key_to_pty_bytes,
-    paste_requires_large_review, should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste,
-    CsiState, OutputHighlightPreset,
-    RenderGates, TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
+    encode_command_bar_input, encode_mouse_event, encode_pasted_text, is_terminal_interrupt,
+    key_to_pty_bytes, paste_requires_large_review, should_drop_bare_ctrl_marker,
+    terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset, RenderGates, TabRenderGate,
+    TermBuffer, TermBufferHandle, TermBuffers,
 };
 #[cfg(test)]
 use crate::terminal::{
@@ -4676,6 +4676,7 @@ fn wire_session_callbacks(
                 scroll_max: 0,
                 scroll_offset: 0,
                 is_alt_screen: false,
+                mouse_tracked: false,
                 find_matches: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 selection: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 sftp_path: "/".into(),
@@ -4731,6 +4732,7 @@ fn wire_session_callbacks(
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),
+                    mouse_tracked: false,
                     history: VecDeque::new(),
                     prev: Vec::new(),
                     view_offset: 0,
@@ -6454,6 +6456,57 @@ fn wire_key_input(
                 rebuild_tab_display(&win, &bufs_sel, &tid);
             }
         });
+    }
+
+    // Mouse events forwarded to the PTY for mouse-tracking TUI apps (btop,
+    // htop, mc). The Slint side only calls this when the remote enabled a mouse
+    // protocol (mouse_protocol_mode != None), so a click inside e.g. btop
+    // highlights/activates the widget under the pointer instead of starting a
+    // local drag-selection. Returns true when bytes were actually written, so
+    // the caller can skip its own local handling.
+    {
+        let bufs_mouse = bufs.clone();
+        let handles_mouse = handles.clone();
+        window.on_terminal_mouse(
+            move |tab_id: SharedString, kind: i32, button: i32, row: i32, col: i32| -> bool {
+                let tid = tab_id.to_string();
+                let Some(bytes) = term_buf(&bufs_mouse, &tid).map(|h| {
+                    let buf = h.lock().unwrap();
+                    let screen = buf.parser.screen();
+                    let (rows, cols) = screen.size();
+                    if buf.mouse_tracked {
+                        let encoding = screen.mouse_protocol_encoding();
+                        let (btn, release) = match kind {
+                            1 => (button as u8, true), // release
+                            2 => (35, false),          // drag motion with button held
+                            _ => (button as u8, false), // press
+                        };
+                        Some(encode_mouse_event(
+                            btn,
+                            release,
+                            col,
+                            row,
+                            cols,
+                            rows,
+                            encoding,
+                        ))
+                    } else {
+                        None
+                    }
+                }) else {
+                    return false;
+                };
+                let Some(bytes) = bytes else {
+                    return false;
+                };
+                if let Some(h) = handles_mouse.borrow().get(&tid) {
+                    h.send_raw(bytes);
+                    true
+                } else {
+                    false
+                }
+            },
+        );
     }
 }
 
