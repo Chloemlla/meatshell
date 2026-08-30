@@ -1,4 +1,4 @@
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 
 use anyhow::{Context, Result};
 use chrono::Utc;

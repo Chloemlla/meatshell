@@ -140,7 +140,7 @@ fn decode_password(encoded: &str) -> Result<String> {
     // Wrap the DES key and the decrypted plaintext in Zeroizing so the secret
     // material is cleared from memory on drop (#51).
     let key = Zeroizing::new(derive_des_key(head)?);
-    let cipher = Des::new_from_slice(&key).expect("DES keys are always eight bytes");
+    let cipher = Des::new_from_slice(&*key).expect("DES keys are always eight bytes");
     let mut plaintext = Zeroizing::new(ciphertext.to_vec());
     for block in plaintext.chunks_exact_mut(8) {
         cipher.decrypt_block(GenericArray::from_mut_slice(block));

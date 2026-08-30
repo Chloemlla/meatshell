@@ -284,7 +284,7 @@ fn random_token() -> u64 {
     // RandomState is seeded from OS entropy per call; fold in the pid and a
     // timestamp so even a zeroed seed can't collide across processes.
     let mut hasher = RandomState::new().build_hasher();
-    hasher.write_u64(std::process::id());
+    hasher.write_u64(std::process::id().into());
     hasher.write_u128(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -298,19 +298,15 @@ fn read_token_file(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-/// Write a file with owner-only (0600) permissions. On Windows the Unix mode
-/// maps to the read-only attribute (a no-op here); the per-user data-dir ACL
-/// plus the handshake token provide the actual protection.
+/// Write a file with owner-only (0600) permissions. On Windows std exposes no
+/// stable owner-mode setter (windows_permissions_ext is nightly-only), so the
+/// mode is skipped there; the per-user data-dir ACL plus the handshake token
+/// provide the actual protection.
 fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
     std::fs::write(path, contents)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
