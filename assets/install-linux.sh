@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Install meatshell's icon + desktop entry on Linux so the GNOME/Ubuntu dock and
-# the app launcher show the app icon.
+# Install meatshell system-wide on Linux so the GNOME/Ubuntu dock and app
+# launcher use one canonical executable and desktop entry.
 #
 # Why this is needed: the Windows build embeds the icon in the .exe, but on Linux
 # the icon comes from a freedesktop ".desktop" entry plus an icon installed into
@@ -10,7 +10,7 @@
 # that to "meatshell" (slint::set_xdg_app_id), and this script's StartupWMClass
 # matches it.
 #
-# Usage:
+# Usage (requires sudo):
 #   ./install-linux.sh [/path/to/meatshell-binary]
 # You normally don't need an argument: when run from inside a release package
 # (the `meatshell` binary sits next to this script) it is picked up automatically.
@@ -41,27 +41,37 @@ if [ ! -x "$BIN" ]; then
 fi
 
 ICON_SRC="$SCRIPT_DIR/icon@512.png"
-ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
-APP_DIR="$HOME/.local/share/applications"
+PREFIX="/usr/local"
+ICON_DIR="$PREFIX/share/icons/hicolor/512x512/apps"
+APP_DIR="$PREFIX/share/applications"
 
-mkdir -p "$ICON_DIR" "$APP_DIR"
+if ! command -v sudo >/dev/null 2>&1; then
+    echo "error: sudo is required for a system-wide installation" >&2
+    exit 1
+fi
+sudo -v
+
+sudo install -d "$ICON_DIR" "$APP_DIR"
+sudo install -m755 "$BIN" "$PREFIX/bin/meatshell"
 if [ -f "$ICON_SRC" ]; then
-    install -m644 "$ICON_SRC" "$ICON_DIR/meatshell.png"
+    sudo install -m644 "$ICON_SRC" "$ICON_DIR/meatshell.png"
 else
     echo "warning: icon not found ($ICON_SRC); the desktop entry will use a generic icon" >&2
 fi
 
-cat > "$APP_DIR/meatshell.desktop" <<EOF
+DESKTOP_TMP="$(mktemp)"
+trap 'rm -f "$DESKTOP_TMP"' EXIT
+cat > "$DESKTOP_TMP" <<EOF
 [Desktop Entry]
 Type=Application
 Name=meatshell
 GenericName=SSH Client
 Comment=Lightweight Rust + Slint SSH/SFTP client
 Comment[zh_CN]=轻量级 Rust + Slint SSH/SFTP 客户端
-Exec=$BIN
+Exec=meatshell
 Icon=meatshell
 Terminal=false
-Categories=Network;System;TerminalEmulator;Utility;
+Categories=Network;TerminalEmulator;
 Keywords=ssh;sftp;terminal;shell;
 StartupNotify=true
 StartupWMClass=meatshell
@@ -70,18 +80,24 @@ Actions=new-window;
 [Desktop Action new-window]
 Name=New Window
 Name[zh_CN]=新建窗口
-Exec=$BIN --new-window
+Exec=meatshell --new-window
 EOF
-chmod 644 "$APP_DIR/meatshell.desktop"
+sudo install -m644 "$DESKTOP_TMP" "$APP_DIR/meatshell.desktop"
+
+OLD_USER_DESKTOP="$HOME/.local/share/applications/meatshell.desktop"
+if [ -f "$OLD_USER_DESKTOP" ] && grep -q '^Exec=.*meatshell' "$OLD_USER_DESKTOP"; then
+    rm -f "$OLD_USER_DESKTOP"
+    echo "Removed stale user launcher: $OLD_USER_DESKTOP"
+fi
 
 # Refresh the desktop + icon caches (best-effort; harmless if the tools are absent).
-update-desktop-database "$APP_DIR" 2>/dev/null || true
-gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+sudo update-desktop-database "$APP_DIR" 2>/dev/null || true
+sudo gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
 
 echo "Installed:"
 echo "  icon    -> $ICON_DIR/meatshell.png"
 echo "  desktop -> $APP_DIR/meatshell.desktop"
-echo "  exec    -> $BIN"
+echo "  exec    -> $PREFIX/bin/meatshell"
 echo
 echo "If the dock still shows the generic icon, log out/in (Wayland) or run"
 echo "'killall -3 gnome-shell' (X11) to refresh the shell."
