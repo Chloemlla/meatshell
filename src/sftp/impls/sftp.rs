@@ -772,12 +772,11 @@ async fn run_sftp(
                     emit_transfer(&events, &id, &arc_name, false, 0, 0, 3, "");
                     // Plain tar (no gzip): the user prefers speed over a smaller file.
                     // Server-supplied names are untrusted → quote every argument.
-                    // -h (--dereference): archive the *target* of a symlink instead of
-                    // the link itself. Without it, remote .pem files that are symlinks
-                    // are stored as link entries (0 bytes) and extract as broken/empty
-                    // links on the local side (#sftp-batch-download-symlink).
+                    // Preserve symlinks instead of dereferencing them. Following a
+                    // server-controlled link could archive files outside the selected
+                    // directory tree (for example, a link into /etc).
                     let mut cmd =
-                        format!("tar -chf {} -C {}", sh_quote(&tmp), sh_quote(&remote_dir));
+                        format!("tar -cf {} -C {}", sh_quote(&tmp), sh_quote(&remote_dir));
                     for nm in &names {
                         cmd.push(' ');
                         cmd.push_str(&sh_quote(nm));
