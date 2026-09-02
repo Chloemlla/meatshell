@@ -4,6 +4,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod allocator;
+
+#[global_allocator]
+static GLOBAL: allocator::Allocator = allocator::Allocator;
 mod app;
 mod automation;
 mod cli;

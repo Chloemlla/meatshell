@@ -1,7 +1,7 @@
-//! Platform-selected global heap allocator.
+//! Platform-selected heap allocator type.
 
 #[cfg(target_os = "windows")]
-use mimalloc::MiMalloc as Allocator;
+pub(crate) use mimalloc::MiMalloc as Allocator;
 
 #[cfg(any(
     target_os = "linux",
@@ -13,7 +13,7 @@ use mimalloc::MiMalloc as Allocator;
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-use jemallocator::Jemalloc as Allocator;
+pub(crate) use jemallocator::Jemalloc as Allocator;
 
 #[cfg(not(any(
     target_os = "windows",
@@ -26,10 +26,7 @@ use jemallocator::Jemalloc as Allocator;
     target_os = "openbsd",
     target_os = "dragonfly"
 )))]
-use std::alloc::System as Allocator;
-
-#[global_allocator]
-static GLOBAL: Allocator = Allocator;
+pub(crate) use std::alloc::System as Allocator;
 
 #[allow(dead_code)]
 pub(crate) fn allocator_name() -> &'static str {
@@ -65,5 +62,41 @@ pub(crate) fn allocator_name() -> &'static str {
     )))]
     {
         "system"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::allocator_name;
+
+    #[test]
+    fn selects_allocator_for_target_platform() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(allocator_name(), "mimalloc");
+
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        ))]
+        assert_eq!(allocator_name(), "jemalloc");
+
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "android",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly"
+        )))]
+        assert_eq!(allocator_name(), "system");
     }
 }
