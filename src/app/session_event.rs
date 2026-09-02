@@ -241,6 +241,25 @@ pub(super) fn apply_session_event_to_window(
                 t.sftp_path = path.clone().into();
                 t.sftp_entries = model.clone();
                 t.sftp_loading = false;
+                // Reset the multi-select counter (#sftp-entries-selection).
+                // Every entry above is built with `selected: false`, so the
+                // rebuilt list is visually unchecked — but `sftp_selected_count`
+                // is a *separate* field on the tab row and is NOT derived from
+                // the entries, so it silently kept its stale value (e.g. "2")
+                // and the toolbar's count label plus the batch download/delete
+                // buttons stayed on screen until the user ticked a checkbox to
+                // force a recount.
+                // Clearing it here — where the list is actually rebuilt — fixes
+                // every path that reloads a directory at once: upload (both the
+                // SFTP panel button and shell drag-and-drop end in a `list_dir`
+                // + `SftpEntries` once the transfer finishes), download, delete,
+                // rename, mkdir, navigate and manual refresh. Future reload
+                // paths are covered automatically instead of needing another
+                // per-callback patch like the earlier `on_sftp_refresh` fix.
+                // NOTE: sorting is deliberately unaffected — it goes through
+                // `sorted_sftp_entries_from_model` in sftp_callbacks.rs, which
+                // re-sorts the existing rows and must preserve the selection.
+                t.sftp_selected_count = 0;
             });
         }
         SessionEvent::SftpStatus(msg) => {
