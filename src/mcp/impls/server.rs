@@ -329,7 +329,11 @@ fn initialize(params: &Value) -> Value {
             "title": "MeatShell MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Manage saved MeatShell sessions and run permitted SSH automation without exposing stored secrets. Sessions can be referenced by their stable id or by their display name from list_sessions; only the session name is needed to operate a server."
+        "instructions": "MeatShell exposes the SSH and SFTP sessions saved in its GUI so you can inspect and operate those hosts without ever seeing the stored credentials.\n\n\
+Call list_sessions first: every other tool takes either a session's id or its display name, so the name the user says is usually enough. A session must have been connected once in the GUI, because an unknown or changed host key fails closed here with no way to accept it.\n\n\
+Three switches in Settings > Interface > MCP gate the tools: saved credentials (everything that connects), arbitrary commands (run_command), and file transfers (upload_file, download_file). A disabled switch comes back as an explanatory error, so ask the user to enable it instead of retrying.\n\n\
+Every call is self-contained: it connects, does one thing, and disconnects. Nothing persists between calls, not the working directory, not shell state, not background jobs, so put a whole job into a single command and detach anything that has to outlive the call.\n\n\
+Never put a password, token, or private key into a command or a path: every call is appended to MeatShell's MCP activity log, which the user can read in the GUI. Move a secret with upload_file instead, then tighten its mode with run_command."
     })
 }
 

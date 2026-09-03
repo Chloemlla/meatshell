@@ -5,6 +5,15 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复替换远端已有文件时的上传与保存失败。** SFTP 的 `rename` 不允许覆盖已存在的目标，因此上传同名文件、内置编辑器保存回远端、文件夹上传和「复制到」此前都会以 `rename remote …: Failure` 失败。现在改名到目标失败时会先把原文件改名让位，成功后为替换后的文件保留原有权限位并删除让位副本，中途任何一步失败都会把原文件改回原名；GUI、CLI `upload` 与 MCP `upload_file` 共用同一实现。
+- **Fix uploads and saves that replace an existing remote file.** SFTP `rename` refuses to overwrite an existing target, so uploading a file that was already there, saving from the built-in editor, uploading a folder, and "copy to" all failed with `rename remote …: Failure`. The rename now moves the existing file aside first, keeps its permissions on the replacement, deletes the displaced copy on success, and restores the original name if any step fails. The GUI, the CLI `upload` command, and the MCP `upload_file` tool share the same implementation.
+
+- **修复远端命令返回空结果却报告成功。** SSH 服务器拒绝 exec 请求、或通道先于退出状态关闭时，`run_command` 会返回 `{"exit_code":null,"stdout":"","stderr":""}`，无法区分成功与失败。现在这两种情况都会直接报错并说明原因（后者常见于命令重启了主机或 sshd）；命令被信号杀死时结果新增 `exit_signal` 字段，CLI 也会打印该信号。
+- **Fix remote commands reporting success with an empty result.** When the SSH server rejected the exec request, or the channel closed before an exit status arrived, `run_command` returned `{"exit_code":null,"stdout":"","stderr":""}` with no way to tell success from failure. Both cases are now explicit errors that say why (the latter is expected when the command restarts the host or sshd), a command killed by a signal reports a new `exit_signal` field, and the CLI prints that signal.
+
+- **改进 MCP 的 AI 使用体验。** 7 个工具补齐 `title`、可操作的说明，以及 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 注解，并逐个参数写明约束（超时上限 300 秒、输出上限、读取文本文件的 512 KiB / 20000 行 / 单行 64 KiB 限制、上传沙箱与替换语义）。`initialize` 的 instructions 说明了会话可用显示名称定位、主机密钥须先在 GUI 确认、三个权限开关各自管什么、每次调用互相独立需要把整件事写成一条命令，以及密钥不得写入命令或路径。`upload_file` 的返回值新增 `remote_path`，与 `download_file` 的 `local_path` 对应。
+- **Improve the MCP experience for AI clients.** All seven tools now carry a `title`, an operational description, and `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations, with per-argument limits spelled out (the 300-second timeout ceiling, the output cap, the 512 KiB / 20000 lines / 64 KiB-per-line bounds on text reads, the upload sandbox and replace semantics). The `initialize` instructions explain that sessions can be addressed by display name, that a host key must have been trusted once in the GUI, what each of the three permission switches gates, that every call is self-contained so one job belongs in one command, and that secrets must never appear in a command or a path. `upload_file` now returns `remote_path`, mirroring `download_file`'s `local_path`.
+
 - **修复旧版 macOS 启动闪退。** 在 macOS 上禁用 Slint/winit 的 AppKit DisplayLink 帧节流，回退到计时器帧节流，避免旧系统收到不存在的 `displayLinkWithTarget:selector:` 消息。
 - **Fix startup crashes on older macOS.** Disable Slint/winit's AppKit DisplayLink frame throttling on macOS and use timer throttling instead, avoiding calls to the unavailable `displayLinkWithTarget:selector:` method on older systems.
 

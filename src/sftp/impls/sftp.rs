@@ -940,8 +940,7 @@ async fn run_sftp(
                                 return;
                             }
                         };
-                        let remote_path =
-                            format!("{}/{}", remote_dir.trim_end_matches('/'), filename);
+                        let remote_path = upload_target_path(&remote_dir, &filename);
                         let id = up_id.clone();
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{} {}...",
@@ -1490,9 +1489,107 @@ async fn read_text_guarded(
     validate_editor_text(bytes).map_err(editor_rejection_message)
 }
 
+/// The remote operations `rename_replacing` needs, implemented for both the
+/// high-level and the raw SFTP session so the replace logic has one body.
+#[async_trait]
+trait ReplaceTarget {
+    async fn attrs_of(&self, path: &str) -> Option<FileAttributes>;
+    async fn rename_to(&self, from: &str, to: &str) -> Result<(), SftpError>;
+    async fn remove_path(&self, path: &str) -> Result<(), SftpError>;
+    async fn set_mode(&self, path: &str, mode: u32);
+}
+
+#[async_trait]
+impl ReplaceTarget for SftpSession {
+    async fn attrs_of(&self, path: &str) -> Option<FileAttributes> {
+        self.metadata(path).await.ok()
+    }
+    async fn rename_to(&self, from: &str, to: &str) -> Result<(), SftpError> {
+        self.rename(from, to).await.map(|_| ())
+    }
+    async fn remove_path(&self, path: &str) -> Result<(), SftpError> {
+        self.remove_file(path).await.map(|_| ())
+    }
+    async fn set_mode(&self, path: &str, mode: u32) {
+        let attrs = FileAttributes {
+            permissions: Some(mode),
+            ..Default::default()
+        };
+        let _ = self.set_metadata(path, attrs).await;
+    }
+}
+
+#[async_trait]
+impl ReplaceTarget for RawSftpSession {
+    async fn attrs_of(&self, path: &str) -> Option<FileAttributes> {
+        self.stat(path).await.ok().map(|reply| reply.attrs)
+    }
+    async fn rename_to(&self, from: &str, to: &str) -> Result<(), SftpError> {
+        self.rename(from, to).await.map(|_| ())
+    }
+    async fn remove_path(&self, path: &str) -> Result<(), SftpError> {
+        self.remove(path).await.map(|_| ())
+    }
+    async fn set_mode(&self, path: &str, mode: u32) {
+        let attrs = FileAttributes {
+            permissions: Some(mode),
+            ..Default::default()
+        };
+        let _ = self.setstat(path, attrs).await;
+    }
+}
+
+/// Rename `tmp` onto `remote`, replacing an existing destination.
+///
+/// SFTP v3 `SSH_FXP_RENAME` fails when the destination exists (OpenSSH enforces
+/// it), so the temp-then-rename writes of #35 could not replace a file that was
+/// already there — every save from the editor and every upload of a file that
+/// exists failed with a bare `Failure`. Move the old file aside, rename into
+/// place, then drop the aside copy; if the second rename fails, put the old file
+/// back so a failed replace still leaves the original content.
+///
+/// The mode is reapplied because the file that ends up in place is the temp one
+/// we created, which lands on the default mode: replacing a 0600 file must not
+/// silently publish its content to everyone on the host.
+async fn rename_replacing<S: ReplaceTarget + Sync>(
+    session: &S,
+    tmp: &str,
+    remote: &str,
+) -> Result<()> {
+    let first = match session.rename_to(tmp, remote).await {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    let mode = match session.attrs_of(remote).await {
+        // Renaming a directory aside would strand it under a temp name.
+        Some(attrs) if (attrs.permissions.unwrap_or(0) & 0o170_000) == 0o040_000 => {
+            return Err(anyhow!("rename remote {remote}: destination is a directory"))
+        }
+        Some(attrs) => attrs.permissions.map(|mode| mode & 0o7777),
+        // The destination is not in the way, so the rename failed for another
+        // reason: report that one.
+        None => return Err(anyhow!("rename remote {remote}: {first}")),
+    };
+    let aside = format!("{remote}.replaced-{}", Uuid::new_v4());
+    if session.rename_to(remote, &aside).await.is_err() {
+        return Err(anyhow!("rename remote {remote}: {first}"));
+    }
+    if let Err(e) = session.rename_to(tmp, remote).await {
+        let _ = session.rename_to(&aside, remote).await;
+        return Err(anyhow!("rename remote {remote}: {e}"));
+    }
+    if let Some(mode) = mode {
+        session.set_mode(remote, mode).await;
+    }
+    let _ = session.remove_path(&aside).await;
+    Ok(())
+}
+
 /// Overwrite a remote file with the given text, atomically (#35): write to a
 /// unique temp file, then rename it over the target so an interrupted save can
 /// never leave a truncated/half-written file (the previous content survives).
+/// The target exists whenever an existing file is being edited, so the rename
+/// has to replace it — see `rename_replacing`.
 async fn write_text_file(sftp: &SftpSession, remote: &str, content: &str) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let tmp = format!("{remote}.tmp-{}", Uuid::new_v4());
@@ -1513,9 +1610,10 @@ async fn write_text_file(sftp: &SftpSession, remote: &str, content: &str) -> Res
         let _ = sftp.remove_file(&tmp).await;
         return Err(e);
     }
-    sftp.rename(&tmp, remote)
-        .await
-        .map_err(|e| anyhow!("rename remote {remote}: {e}"))?;
+    if let Err(e) = rename_replacing(sftp, &tmp, remote).await {
+        let _ = sftp.remove_file(&tmp).await;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -1710,6 +1808,12 @@ fn is_dangerous_executable(name: &str) -> bool {
 
 pub(crate) fn download_target_path(remote: &str, local_dir: &str) -> PathBuf {
     Path::new(local_dir).join(sanitize_filename(&base_name(remote)))
+}
+
+/// Remote path a single-file upload lands on, so callers can report it without
+/// re-deriving the join the worker uses.
+pub(crate) fn upload_target_path(remote_dir: &str, file_name: &str) -> String {
+    format!("{}/{}", remote_dir.trim_end_matches('/'), file_name)
 }
 
 fn available_download_path(requested: &Path) -> PathBuf {
@@ -2339,9 +2443,9 @@ async fn upload_pipelined(
         return Ok(false);
     }
     // Success: atomically replace the destination with the fully-written temp (#35).
-    if let Err(e) = raw.rename(tmp_remote.as_str(), remote).await {
+    if let Err(e) = rename_replacing(raw.as_ref(), tmp_remote.as_str(), remote).await {
         let _ = raw.remove(tmp_remote.as_str()).await;
-        return Err(anyhow!("rename remote {remote}: {e}"));
+        return Err(e);
     }
     emit_transfer(events, id, name, true, done, total.max(done), 1, "");
     Ok(true)

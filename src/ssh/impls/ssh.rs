@@ -1342,6 +1342,10 @@ pub struct CommandExecution {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<u32>,
+    /// Signal that killed the command, if any. `exit_code` is null in that case,
+    /// so without this the caller cannot tell it apart from a lost channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_signal: Option<String>,
     pub timed_out: bool,
     pub truncated: bool,
 }
@@ -1393,7 +1397,9 @@ pub async fn execute_command(
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_code = None;
+        let mut exit_signal = None;
         let mut truncated = false;
+        let mut refused = false;
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => {
@@ -1405,28 +1411,56 @@ pub async fn execute_command(
                 ChannelMsg::ExitStatus { exit_status } => {
                     exit_code = Some(exit_status);
                 }
+                ChannelMsg::ExitSignal {
+                    signal_name,
+                    core_dumped,
+                    ..
+                } => {
+                    exit_signal = Some(format!(
+                        "{signal_name:?}{}",
+                        if core_dumped { " (core dumped)" } else { "" }
+                    ));
+                }
+                // The server refused the exec request itself; the loop would
+                // otherwise end with no output and no status, which an automation
+                // caller cannot tell apart from a command that printed nothing.
+                ChannelMsg::Failure => {
+                    refused = true;
+                    break;
+                }
                 ChannelMsg::Close => break,
                 _ => {}
             }
         }
-        CommandExecution {
+        if refused {
+            return Err(anyhow!("the SSH server rejected the exec request"));
+        }
+        if exit_code.is_none() && exit_signal.is_none() && stdout.is_empty() && stderr.is_empty() {
+            return Err(anyhow!(
+                "the command returned no output and no exit status: the channel closed first \
+                 (expected when the command restarts the host or sshd)"
+            ));
+        }
+        Ok(CommandExecution {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             exit_code,
+            exit_signal,
             timed_out: false,
             truncated,
-        }
+        })
     };
 
     let result = match tokio::time::timeout(timeout, collect).await {
         Ok(result) => result,
-        Err(_) => CommandExecution {
+        Err(_) => Ok(CommandExecution {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: None,
+            exit_signal: None,
             timed_out: true,
             truncated: false,
-        },
+        }),
     };
     let _ = handle
         .disconnect(Disconnect::ByApplication, "command complete", "")
@@ -1436,7 +1470,7 @@ pub async fn execute_command(
             .disconnect(Disconnect::ByApplication, "command complete", "")
             .await;
     }
-    Ok(result)
+    result
 }
 
 fn append_bounded(target: &mut Vec<u8>, data: &[u8], limit: usize, truncated: &mut bool) {

@@ -41,7 +41,20 @@ async fn upload_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
         enforce_upload_sandbox(&local_path)?;
     }
     let remote_directory = required_string(arguments, "remote_directory")?;
-    super::sftp::transfer(
+    // Report where the file actually landed, the way download_file reports
+    // local_path: the caller cannot derive it without knowing how the worker
+    // joins the directory and the name.
+    let file_name = local_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "local file name is not valid UTF-8: {}",
+                local_path.display()
+            )
+        })?;
+    let remote_path = crate::sftp::upload_target_path(remote_directory, file_name);
+    let mut result = super::sftp::transfer(
         session,
         jump,
         crate::sftp::SftpCommand::Upload {
@@ -52,7 +65,11 @@ async fn upload_file(arguments: &Value, frontend: Frontend) -> Result<Value> {
         true,
         timeout,
     )
-    .await
+    .await?;
+    if let Some(object) = result.as_object_mut() {
+        object.insert("remote_path".to_string(), json!(remote_path));
+    }
+    Ok(result)
 }
 
 async fn download_file(arguments: &Value, frontend: Frontend) -> Result<Value> {

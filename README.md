@@ -200,6 +200,36 @@ Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷�
 后，应能看到 `meatshell` 服务以及会话查询、远程命令、目录浏览、文本读取、上传和下载
 等工具。不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端文档为准。
 
+#### MCP 工具契约
+
+以下约束都写在各个工具的 `description`、参数说明和 `readOnlyHint` / `destructiveHint`
+等注解里，AI 客户端可以直接读到；这里同样列出，便于人工核对预期行为：
+
+- **每次调用都是独立的。** 一次调用建立连接、做一件事、然后断开，工作目录、shell
+  变量、后台任务和 `~/.bashrc` 都不会保留到下一次调用。同一件事应写成一条命令
+  （`cd /srv && ./deploy.sh; systemctl status app --no-pager`），PATH 之外的程序请用
+  绝对路径。
+- **stdin 是关闭的。** 任何等待输入的东西（交互式 sudo、确认提示、分页器）只会耗尽
+  超时，请改用 `sudo -n`、`-y`、`--no-pager`。
+- **超时上限 300 秒。** 超时后结果中 `timed_out` 为 true 且没有输出，而连接断开通常会
+  杀掉远端命令；更久的任务应当脱离本次调用运行（`nohup … >/tmp/job.log 2>&1 &`、
+  `setsid`、`systemd-run`），再用后续调用查看日志。
+- **`run_command` 的返回值**为 `stdout` / `stderr` / `exit_code` / `timed_out` /
+  `truncated`，命令被信号杀死时额外带 `exit_signal`。非零 `exit_code` 是正常结果而不是
+  错误；`exit_code` 仅在命令被信号杀死或连接消失（重启主机、重启 sshd）时为 null。
+  服务器拒绝 exec 请求、或既无输出也无退出状态时会直接报错，不再返回一个空的「成功」。
+- **`upload_file` 会替换同名文件。** 写入是原子的（先写临时名再改名到目标），替换时保留
+  目标文件原有的权限位；新建文件使用服务器默认权限，内容敏感时请再用 `run_command`
+  执行 `chmod`。上传源必须位于 MCP 进程的工作目录之内且不含 `..`，返回值包含最终的
+  `remote_path`。
+- **`download_file` 不覆盖。** 本地目录必须已存在，存在同名文件时调用失败；返回值包含
+  `local_path`。
+- **`read_remote_text_file` 有上限：** 512 KiB、20000 行、单行 64 KiB，且只接受 UTF-8。
+  更大或二进制的文件请用 `download_file`，或用 `run_command` 配合 `sed -n` / `tail`
+  读取片段。
+- **不要把口令、token、私钥写进命令或路径。** 每次调用都会追加到下面的 MCP 活动日志，
+  应当用 `upload_file` 把密钥送上去，再用 `run_command` 收紧权限。
+
 #### MCP 活动审计
 
 `meatshell mcp serve`（独立 stdio 进程）会把每次被调用追加为一行 JSON 到

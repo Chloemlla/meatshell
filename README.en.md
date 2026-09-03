@@ -213,6 +213,47 @@ the MCP client; the `meatshell` server should expose tools for session lookup,
 remote commands, directory listing, bounded text reads, uploads, and downloads.
 MCP configuration locations vary by AI client, so consult that client's docs.
 
+#### MCP tool contract
+
+Every constraint below is stated in each tool's `description`, argument
+descriptions, and `readOnlyHint` / `destructiveHint` annotations, so an AI client
+reads it directly. It is repeated here so you can check the expected behaviour:
+
+- **Every call is self-contained.** A call connects, does one thing, and
+  disconnects; no working directory, shell variable, background job, or
+  `~/.bashrc` survives into the next call. Put one job into one command
+  (`cd /srv && ./deploy.sh; systemctl status app --no-pager`) and use absolute
+  paths for anything outside the default PATH.
+- **stdin is closed.** Anything that waits for input — interactive sudo, a
+  confirmation prompt, a pager — only burns the timeout. Pass `sudo -n`, `-y`,
+  `--no-pager`.
+- **The timeout ceiling is 300 seconds.** On timeout the result sets `timed_out`
+  with no output, and dropping the connection usually kills the remote command.
+  Longer work must be detached from the call (`nohup … >/tmp/job.log 2>&1 &`,
+  `setsid`, `systemd-run`) and polled by a later call.
+- **`run_command` returns** `stdout`, `stderr`, `exit_code`, `timed_out`,
+  `truncated`, plus `exit_signal` when a signal killed the command. A non-zero
+  `exit_code` is a normal result, not an error; `exit_code` is null only when the
+  command was signalled or the connection went away (rebooting the host,
+  restarting sshd). An exec request the server rejects, or a call that returns
+  neither output nor exit status, is now an explicit error instead of an empty
+  "success".
+- **`upload_file` replaces an existing file.** The write is atomic (staged under
+  a temp name, then renamed into place) and a replaced file keeps its own
+  permissions; a brand-new file lands on the server's default mode, so tighten it
+  with `run_command chmod` when the content is sensitive. The source must live
+  inside the MCP process working directory with no `..` segments, and the result
+  carries the resulting `remote_path`.
+- **`download_file` never overwrites.** The local directory must already exist
+  and an existing file of the same name fails the call; the result carries
+  `local_path`.
+- **`read_remote_text_file` is bounded:** 512 KiB, 20000 lines, 64 KiB on any
+  single line, UTF-8 only. Use `download_file` for a bigger or binary file, or
+  read a slice with `run_command` (`sed -n`, `tail`).
+- **Never put a password, token, or private key in a command or a path.** Every
+  call is appended to the MCP activity log below; move a secret with
+  `upload_file` and then tighten its mode with `run_command`.
+
 #### MCP activity audit
 
 `meatshell mcp serve` (a separate stdio process) appends one JSON line per

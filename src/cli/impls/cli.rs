@@ -164,6 +164,9 @@ fn print_human(command: CliCommand, value: &Value) {
             if value.get("timed_out").and_then(Value::as_bool) == Some(true) {
                 eprintln!("command timed out");
             }
+            if let Some(signal) = value.get("exit_signal").and_then(Value::as_str) {
+                eprintln!("command killed by signal {signal}");
+            }
         }
         CliCommand::Files => {
             if let Some(entries) = value.get("entries").and_then(Value::as_array) {
