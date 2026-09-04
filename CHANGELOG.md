@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **停止构建 Intel Mac 安装包。** 发布矩阵和独立测试流水线不再构建 `macos-x86_64`，后续 macOS 版本仅提供 Apple Silicon 包，以减少发布耗时和维护成本。
+- **Stop building Intel Mac packages.** Remove `macos-x86_64` from both the release matrix and the dedicated test workflow; future macOS releases provide Apple Silicon packages only, reducing CI time and maintenance cost.
+
 ## [0.7.2] - 2026-09-04
 
 - **修复旧版 macOS 启动闪退。** 在 macOS 上禁用 Slint/winit 的 AppKit DisplayLink 帧节流，回退到计时器帧节流，避免旧系统收到不存在的 `displayLinkWithTarget:selector:` 消息。
