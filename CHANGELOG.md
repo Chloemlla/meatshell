@@ -19,6 +19,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **修复 Wayland 启动后出现多个任务栏窗口（#404）。** 调整 Linux 窗口初始化与资源信息展示，避免应用启动时创建多余的可见窗口。
 - **Fix duplicate taskbar windows after startup on Wayland (#404).** Adjust Linux window initialization and resource presentation so startup no longer creates extra visible windows.
 
+- **支持在多个标签栏之间拖动标签页（#408）。** 标签页现在可以跨分屏和多标签容器拖动，并在目标位置正确重排，方便整理复杂的终端工作区。
+- **Support dragging tabs across tab bars (#408).** Tabs can now be moved between split panes and multi-tab containers and reordered at the destination, making complex terminal workspaces easier to organize.
+
+- **修复右键重命名标签页时闪退（#411）。** 调整窗口菜单事件处理，避免从标签页上下文菜单执行重命名时发生重入崩溃。
+- **Fix crashes when renaming tabs from the context menu (#411).** Adjust window-menu event handling to prevent re-entrant crashes when renaming a tab from its context menu.
+
 - **优化终端内存管理与跨平台分配器（#410）。** 终端关闭后会及时释放缓存及关联状态，并按平台选择合适的全局内存分配器，降低长时间、多会话使用时的内存占用。
 - **Improve terminal memory management and cross-platform allocation (#410).** Release terminal buffers and associated state promptly after tabs close, and select an appropriate global allocator per platform to reduce memory use during long-running, multi-session workloads.
 
