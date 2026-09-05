@@ -14,11 +14,37 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **改进 MCP 的 AI 使用体验。** 7 个工具补齐 `title`、可操作的说明，以及 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 注解，并逐个参数写明约束（超时上限 300 秒、输出上限、读取文本文件的 512 KiB / 20000 行 / 单行 64 KiB 限制、上传沙箱与替换语义）。`initialize` 的 instructions 说明了会话可用显示名称定位、主机密钥须先在 GUI 确认、三个权限开关各自管什么、每次调用互相独立需要把整件事写成一条命令，以及密钥不得写入命令或路径。`upload_file` 的返回值新增 `remote_path`，与 `download_file` 的 `local_path` 对应。
 - **Improve the MCP experience for AI clients.** All seven tools now carry a `title`, an operational description, and `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations, with per-argument limits spelled out (the 300-second timeout ceiling, the output cap, the 512 KiB / 20000 lines / 64 KiB-per-line bounds on text reads, the upload sandbox and replace semantics). The `initialize` instructions explain that sessions can be addressed by display name, that a host key must have been trusted once in the GUI, what each of the three permission switches gates, that every call is self-contained so one job belongs in one command, and that secrets must never appear in a command or a path. `upload_file` now returns `remote_path`, mirroring `download_file`'s `local_path`.
 
+- **新增 MCP 活动审计。** GUI 的「设置 → 界面 → MCP」每 1 秒轮询 `mcp_activity.jsonl`，实时展示 AI 客户端通过 MCP 执行的活动（时间、调用方、工具、命令 / 路径、状态、耗时），支持 Refresh / Clear；`meatshell mcp serve` 每次被调用都会追加一条 JSON 记录，只写入白名单参数，命令内联的口令 / token 先脱敏、明文密钥不落盘，文件超过约 2 MiB 自动裁剪为最新 1000 条。
+- **Add an MCP activity audit.** Settings → Interface → MCP now polls `mcp_activity.jsonl` every second and shows the MCP calls an AI client has made (timestamp, caller, tool, command / path, status, duration) with Refresh / Clear actions. `meatshell mcp serve` appends one JSON record per invocation; only whitelisted arguments are logged, inline tokens / passwords in commands are redacted first, and plaintext secrets never reach the file, which is capped at about 2 MiB and trimmed to the newest 1000 records.
+
+- **停止构建 Intel Mac 安装包。** 发布矩阵和独立测试流水线不再构建 `macos-x86_64`，后续 macOS 版本仅提供 Apple Silicon 包，以减少发布耗时和维护成本。
+- **Stop building Intel Mac packages.** Remove `macos-x86_64` from both the release matrix and the dedicated test workflow; future macOS releases provide Apple Silicon packages only, reducing CI time and maintenance cost.
+
+## [0.7.2] - 2026-09-04
+
 - **修复旧版 macOS 启动闪退。** 在 macOS 上禁用 Slint/winit 的 AppKit DisplayLink 帧节流，回退到计时器帧节流，避免旧系统收到不存在的 `displayLinkWithTarget:selector:` 消息。
 - **Fix startup crashes on older macOS.** Disable Slint/winit's AppKit DisplayLink frame throttling on macOS and use timer throttling instead, avoiding calls to the unavailable `displayLinkWithTarget:selector:` method on older systems.
 
-- **新增 MCP 活动审计。** GUI 的「设置 → 界面 → MCP」每 1 秒轮询 `mcp_activity.jsonl`，实时展示 AI 客户端通过 MCP 执行的活动（时间、调用方、工具、命令 / 路径、状态、耗时），支持 Refresh / Clear；`meatshell mcp serve` 每次被调用都会追加一条 JSON 记录，只写入白名单参数，命令内联的口令 / token 先脱敏、明文密钥不落盘，文件超过约 2 MiB 自动裁剪为最新 1000 条。
-- **Add an MCP activity audit.** Settings → Interface → MCP now polls `mcp_activity.jsonl` every second and shows the MCP calls an AI client has made (timestamp, caller, tool, command / path, status, duration) with Refresh / Clear actions. `meatshell mcp serve` appends one JSON record per invocation; only whitelisted arguments are logged, inline tokens / passwords in commands are redacted first, and plaintext secrets never reach the file, which is capped at about 2 MiB and trimmed to the newest 1000 records.
+- **支持终端鼠标追踪与 VT100 线框字符（#399、#400）。** 鼠标事件现在可转发给启用追踪的 TUI 程序，并正确解析 DEC Special Graphics 字符集；会话设置可按需关闭线框转换。
+- **Support terminal mouse tracking and VT100 line drawing (#399, #400).** Mouse events are now forwarded to TUI applications that enable tracking, and the DEC Special Graphics character set is rendered correctly, with an option to disable line-drawing conversion per session.
+
+- **修复多项 SFTP 文件操作问题（#401、#402、#403）。** 上传完成后会正确清空选择计数，调整工具栏拖拽手柄与路径输入框布局，并在批量归档、复制路径时安全处理符号链接，避免空文件、卡死或越界访问。
+- **Fix several SFTP file-operation issues (#401, #402, #403).** Clear the selection count after uploads, improve the transfer toolbar and path-field layout, and handle symbolic links safely during batch archives and path copying to prevent empty files, hangs, and traversal outside the selected tree.
+
+- **修复 Wayland 启动后出现多个任务栏窗口（#404）。** 调整 Linux 窗口初始化与资源信息展示，避免应用启动时创建多余的可见窗口。
+- **Fix duplicate taskbar windows after startup on Wayland (#404).** Adjust Linux window initialization and resource presentation so startup no longer creates extra visible windows.
+
+- **支持在多个标签栏之间拖动标签页（#408）。** 标签页现在可以跨分屏和多标签容器拖动，并在目标位置正确重排，方便整理复杂的终端工作区。
+- **Support dragging tabs across tab bars (#408).** Tabs can now be moved between split panes and multi-tab containers and reordered at the destination, making complex terminal workspaces easier to organize.
+
+- **修复右键重命名标签页时闪退（#411）。** 调整窗口菜单事件处理，避免从标签页上下文菜单执行重命名时发生重入崩溃。
+- **Fix crashes when renaming tabs from the context menu (#411).** Adjust window-menu event handling to prevent re-entrant crashes when renaming a tab from its context menu.
+
+- **优化终端内存管理与跨平台分配器（#410）。** 终端关闭后会及时释放缓存及关联状态，并按平台选择合适的全局内存分配器，降低长时间、多会话使用时的内存占用。
+- **Improve terminal memory management and cross-platform allocation (#410).** Release terminal buffers and associated state promptly after tabs close, and select an appropriate global allocator per platform to reduce memory use during long-running, multi-session workloads.
+
+- **修复通过 JumpServer/Koko 连接后 Shell 自动断开（#359）。** SSH 兼容模式现在只建立单一 PTY 连接，不再自动启动独立 SFTP 旁路；界面同步隐藏不可用的 SFTP 状态，避免堡垒机关闭被代理的 Shell。
+- **Fix shells disconnecting through JumpServer/Koko (#359).** SSH compatibility mode now keeps a single PTY connection instead of automatically starting a separate SFTP side channel, and the UI reflects that SFTP is unavailable so bastions do not close the proxied shell.
 
 ## [0.7.1] - 2026-08-29
 
