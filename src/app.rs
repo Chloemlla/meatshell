@@ -177,11 +177,12 @@ use crate::ssh::{
 #[cfg(windows)]
 use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
-    bare_ctrl_marker_workaround_enabled, cell_prefix, compile_output_rules,
-    encode_command_bar_input, encode_mouse_event, encode_pasted_text, is_terminal_interrupt,
-    key_to_pty_bytes, paste_requires_large_review, should_drop_bare_ctrl_marker,
-    terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset, RenderGates, TabRenderGate,
-    TermBuffer, TermBufferHandle, TermBuffers,
+    bare_ctrl_marker_workaround_enabled, cell_prefix, clear_pending_paste,
+    compile_output_rules, encode_command_bar_input, encode_mouse_event, encode_pasted_text,
+    is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
+    should_drop_bare_ctrl_marker, store_pending_paste, take_pending_paste,
+    terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset, PendingPaste, RenderGates,
+    TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };
 #[cfg(test)]
 use crate::terminal::{
@@ -6417,10 +6418,17 @@ fn wire_key_input(
     }
 
     // Middle-click / Ctrl+Shift+V: paste clipboard text into PTY.
+    //
+    // Full clipboard payload for an open multi-line review dialog lives only
+    // in `pending_paste` (not in a Slint string property): the software
+    // renderer panics when a huge Text layout overflows i16 coordinates
+    // (#434 / slint#12985).
+    let pending_paste: Arc<PendingPaste> = Arc::new(Mutex::new(None));
     {
         let handles = handles.clone();
         let bufs = bufs.clone();
         let weak = window.as_weak();
+        let pending_paste = pending_paste.clone();
         window.on_paste_from_clipboard(move |tab_id: SharedString| {
             // Clone the (Send) command sender for this tab so the clipboard read
             // can run off the UI thread.  Reading arboard on the event-loop
@@ -6437,6 +6445,7 @@ fn wire_key_input(
                 .map(|w| w.get_paste_confirm_enabled())
                 .unwrap_or(true);
             let weak = weak.clone();
+            let pending_paste = pending_paste.clone();
             let tab_id = tab_id.to_string();
             std::thread::spawn(move || {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
@@ -6444,11 +6453,13 @@ fn wire_key_input(
                         let force_review = text.len() > 100 * 1024;
                         if text.contains(['\r', '\n']) && (confirm_multiline || force_review) {
                             let large = paste_requires_large_review(&text);
-                            let preview = text.clone();
+                            // Only a bounded preview enters the UI tree. Confirm
+                            // reads the full payload via take_pending_paste.
+                            let preview =
+                                store_pending_paste(&pending_paste, tab_id.clone(), text);
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(w) = weak.upgrade() {
                                     w.set_paste_confirm_tab(tab_id.into());
-                                    w.set_paste_confirm_text(text.into());
                                     w.set_paste_confirm_preview(preview.into());
                                     w.set_paste_confirm_large(large);
                                     w.set_paste_confirm_open(true);
@@ -6469,6 +6480,7 @@ fn wire_key_input(
     {
         let handles_paste = handles.clone();
         let bufs_paste = bufs.clone();
+        let pending_paste = pending_paste.clone();
         let weak = window.as_weak();
         window.on_paste_confirmed(move |tab_id: SharedString| {
             let Some(sender) = handles_paste
@@ -6478,17 +6490,27 @@ fn wire_key_input(
             else {
                 return;
             };
-            let Some(w) = weak.upgrade() else { return };
-            let text = w.get_paste_confirm_text().to_string();
+            let text = take_pending_paste(&pending_paste, tab_id.as_str());
+            if let Some(w) = weak.upgrade() {
+                w.set_paste_confirm_open(false);
+            }
+            let Some(text) = text else {
+                tracing::warn!("paste_confirmed: no pending paste payload for tab {tab_id}");
+                return;
+            };
             let bracketed = terminal_uses_bracketed_paste(&bufs_paste, tab_id.as_str());
             let _ = sender.send(SessionCommand::RawInput(encode_pasted_text(
                 &text, bracketed,
             )));
-            w.set_paste_confirm_open(false);
         });
     }
 
-    window.on_paste_confirm_cancelled(|| {});
+    {
+        let pending_paste = pending_paste.clone();
+        window.on_paste_confirm_cancelled(move || {
+            clear_pending_paste(&pending_paste);
+        });
+    }
 
     // Context menu → 清空缓存: reset the local vt100 buffer (drops scrollback),
     // wipe the displayed screen, then nudge the remote to redraw a fresh prompt.

@@ -921,7 +921,8 @@ export component AppWindow inherits Window {
     // Multi-line terminal paste safety prompt (#262).
     in-out property <bool> paste-confirm-open: false;
     in-out property <string> paste-confirm-tab;
-    in-out property <string> paste-confirm-text;
+    // Preview only — Rust truncates this before set. The full paste payload
+    // lives on the Rust side until the user confirms (#434 / slint#12985).
     in-out property <string> paste-confirm-preview;
     in-out property <bool> paste-confirm-large: false;
     property <int> terminal-focus-sequence;
