@@ -2243,7 +2243,7 @@ fn open_window(
     let lay = layout.borrow().clone();
     refresh_panes(
         &window,
-        &layout.borrow(),
+        &lay,
         content_size.get(),
         &tabs_model,
         &panes_model,
@@ -2270,7 +2270,7 @@ fn open_window(
                 let lay = layout.borrow().clone();
                 refresh_panes(
                     &win,
-                    &layout.borrow(),
+                    &lay,
                     content_size.get(),
                     &tabs_model,
                     &panes_model,
