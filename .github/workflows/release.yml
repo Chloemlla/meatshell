@@ -1,6 +1,6 @@
 name: Release
 
-# Build native packages for Windows / Linux / macOS and an Android Beta APK.
+# Build native packages for Windows / Linux / macOS.
 #  - Push a tag like `v0.2.3`  -> builds all platforms and attaches the archives
 #    to a GitHub Release.
 #  - Push to `main`            -> real-time multi-platform CI build; on success
@@ -40,15 +40,6 @@ jobs:
               exit
             }
           ' Cargo.lock)"
-          ANDROID_VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' android/Cargo.toml | head -n 1)"
-          ANDROID_LOCK_VERSION="$(awk '
-            $0 == "name = \"meatshell-android\"" { found = 1; next }
-            found && $1 == "version" {
-              gsub(/"/, "", $3)
-              print $3
-              exit
-            }
-          ' android/Cargo.lock)"
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${CARGO_VERSION}."
             echo "Run: pwsh ./scripts/release.ps1 ${GITHUB_REF_NAME}"
@@ -57,14 +48,6 @@ jobs:
           if [ "$TAG_VERSION" != "$LOCK_VERSION" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match Cargo.lock meatshell version ${LOCK_VERSION}."
             echo "Run: pwsh ./scripts/release.ps1 ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-          if [ "$TAG_VERSION" != "$ANDROID_VERSION" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match android/Cargo.toml version ${ANDROID_VERSION}."
-            exit 1
-          fi
-          if [ "$TAG_VERSION" != "$ANDROID_LOCK_VERSION" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match android/Cargo.lock version ${ANDROID_LOCK_VERSION}."
             exit 1
           fi
 
@@ -91,6 +74,10 @@ jobs:
           - os: macos-14               # Apple Silicon
             target: aarch64-apple-darwin
             name: macos-aarch64
+            bin: meatshell
+          - os: macos-14               # Cross-compile Intel Mac on Apple Silicon
+            target: x86_64-apple-darwin
+            name: macos-x86_64
             bin: meatshell
     steps:
       - uses: actions/checkout@v4
@@ -159,68 +146,18 @@ jobs:
           mv meatshell*.AppImage "meatshell-${VERSION}-linux-x86_64.AppImage"
           echo "APPIMAGE=meatshell-${VERSION}-linux-x86_64.AppImage" >> "$GITHUB_ENV"
 
+      - name: Install cargo-deb
+        if: runner.os == 'Linux'
+        run: cargo install cargo-deb --locked
+
       - name: Build Debian package
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          set -eu
-          # Tag builds version from the tag (v0.7.1 -> 0.7.1); branch builds fall
-          # back to Cargo.toml because GITHUB_REF_NAME ("main") is not a valid
-          # Debian version and dpkg-deb would refuse to build the package.
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME}"
-          else
-            VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          fi
-          VERSION_NUM="${VERSION#v}"
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-gnu) DEB_ARCH=amd64 ;;
-            aarch64-unknown-linux-gnu) DEB_ARCH=arm64 ;;
-            *) echo "Unsupported Debian architecture: ${{ matrix.target }}"; exit 1 ;;
-          esac
-
-          ROOT="deb-root"
-          install -Dm755 "target/${{ matrix.target }}/release/meatshell" "$ROOT/usr/bin/meatshell"
-          install -Dm644 assets/meatshell.desktop "$ROOT/usr/share/applications/meatshell.desktop"
-          install -Dm644 assets/icon@512.png "$ROOT/usr/share/icons/hicolor/512x512/apps/meatshell.png"
-          install -Dm644 THIRD_PARTY_NOTICES.md "$ROOT/usr/share/doc/meatshell/THIRD_PARTY_NOTICES.md"
-          install -d "$ROOT/DEBIAN"
-
-          # dpkg-shlibdeps expects source-package metadata in debian/control,
-          # even when -O prints the generated dependency variable to stdout.
-          # Without this file it exits with code 25 on both Linux runners.
-          install -d debian
-          cat > debian/control <<'EOF'
-          Source: meatshell
-          Section: net
-          Priority: optional
-          Maintainer: MeatShell contributors
-          Standards-Version: 4.6.2
-
-          Package: meatshell
-          Architecture: any
-          Depends: ${shlibs:Depends}
-          Description: Lightweight SSH, SFTP, and terminal client
-          EOF
-          DEPENDS="$(dpkg-shlibdeps -O -e"$ROOT/usr/bin/meatshell" | sed -n 's/^shlibs:Depends=//p')"
-          test -n "$DEPENDS"
-          cat > "$ROOT/DEBIAN/control" <<EOF
-          Package: meatshell
-          Version: ${VERSION_NUM}
-          Section: net
-          Priority: optional
-          Architecture: ${DEB_ARCH}
-          Maintainer: MeatShell contributors
-          Depends: ${DEPENDS}
-          Homepage: https://github.com/yituorou/meatshell
-          Description: Lightweight SSH, SFTP, and terminal client
-           MeatShell is a cross-platform terminal client written in Rust and Slint.
-          EOF
-
-          DEB="meatshell-${VERSION}-linux-${DEB_ARCH}.deb"
-          dpkg-deb --root-owner-group --build "$ROOT" "$DEB"
-          dpkg-deb --info "$DEB"
-          echo "DEB=$DEB" >> "$GITHUB_ENV"
+          mkdir -p target/release
+          cp target/${{ matrix.target }}/release/meatshell target/release/meatshell
+          cargo deb --no-build
+          echo "DEB=$(find target/debian -name '*.deb' -print -quit)" >> "$GITHUB_ENV"
 
       - name: Package
         shell: bash
@@ -363,93 +300,6 @@ jobs:
         with:
           files: ${{ env.MSI }}
           fail_on_unmatched_files: false
-
-  build-android:
-    name: android-arm64-beta
-    needs: check-version
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Install Android SDK platform
-        shell: bash
-        run: |
-          set -eu
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Cache Android Cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: android
-          key: android-aarch64
-
-      - name: Install cargo-apk
-        run: cargo install cargo-apk --locked
-
-      # The Android client is an explicitly experimental sideload build. Give
-      # each CI run an ephemeral Beta certificate so release optimisation can
-      # stay enabled without committing a private signing key to the repo.
-      - name: Generate ephemeral Beta signing key
-        shell: bash
-        run: |
-          set -eu
-          keytool -genkeypair \
-            -keystore "$RUNNER_TEMP/meatshell-beta.keystore" \
-            -storepass android \
-            -keypass android \
-            -alias meatshell-beta \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 3650 \
-            -dname "CN=MeatShell Beta, O=MeatShell, C=CN" \
-            -noprompt
-
-      - name: Build Android Beta APK
-        shell: bash
-        env:
-          CARGO_APK_RELEASE_KEYSTORE: ${{ runner.temp }}/meatshell-beta.keystore
-          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: android
-        run: |
-          set -eu
-          cargo apk build \
-            --manifest-path android/Cargo.toml \
-            --release \
-            --target aarch64-linux-android \
-            --lib
-
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          APK="$(find android/target target -type f -path '*/apk/*.apk' -print -quit 2>/dev/null || true)"
-          test -n "$APK"
-          ASSET="meatshell-${VERSION}-android-arm64-beta.apk"
-          cp "$APK" "$ASSET"
-          echo "ANDROID_APK=$ASSET" >> "$GITHUB_ENV"
-
-      - name: Upload Android APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-arm64-beta
-          path: ${{ env.ANDROID_APK }}
-
-      - name: Attach Android APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ANDROID_APK }}
-          fail_on_unmatched_files: true
 
   build-flatpak:
     name: linux-x86_64-flatpak
@@ -684,7 +534,6 @@ jobs:
     name: ci-build-auto-release
     needs:
       - build
-      - build-android
       - build-flatpak
       - build-linux-aarch64-glibc228
       - build-linux-x86_64-glibc228

@@ -17,8 +17,25 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **新增 MCP 活动审计。** GUI 的「设置 → 界面 → MCP」每 1 秒轮询 `mcp_activity.jsonl`，实时展示 AI 客户端通过 MCP 执行的活动（时间、调用方、工具、命令 / 路径、状态、耗时），支持 Refresh / Clear；`meatshell mcp serve` 每次被调用都会追加一条 JSON 记录，只写入白名单参数，命令内联的口令 / token 先脱敏、明文密钥不落盘，文件超过约 2 MiB 自动裁剪为最新 1000 条。
 - **Add an MCP activity audit.** Settings → Interface → MCP now polls `mcp_activity.jsonl` every second and shows the MCP calls an AI client has made (timestamp, caller, tool, command / path, status, duration) with Refresh / Clear actions. `meatshell mcp serve` appends one JSON record per invocation; only whitelisted arguments are logged, inline tokens / passwords in commands are redacted first, and plaintext secrets never reach the file, which is capped at about 2 MiB and trimmed to the newest 1000 records.
 
-- **停止构建 Intel Mac 安装包。** 发布矩阵和独立测试流水线不再构建 `macos-x86_64`，后续 macOS 版本仅提供 Apple Silicon 包，以减少发布耗时和维护成本。
-- **Stop building Intel Mac packages.** Remove `macos-x86_64` from both the release matrix and the dedicated test workflow; future macOS releases provide Apple Silicon packages only, reducing CI time and maintenance cost.
+## [0.7.3] - 2026-09-07
+
+- **停止 Android Beta 支持。** 移除 Android 客户端源码、APK 构建和发布任务，发布流程仅保留桌面平台。
+- **Discontinue Android Beta support.** Remove the Android client source, APK builds, and release tasks; releases now target desktop platforms only.
+
+- **修复内置文本查看器和编辑器的行号错位。** 行号按正文自动折行后的显示高度排列，保留空行与末尾换行，并随编辑、替换和窗口宽度变化同步更新；查找与替换输入框的文字和光标统一垂直居中。
+- **Fix line-number alignment in the built-in text viewer and editor.** Align the gutter with wrapped text, preserve blank and trailing lines, and update it after edits, replacements, and width changes. Vertically center text and cursors in the find and replace fields.
+
+- **修复串口会话误显示 SSH 端口（#406）。** 左侧和完整会话列表现在显示串口设备名、波特率及通信参数（如 `115200 baud · 8N1`），不再显示无关的 `:22`。
+- **Fix serial sessions showing an SSH port (#406).** The sidebar and full session list now show the serial device, baud rate, and framing (such as `115200 baud · 8N1`) instead of an unrelated `:22`.
+
+- **修复会话输入框提示文字重叠（#415）。** 提示文字置于输入控件下层，获得焦点时隐藏，避免与输入法尚未提交的组合文字重叠；覆盖普通输入框、分组框和端口转发字段。
+- **Fix overlapping placeholders in session fields (#415).** Placeholders render beneath input controls and hide on focus to avoid overlapping uncommitted IME composition text, covering labeled inputs, the group field, and port-forward fields.
+
+- **修复命令输入框全选与多行滚动（#416，输入框部分）。** `Ctrl+A` / `Cmd+A` 现在全选文本，支持滚动查看多行内容，并在选择时跟随光标。该更新不包含 `top` 无法通过 `Ctrl+C` 退出问题的修复。
+- **Fix command-input select-all and multiline scrolling (input-field portion of #416).** `Ctrl+A` / `Cmd+A` now selects all text. Multiline content can scroll, and selection keeps the cursor visible. This update does not resolve the reported inability to exit `top` with `Ctrl+C`.
+
+- **保留 Intel Mac 安装包。** 正式发布同时提供 Intel (`macos-x86_64`) 和 Apple Silicon (`macos-aarch64`) 安装包。
+- **Keep Intel Mac packages.** Releases provide packages for both Intel (`macos-x86_64`) and Apple Silicon (`macos-aarch64`).
 
 ## [0.7.2] - 2026-09-04
 

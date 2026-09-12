@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{OutputHighlightRule, QuickCommand, Secret, Session};
+use super::{DockEdgeSer, OutputHighlightRule, QuickCommand, Secret, Session};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WslProfile {
@@ -57,6 +57,13 @@ pub(crate) fn default_sftp_height() -> f32 {
 }
 pub(crate) fn default_sftp_tree_width() -> f32 {
     160.0
+}
+
+pub(crate) fn default_sftp_visible_columns() -> Vec<String> {
+    ["name", "type", "size", "modified", "permissions", "owner", "group"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 pub(crate) fn default_quick_panel_width() -> f32 {
@@ -212,6 +219,10 @@ pub struct ConfigFile {
     pub sftp_tree_width: f32,
     #[serde(default)]
     pub sftp_dock: String,
+    /// Columns shown in the SFTP file list. Unknown values are ignored by the
+    /// accessor so newer builds can safely read older or hand-edited configs.
+    #[serde(default = "default_sftp_visible_columns")]
+    pub sftp_visible_columns: Vec<String>,
     /// Last window size in logical px (0 = unset → use the built-in default).
     /// Lets users keep their preferred window size across restarts.
     #[serde(default)]
@@ -284,6 +295,12 @@ pub struct ConfigFile {
     /// resource panel / wallpaper overlay) to users still sitting on old defaults.
     #[serde(default)]
     pub defaults_rev: u32,
+    /// Per-edge stacks of simultaneously-expanded docked panels (#dock-stack),
+    /// e.g. session list + Quick shared on the left edge, split vertically.
+    /// Empty (or <2 slots on a valid edge) → the legacy single-panel-per-edge
+    /// layout.
+    #[serde(default)]
+    pub dock_stacks: Vec<DockEdgeSer>,
 }
 
 /// Portable export file (issue #46): sessions with everything in plaintext

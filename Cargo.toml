@@ -1,6 +1,6 @@
 [package]
 name = "meatshell"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2021"
 authors = ["meatshell contributors"]
 description = "A lightweight FinalShell-style SSH/terminal client written in Rust + Slint"
@@ -8,6 +8,19 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/your/meatshell"
 readme = "README.md"
 rust-version = "1.75"
+
+[package.metadata.deb]
+extended-description = "MeatShell is a cross-platform terminal client written in Rust and Slint."
+depends = "$auto"
+# 包分类和优先级
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/meatshell", "usr/bin/meatshell", "755"],
+    ["assets/meatshell.desktop", "usr/share/applications/", "644"],
+    ["assets/icon@512.png", "usr/share/icons/hicolor/512x512/apps/meatshell.png", "644"],
+    ["THIRD_PARTY_NOTICES.md", "usr/share/doc/meatshell/", "644"],
+]
 
 [dependencies]
 slint = { version = "1.8", features = ["compat-1-2"] }
@@ -113,7 +126,7 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 
 # Use jemalloc on Unix-like desktop/mobile targets. Unsupported targets keep
 # Rust's portable System allocator without pulling in platform dependencies.
-[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "android", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))'.dependencies]
 jemallocator = "0.5"
 
 # Compile the Skia renderer in *only* on macOS (feature is additive over the base
