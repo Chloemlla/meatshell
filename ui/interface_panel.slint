@@ -31,7 +31,8 @@ export struct McpActivityRow {
     caller: string,   // client identity, e.g. "claude-desktop/1.0.0"
     tool: string,     // tool name for tools/call, else the method ("initialize"/"tools/list")
     session: string,  // session reference or ""
-    detail: string,   // command text / file path / error text (truncated in Rust)
+    detail: string,   // one-line summary (whitespace collapsed), shown while collapsed
+    detail_full: string, // command text / file path / error text (truncated in Rust)
     state: int,       // 0 = running (tool_start), 1 = ok/connect/method, 2 = error
     duration: string, // "1.2s" or ""
 }
@@ -1687,7 +1688,9 @@ export component InterfacePanel inherits Rectangle {
                     color: Theme.text-muted; font-size: 12px * Theme.panel-font; wrap: word-wrap;
                 }
                 for r[i] in root.mcp-activity-rows : Rectangle {
-                    height: root.mcp-expanded-row == i ? max(46px, body.preferred-height) : 46px;
+                    // Grow to fit the body: a command or error carrying line breaks
+                    // is taller than 46px and would otherwise spill over the next row.
+                    height: max(46px, body.preferred-height);
                     border-radius: Theme.radius-sm;
                     background: Theme.bg-root;
                     body := VerticalLayout {
@@ -1706,7 +1709,7 @@ export component InterfacePanel inherits Rectangle {
                             spacing: 6px;
                             if r.session != "" : Text { text: r.session; color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide; vertical-alignment: center; }
                             Text {
-                                text: r.detail;
+                                text: root.mcp-expanded-row == i ? r.detail_full : r.detail;
                                 color: r.state == 2 ? Theme.danger : r.state == 0 ? Theme.accent : Theme.text-secondary;
                                 font-size: 11px * Theme.panel-font;
                                 horizontal-stretch: 1;

@@ -790,6 +790,12 @@ fn mcp_activity_row(value: &serde_json::Value) -> McpActivityRow {
             }
         }
     }
+    // A collapsed row is one line tall, and a `Text` cannot elide away an
+    // embedded line break, so the summary collapses every whitespace run to a
+    // single space (a heredoc script would otherwise stretch the row to its full
+    // line count). The raw text is kept for the expanded row.
+    let detail_full = detail;
+    let detail: String = detail_full.split_whitespace().collect::<Vec<_>>().join(" ");
     let duration = match value.get("duration_ms") {
         Some(v) if v.is_number() => {
             let ms = v.as_f64().unwrap_or(0.0);
@@ -818,6 +824,7 @@ fn mcp_activity_row(value: &serde_json::Value) -> McpActivityRow {
         tool: tool.into(),
         session: str_of("session_id").into(),
         detail: detail.into(),
+        detail_full: detail_full.into(),
         state,
         duration: duration.into(),
     }
