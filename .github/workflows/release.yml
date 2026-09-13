@@ -581,7 +581,7 @@ jobs:
           tag_name: ${{ steps.ci_tag.outputs.ci_tag }}
           name: "MeatShell ${{ steps.ci_tag.outputs.ci_version }} CI build ${{ steps.ci_tag.outputs.ci_short_sha }}"
           draft: false
-          prerelease: true
+          prerelease: false
           make_latest: true
           generate_release_notes: true
           files: release-assets/*
