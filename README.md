@@ -21,12 +21,28 @@ JVM 压到几十 MB 原生级别。
 
 ## 下载与安装
 
-每次打 `v*` 标签，GitHub Actions 会自动构建 **Windows / Linux / macOS** 三平台二进制，
-发布到 [Releases](https://github.com/Chloemlla/meatshell/releases) 页面。
+构建产物由同一个 GitHub Actions 工作流产出，发布到
+[Releases](https://github.com/Chloemlla/meatshell/releases) 页面，有两条发布路径：
+
+- **推送到 `main`**：构建成功后自动发布为 `v<版本>-ci-<提交短哈希>`（例如
+  `v0.7.3-ci-8d4f9dbf`），并标记为仓库的 Latest；产物文件名统一为 `meatshell-<版本>-*`，
+  所以 main 上的每个提交都有可以直接下载的构建。
+- **打 `v*` 标签**：正式发布，产物附在对应标签的 release 上，版本号取自 `Cargo.toml`。
+
+每次构建覆盖 Windows / Linux / macOS 与 x86_64 / aarch64：
+
+| 平台          | 文件                                                                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows       | `meatshell-*-windows-x86_64.zip`、`meatshell-*-windows-x86_64.msi`                                                                                        |
+| Linux x86_64  | `meatshell-*-linux-x86_64.tar.gz`、`meatshell-*-linux-x86_64-glibc228.tar.gz`、`meatshell-*-linux-x86_64.AppImage`、`meatshell-*-linux-x86_64.flatpak`      |
+| Linux aarch64 | `meatshell-*-linux-aarch64.tar.gz`、`meatshell-*-linux-aarch64-glibc228.tar.gz`                                                                           |
+| Debian/Ubuntu | `meatshell_*-1_amd64.deb`、`meatshell_*-1_arm64.deb`                                                                                                      |
+| macOS         | `meatshell-*-macos-aarch64.zip`（Apple 芯片）、`meatshell-*-macos-x86_64.zip`（Intel）                                                                     |
 
 ### Windows
 
-下载 `meatshell-*-windows-x86_64.zip`，解压后双击 `meatshell.exe`。
+下载 `meatshell-*-windows-x86_64.zip`，解压后双击 `meatshell.exe`；也可以用
+`meatshell-*-windows-x86_64.msi` 安装。
 
 ### Linux
 
@@ -42,7 +58,10 @@ chmod +x install-linux.sh && ./install-linux.sh
 `/usr/local/share/applications/meatshell.desktop`，图标安装到
 `/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`，并清理旧版 tar 包留下的用户级同名启动器。
 
-> 需要 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+）。Wayland 下首次装完图标可能要注销重登一次。
+> 通用的 `linux-x86_64.tar.gz` 在 Ubuntu 22.04 上构建，需要 glibc ≥ 2.35（Ubuntu 22.04+ /
+> Debian 12+）；更老的发行版（CentOS 8、Debian 10、Ubuntu 18.04 等）请下载 `-glibc228`
+> 变体，它在 Debian 10 容器里构建，只需要 glibc ≥ 2.28。也可以直接用 `.AppImage`、
+> `.flatpak` 或 `.deb`。Wayland 下首次装完图标可能要注销重登一次。
 
 从源码 `cargo run`（Linux Mint / Ubuntu / Debian）需要先安装 Slint/winit/rfd 等用到的系统开发包：
 
@@ -94,6 +113,8 @@ open /Applications/meatshell.app
     / `~/Library/Application Support/meatshell/sessions.json`（macOS）
 - [x] SSH（`russh`，纯 Rust）：密码 / 私钥 / 加密私钥（密码短语）
 - [x] SFTP 文件浏览 + 上传 / 下载（拖拽）+ 终端内 ZMODEM（`sz` 下载 / `rz` 多文件上传）
+- [x] 内置文本查看器 / 编辑器：在 SFTP 里直接查看或编辑远端文本，带行号与查找替换，保存回远端；超过 512 KiB、行数过多或存在超长单行时拒绝打开并建议用外部编辑器
+- [x] WebDAV 同步：手动把会话配置上传到 WebDAV 或从 WebDAV 下载（设置 → WebDAV）
 - [x] SSH 端口转发 / 隧道：本地 -L / 远程 -R / 动态 -D（SOCKS5）
 - [x] 快捷命令 + 命令输入框（可群发到所有会话）+ 命令历史
 - [x] 串口 / Telnet 会话
@@ -296,22 +317,42 @@ SFTP 工具。每个工具的 `session_id` 参数都接受会话的显示名称�
 ```
 meatshell/
 ├── Cargo.toml
-├── build.rs                 # Slint 编译器入口
-├── ui/
-│   ├── app.slint            # 顶层窗口
-│   ├── theme.slint          # 设计 tokens
-│   ├── widgets.slint        # 可复用按钮 / 输入框 / sparkline
-│   ├── sidebar.slint        # 左侧系统监控面板
-│   ├── tabs.slint           # 顶部标签栏
-│   ├── welcome.slint        # 欢迎页 / 快速连接
-│   ├── session_dialog.slint # 新建 / 编辑会话弹框
-│   └── terminal_view.slint  # 终端视图（v0.1 行缓冲）
+├── build.rs                      # Slint 编译器入口
+├── ui/                           # Slint 界面（声明式）
+│   ├── app.slint                 # 顶层窗口与各页面
+│   ├── interface_panel.slint     # 设置面板（界面 / MCP / WebDAV / 更新检查…）
+│   ├── sftp_panel.slint          # SFTP 文件面板与传输队列
+│   ├── sidebar.slint             # 左侧本机资源监控
+│   ├── system_info_window.slint  # 系统信息窗口
+│   ├── proc_window.slint         # 进程列表窗口
+│   ├── tabs.slint                # 顶部标签栏与分屏
+│   ├── welcome.slint             # 欢迎页 / 快速连接
+│   ├── session_dialog.slint      # 新建 / 编辑会话弹框
+│   ├── confirm_dialog.slint      # 确认弹框
+│   ├── terminal_view.slint       # 终端视图
+│   ├── theme.slint               # 设计 tokens
+│   └── widgets.slint             # 可复用按钮 / 输入框 / sparkline
+├── packaging/                    # AUR（`PKGBUILD`）与 Flatpak 清单
 └── src/
-    ├── main.rs
-    ├── app.rs               # UI ↔ 后端桥接
-    ├── config.rs            # 会话 JSON 持久化
-    ├── system.rs            # CPU / 内存 / 网络采样
-    └── ssh.rs               # SSH 会话 worker
+    ├── main.rs                   # 入口：GUI / `cli` / `mcp serve`
+    ├── app.rs + app/             # UI ↔ 后端桥接（窗口、标签、会话、终端、SFTP、WebDAV…）
+    ├── ui/                       # Slint 模块入口（`include_modules!`）
+    ├── config/                   # 会话 / 快捷命令 / 凭据持久化，FinalShell 导入
+    ├── session/                  # 连接上下文，主机密钥 / 凭据 / MFA 待确认状态
+    ├── ssh/                      # SSH 客户端（russh、known_hosts、出站代理、PPK）
+    ├── sftp/                     # SFTP（浏览 / 上传 / 下载 / 内置编辑器）
+    ├── tunnel/                   # 端口转发 -L / -R / -D
+    ├── terminal/                 # 终端模拟：VT 渲染、字符集、本地 / 串口 / Telnet、ZMODEM
+    ├── webdav/                   # WebDAV 同步
+    ├── resource/                 # 本机与远端资源采样
+    ├── layout/                   # 终端分屏布局
+    ├── automation/               # CLI 与 MCP 共用的工具实现
+    ├── cli/                      # 命令行子命令
+    ├── mcp/                      # MCP stdio 服务、工具实现与活动审计
+    ├── i18n/                     # 界面文案
+    ├── logging/                  # tracing 与错误日志
+    ├── wallpaper/                # 背景图
+    └── allocator/                # 按平台选择的堆分配器（Windows 用 mimalloc）
 ```
 
 ## 开发提示
@@ -325,7 +366,10 @@ meatshell/
 
 ## 发版
 
-不要直接手动修改 `Cargo.toml` 后再打标签。使用发布脚本，让 Git tag 指向的提交本身就已经包含正确版本号：
+推送到 `main` 就会构建，并把产物自动发布成 `v<版本>-ci-<短哈希>`（Latest）；版本号始终取自
+`Cargo.toml`，所以不打标签也能拿到 main 上的构建，只是版本号不会变。
+
+正式发版不要直接手动修改 `Cargo.toml` 后再打标签。使用发布脚本，让 Git tag 指向的提交本身就已经包含正确版本号：
 
 ```powershell
 .\scripts\release.ps1 v0.6.0 -Push

@@ -22,13 +22,30 @@ the tens-of-MB range of a native binary.
 
 ## Download & install
 
-Every `v*` tag triggers a GitHub Actions build that produces native binaries for
-**Windows / Linux / macOS**, published on the
-[Releases](https://github.com/Chloemlla/meatshell/releases) page.
+One GitHub Actions workflow produces everything on the
+[Releases](https://github.com/Chloemlla/meatshell/releases) page, published along two paths:
+
+- **Push to `main`**: a successful build is published as `v<version>-ci-<short-sha>`
+  (for example `v0.7.3-ci-8d4f9dbf`) and marked as the repository's Latest, with asset
+  names normalised to `meatshell-<version>-*`, so every commit on main has a build you
+  can download.
+- **Push a `v*` tag**: an official release, with the same assets attached to that tag,
+  the version taken from `Cargo.toml`.
+
+Each build covers Windows / Linux / macOS on both x86_64 and aarch64:
+
+| Platform      | Files                                                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows       | `meatshell-*-windows-x86_64.zip`, `meatshell-*-windows-x86_64.msi`                                                                                 |
+| Linux x86_64  | `meatshell-*-linux-x86_64.tar.gz`, `meatshell-*-linux-x86_64-glibc228.tar.gz`, `meatshell-*-linux-x86_64.AppImage`, `meatshell-*-linux-x86_64.flatpak` |
+| Linux aarch64 | `meatshell-*-linux-aarch64.tar.gz`, `meatshell-*-linux-aarch64-glibc228.tar.gz`                                                                     |
+| Debian/Ubuntu | `meatshell_*-1_amd64.deb`, `meatshell_*-1_arm64.deb`                                                                                               |
+| macOS         | `meatshell-*-macos-aarch64.zip` (Apple silicon), `meatshell-*-macos-x86_64.zip` (Intel)                                                             |
 
 ### Windows
 
-Download `meatshell-*-windows-x86_64.zip`, unzip, and run `meatshell.exe`.
+Download `meatshell-*-windows-x86_64.zip`, unzip, and run `meatshell.exe`; the
+`meatshell-*-windows-x86_64.msi` installer works too.
 
 ### Linux
 
@@ -45,8 +62,12 @@ The installer places the binary at `/usr/local/bin/meatshell`, the launcher at
 `/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`. It also removes a
 stale same-named user launcher left by older tarball installers.
 
-> Requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+). On Wayland you may need to
-> log out/in once after installing the icon.
+> The plain `linux-x86_64.tar.gz` is built on Ubuntu 22.04 and requires glibc ≥ 2.35
+> (Ubuntu 22.04+ / Debian 12+); older distributions (CentOS 8, Debian 10, Ubuntu 18.04,
+> …) should take the `-glibc228` variant instead, which is built inside a Debian 10
+> container and needs only glibc ≥ 2.28. The `.AppImage`, `.flatpak`, and `.deb` builds
+> are alternatives as well. On Wayland you may need to log out/in once after installing
+> the icon.
 
 Building from source with `cargo run` on Linux Mint / Ubuntu / Debian requires
 the Slint/winit/rfd system development packages:
@@ -99,6 +120,8 @@ open /Applications/meatshell.app
     / `~/Library/Application Support/meatshell/sessions.json` (macOS)
 - [x] SSH (`russh`, pure Rust): password / private key / encrypted key (passphrase)
 - [x] SFTP browser + upload / download (drag-and-drop) + in-terminal ZMODEM (`sz` download / `rz` multi-file upload)
+- [x] Built-in text viewer / editor: open remote text in the SFTP panel for viewing or editing, with a line-number gutter, find and replace, and save back to the remote host; files above 512 KiB, with too many lines or with an over-long single line are refused with a hint to use an external editor
+- [x] WebDAV sync: upload or download the saved session configuration manually (Settings → WebDAV)
 - [x] SSH port forwarding / tunnels: local -L / remote -R / dynamic -D (SOCKS5)
 - [x] Quick commands + command box (broadcast to all sessions) + command history
 - [x] Serial / Telnet sessions
@@ -329,22 +352,42 @@ or file downloads are allowed.
 ```
 meatshell/
 ├── Cargo.toml
-├── build.rs                 # Slint compiler entry point
-├── ui/
-│   ├── app.slint            # top-level window
-│   ├── theme.slint          # design tokens
-│   ├── widgets.slint        # reusable buttons / inputs / sparkline
-│   ├── sidebar.slint        # left-hand system monitor panel
-│   ├── tabs.slint           # top tab bar
-│   ├── welcome.slint        # welcome page / quick connect
-│   ├── session_dialog.slint # new / edit session dialog
-│   └── terminal_view.slint  # terminal view (v0.1 line-buffered)
+├── build.rs                      # Slint compiler entry point
+├── ui/                           # Slint UI (declarative)
+│   ├── app.slint                 # top-level window and pages
+│   ├── interface_panel.slint     # settings panel (interface / MCP / WebDAV / update check…)
+│   ├── sftp_panel.slint          # SFTP file panel and transfer queue
+│   ├── sidebar.slint             # left-hand local system monitor
+│   ├── system_info_window.slint  # system information window
+│   ├── proc_window.slint         # process list window
+│   ├── tabs.slint                # top tab bar and split panes
+│   ├── welcome.slint             # welcome page / quick connect
+│   ├── session_dialog.slint      # new / edit session dialog
+│   ├── confirm_dialog.slint      # confirmation dialog
+│   ├── terminal_view.slint       # terminal view
+│   ├── theme.slint               # design tokens
+│   └── widgets.slint             # reusable buttons / inputs / sparkline
+├── packaging/                    # AUR (`PKGBUILD`) and Flatpak manifests
 └── src/
-    ├── main.rs
-    ├── app.rs               # UI ↔ backend bridge
-    ├── config.rs            # session JSON persistence
-    ├── system.rs            # CPU / memory / network sampling
-    └── ssh.rs               # SSH session worker
+    ├── main.rs                   # entry point: GUI / `cli` / `mcp serve`
+    ├── app.rs + app/             # UI ↔ backend bridge (windows, tabs, sessions, terminal, SFTP, WebDAV…)
+    ├── ui/                       # Slint module entry (`include_modules!`)
+    ├── config/                   # session / quick-command / credential persistence, FinalShell import
+    ├── session/                  # connection context, pending host key / credential / MFA state
+    ├── ssh/                      # SSH client (russh, known_hosts, outbound proxy, PPK)
+    ├── sftp/                     # SFTP (browse / upload / download / built-in editor)
+    ├── tunnel/                   # port forwarding -L / -R / -D
+    ├── terminal/                 # terminal emulation: VT rendering, charsets, local / serial / Telnet, ZMODEM
+    ├── webdav/                   # WebDAV sync
+    ├── resource/                 # local and remote resource sampling
+    ├── layout/                   # terminal split-pane layout
+    ├── automation/               # tool implementations shared by CLI and MCP
+    ├── cli/                      # command-line subcommands
+    ├── mcp/                      # MCP stdio server, tool implementations, activity audit
+    ├── i18n/                     # UI strings
+    ├── logging/                  # tracing and error logs
+    ├── wallpaper/                # background image
+    └── allocator/                # platform-selected heap allocator (mimalloc on Windows)
 ```
 
 ## Development notes
@@ -357,6 +400,10 @@ meatshell/
   trust and remembers the host key, while later key changes prompt again.
 
 ## Release
+
+Pushing to `main` already builds and publishes the artifacts as `v<version>-ci-<short-sha>`
+(Latest), with the version taken from `Cargo.toml` — so main always has a downloadable
+build even without a tag, it just keeps the same version number.
 
 Do not bump `Cargo.toml` by hand and then create a tag. Use the release helper
 so the tag points at a commit that already contains the matching Cargo version:
