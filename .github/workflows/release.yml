@@ -122,6 +122,16 @@ jobs:
           ACTUAL="$(target/${{ matrix.target }}/release/${{ matrix.bin }} --version)"
           test "$ACTUAL" = "meatshell ${EXPECTED}"
 
+      - name: Restore AppImage tooling cache
+        if: matrix.name == 'linux-x86_64'
+        id: appimage-tools
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            linuxdeploy
+            linuxdeploy-plugin-appimage
+          key: linuxdeploy-${{ runner.os }}-${{ runner.arch }}-v1
+
       - name: Build AppImage
         if: matrix.name == 'linux-x86_64'
         continue-on-error: true           # don't block the .tar.gz if AppImage fails
@@ -130,10 +140,15 @@ jobs:
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          wget -q -O linuxdeploy \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget -q -O linuxdeploy-plugin-appimage \
-            https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
+          # Both upstreams publish under a moving `continuous` tag, so only fetch
+          # what the restore step did not provide; bump the cache key above to
+          # pull fresh builds. Downloads land on a temp name and are renamed only
+          # on success, so a truncated transfer can neither be used as a tool in
+          # this run nor get stored in the cache and silently reused later.
+          [ -s linuxdeploy ] || { wget -q -O linuxdeploy.new \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage && mv linuxdeploy.new linuxdeploy; }
+          [ -s linuxdeploy-plugin-appimage ] || { wget -q -O linuxdeploy-plugin-appimage.new \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage && mv linuxdeploy-plugin-appimage.new linuxdeploy-plugin-appimage; }
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
 
           install -Dm755 target/${{ matrix.target }}/release/meatshell AppDir/usr/bin/meatshell
@@ -145,6 +160,19 @@ jobs:
 
           mv meatshell*.AppImage "meatshell-${VERSION}-linux-x86_64.AppImage"
           echo "APPIMAGE=meatshell-${VERSION}-linux-x86_64.AppImage" >> "$GITHUB_ENV"
+
+      # Split from the restore above on purpose: the step that downloads these
+      # is `continue-on-error`, and actions/cache's built-in save fails the job
+      # when its paths do not exist — exactly the state a tolerated download
+      # failure leaves behind. Save only what actually landed.
+      - name: Save AppImage tooling cache
+        if: matrix.name == 'linux-x86_64' && steps.appimage-tools.outputs.cache-hit != 'true' && hashFiles('linuxdeploy', 'linuxdeploy-plugin-appimage') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            linuxdeploy
+            linuxdeploy-plugin-appimage
+          key: linuxdeploy-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Install cargo-deb
         if: runner.os == 'Linux'
@@ -329,10 +357,15 @@ jobs:
 
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        # No `cache-key` override on purpose: the action's default is
+        # `flatpak-builder-<arch>-<sha256(manifest)>`, stable across commits,
+        # with a `flatpak-builder-<arch>` restore-key fallback. Passing
+        # `github.sha` here — as this job used to — minted a brand new key on
+        # every push, and the fallback could not prefix-match it either, so the
+        # ccache state in `.flatpak-builder` was never restored.
         with:
           bundle: meatshell-${{ github.ref_name }}-linux-x86_64.flatpak
           manifest-path: packaging/flatpak/io.github.chloemlla.meatshell.yml
-          cache-key: flatpak-builder-${{ github.sha }}
 
       - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
