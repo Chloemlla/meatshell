@@ -1905,10 +1905,10 @@ fn open_window(
     // models: a model change can synchronously run binding callbacks, and one
     // of those re-entering `layout.borrow*()` while this shared guard is still
     // alive would panic (RefCell already borrowed) → abort in release.
-    let lay = layout.borrow().clone();
+    let lay = (*layout.borrow()).clone();
     refresh_panes(
         &window,
-        &layout.borrow(),
+        &lay,
         content_size.get(),
         &tabs_model,
         &panes_model,
@@ -1932,10 +1932,10 @@ fn open_window(
             }
             content_size.set(next);
             if let Some(win) = weak.upgrade() {
-                let lay = layout.borrow().clone();
+                let lay = (*layout.borrow()).clone();
                 refresh_panes(
                     &win,
-                    &layout.borrow(),
+                    &lay,
                     content_size.get(),
                     &tabs_model,
                     &panes_model,

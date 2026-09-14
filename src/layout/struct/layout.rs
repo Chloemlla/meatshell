@@ -29,7 +29,7 @@ pub struct Leaf {
 }
 
 /// The whole layout plus an id allocator and which leaf currently has focus.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Layout {
     pub root: Node,
     pub focused: u64,
