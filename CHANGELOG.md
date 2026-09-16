@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **内置编辑器支持实时基础语法染色并优化大文本显示。** 按扩展名识别 Rust、Python、Shell、JSON、YAML、TOML、JavaScript/TypeScript 和 C/C++，区分关键字、字符串、注释、数字和配置键，并适配深浅主题。行号复用原生排版，仅绘制可见行号；滚动和光标闪烁复用排版缓存。超过 10,000 行的文本停止读取并提示文本过大，保留现有字节大小限制。
+- **Add live lexical highlighting and improve large-text display in the built-in editor.** Detect Rust, Python, Shell, JSON, YAML, TOML, JavaScript/TypeScript, and C/C++ by extension, with theme-aware colors for keywords, strings, comments, numbers, and configuration keys. Draw only visible gutter numbers using native text layout, and reuse layouts when scrolling or blinking the cursor. Stop reading files over 10,000 lines with a text-too-large message, retaining the existing byte limit.
+
 ## [0.7.3] - 2026-09-07
 
 - **停止 Android Beta 支持。** 移除 Android 客户端源码、APK 构建和发布任务，发布流程仅保留桌面平台。

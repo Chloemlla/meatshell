@@ -289,9 +289,9 @@ pub(super) fn apply_session_event_to_window(
         } => {
             if error.is_empty() {
                 // Open the built-in viewer/editor (#70).
-                win.set_editor_lines(editor_lines_for(&content));
                 win.set_editor_path(path.into());
                 win.set_editor_name(name.into());
+                editor_syntax::refresh(win, &content);
                 win.set_editor_content(content.into());
                 win.set_editor_readonly(!edit);
                 win.set_editor_dirty(false);

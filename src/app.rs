@@ -6558,18 +6558,6 @@ fn should_drop_macos_bare_ctrl_marker(key: &str, ctrl: bool, is_macos: bool) -> 
         )
 }
 
-/// `app_cursor` mirrors the remote terminal's DECCKM mode (`\x1b[?1h/l`):
-/// when true the four arrow keys must use SS3 sequences (`\x1bOA`…) instead
-/// of the default CSI sequences (`\x1b[A`…).  Full-screen apps like nano and
-/// vim set this mode on startup.
-/// Preserve logical lines (including blank and trailing lines) for the gutter.
-/// Slint measures each line with the same wrapping and font as the editor.
-fn editor_lines_for(content: &str) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(
-        content.split('\n').map(SharedString::from).collect::<Vec<_>>(),
-    ))
-}
-
 /// Write `text` to the system clipboard. Call from a dedicated thread, never the
 /// UI thread (arboard pumps the Win32 message loop / blocks).
 ///
@@ -6783,3 +6771,6 @@ mod log_highlight_tests;
 #[cfg(test)]
 #[path = "../tests/app/text_editor/mod.rs"]
 mod text_editor_tests;
+
+#[path = "app/editor_syntax.rs"]
+mod editor_syntax;

@@ -702,14 +702,10 @@ pub(super) fn wire_sftp_callbacks(
         });
     }
 
-    // Rebuild the editor's line-number gutter after each edit (#81). The text
-    // comes straight from the TextInput so we don't re-read the property.
     {
         let weak = window.as_weak();
-        window.on_editor_recount(move |text: SharedString| {
-            if let Some(w) = weak.upgrade() {
-                w.set_editor_lines(editor_lines_for(text.as_str()));
-            }
+        window.on_editor_highlight(move |text| {
+            if let Some(w) = weak.upgrade() { editor_syntax::refresh(&w, text.as_str()); }
         });
     }
 
@@ -807,9 +803,9 @@ pub(super) fn wire_sftp_callbacks(
             let replaced = w
                 .get_editor_content()
                 .replace(query.as_str(), replacement.as_str());
+            editor_syntax::refresh(&w, &replaced);
             w.set_editor_content(replaced.clone().into());
             w.set_editor_dirty(true);
-            w.set_editor_lines(editor_lines_for(&replaced));
             w.set_editor_match_count(0);
         });
     }

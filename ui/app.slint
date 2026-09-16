@@ -549,7 +549,10 @@ export component AppWindow inherits Window {
     // step with our theme — otherwise in light mode they keep the platform/dark
     // palette and their text/borders blend into the light dialog background.
     init => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
-    changed dark-mode => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+        if root.editor-open { root.editor-highlight-pending = true; }
+    }
     in-out property <string> term-font-family <=> Theme.term-font-family;
     in-out property <length> term-font-size <=> Theme.term-font-size;
     in-out property <float> terminal-line-spacing: 1.0;
@@ -782,14 +785,25 @@ export component AppWindow inherits Window {
     // Opening the dynamic editor and focusing its TextInput in the same event
     // can re-enter Windows AccessKit while it is registering the new item tree.
     property <bool> editor-focus-pending: false;
-    in-out property <[string]> editor-lines; // logical lines, measured with editor wrapping
+    in-out property <string> editor-syntax-source;
+    in-out property <string> editor-syntax-spans;
+    in-out property <string> editor-language;
+    property <bool> editor-highlight-pending: false;
+    Timer {
+        interval: 100ms;
+        running: root.editor-open && root.editor-highlight-pending;
+        triggered => {
+            root.editor-highlight-pending = false;
+            root.editor-highlight(root.editor-content);
+        }
+    }
+    callback editor-highlight(string);
     in-out property <string> editor-find-query;
     in-out property <string> editor-replace-text;
     in-out property <int> editor-match-count: 0;
     in-out property <int> editor-find-position: -1;
     callback save-file();                     // Ctrl+S / Save button (edit only)
     callback close-editor();                  // X / Esc; discard unsaved edits (#287)
-    callback editor-recount(string);          // rebuild line numbers after an edit
     callback editor-count-matches(string /* content */, string /* query */) -> int;
     callback editor-find-step(string /* content */, string /* query */, int /* current */, bool /* reverse */) -> EditorFindResult;
     callback editor-replace-all(string /* query */, string /* replacement */);
@@ -2424,7 +2438,7 @@ export component AppWindow inherits Window {
                             padding-bottom: 6px;
                             spacing: 8px;
                             Text {
-                                text: root.editor-name
+                                text: root.editor-name + "  ·  " + root.editor-language
                                     + (root.editor-readonly
                                         ? "  ·  " + @tr("Read-only")
                                         : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""));
@@ -2572,39 +2586,21 @@ export component AppWindow inherits Window {
                                 width: 48px;
                                 background: Theme.bg-panel-alt;
                                 clip: true;
-                                VerticalLayout {
+                                TextInput {
+                                    x: 0px;
                                     y: ed-scroll.viewport-y + 8px;
-                                    width: parent.width;
-                                    height: self.preferred-height;
-                                    spacing: 0px;
-                                    padding: 0px;
-                                    for line[index] in root.editor-lines: Rectangle {
-                                        height: line-measure.preferred-height;
-                                        // Use TextInput for identical font fallback,
-                                        // wrapping and empty-line metrics. The clipped
-                                        // measurement sits outside the visible gutter.
-                                        line-measure := TextInput {
-                                            x: parent.width;
-                                            width: edit-input.width;
-                                            height: self.preferred-height;
-                                            text: line;
-                                            read-only: true;
-                                            single-line: false;
-                                            wrap: char-wrap;
-                                            font-family: edit-input.font-family;
-                                            font-size: edit-input.font-size;
-                                        }
-                                        Text {
-                                            width: parent.width - 6px;
-                                            height: line-measure.preferred-height;
-                                            text: "\{index + 1}";
-                                            horizontal-alignment: right;
-                                            vertical-alignment: top;
-                                            font-family: edit-input.font-family;
-                                            font-size: edit-input.font-size;
-                                            color: Theme.text-muted;
-                                        }
-                                    }
+                                    width: edit-input.width;
+                                    height: edit-input.height;
+                                    text: root.editor-content;
+                                    syntax-source: root.editor-content;
+                                    line-number-width: parent.width - 6px;
+                                    read-only: true;
+                                    enabled: false;
+                                    single-line: false;
+                                    wrap: edit-input.wrap;
+                                    font-family: edit-input.font-family;
+                                    font-size: edit-input.font-size;
+                                    color: Theme.text-muted;
                                 }
                             }
                             Rectangle { width: 1px; background: Theme.border-subtle; }
@@ -2632,6 +2628,8 @@ export component AppWindow inherits Window {
                                         width: max(1px, ed-scroll.visible-width - 16px);
                                         height: max(ed-scroll.visible-height - 16px, self.preferred-height);
                                         text <=> root.editor-content;
+                                        syntax-source: root.editor-syntax-source;
+                                        syntax-spans: root.editor-syntax-spans;
                                         read-only: root.editor-readonly;
                                         single-line: false;
                                         wrap: char-wrap;
@@ -2657,7 +2655,7 @@ export component AppWindow inherits Window {
                                         }
                                         edited => {
                                             root.editor-dirty = true;
-                                            root.editor-recount(root.editor-content);
+                                            root.editor-highlight-pending = true;
                                             root.editor-match-count = root.editor-count-matches(
                                                 root.editor-content, root.editor-find-query);
                                         }
