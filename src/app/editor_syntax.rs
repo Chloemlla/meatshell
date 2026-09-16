@@ -12,7 +12,7 @@ pub(super) fn language(path: &str) -> &'static str {
     {
         "rs" => "Rust",
         "py" => "Python",
-        "sh" | "bash" | "zsh" => "Shell",
+        "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" | "command" => "Shell",
         "json" => "JSON",
         "yaml" | "yml" => "YAML",
         "toml" => "TOML",
@@ -31,7 +31,7 @@ pub(super) fn highlight(text: &str, path: &str) -> String {
     }
     static TOKENS: OnceLock<[regex::Regex; 3]> = OnceLock::new();
     let tokens = TOKENS.get_or_init(|| {
-        let common = r#"(?s:""".*?(?:"""|$)|'''.*?(?:'''|$))|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:0[xX][0-9a-fA-F]+|[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\b|\b[A-Za-z_][A-Za-z_0-9]*\b"#;
+        let common = r#"(?s:""".*?(?:"""|$)|'''.*?(?:'''|$))|"(?:\\.|[^"\\r\\n])*"|'(?:\\.|[^'\\r\\n])*'|`(?:\\.|[^`\\r\\n])*`|\b(?:0[xX][0-9a-fA-F]+|[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\b|\b[A-Za-z_][A-Za-z_0-9]*\b"#;
         [common.to_string(), format!(r"\#[^\r\n]*|{common}"),
             format!(r"(?s:/\*.*?(?:\*/|$))|//[^\r\n]*|{common}")]
             .map(|pattern| regex::Regex::new(&pattern).expect("editor token regex"))
@@ -48,7 +48,7 @@ pub(super) fn highlight(text: &str, path: &str) -> String {
     let keywords = match language {
         "Rust" => "fn let mut pub struct enum impl trait use mod const static match if else for while loop in return break continue async await move ref self Self where as unsafe dyn type crate super extern union",
         "Python" => "def class import from try except finally with lambda yield pass raise and or not if elif else for while in return break continue async await as is global nonlocal del assert",
-        "Shell" => "if then elif else fi for while until in do done case esac function local export readonly return break continue select time coproc",
+        "Shell" => "if then elif else fi for while until in do done case esac function local export readonly return break continue select time coproc getopts shift unset source alias unalias test echo printf cd pwd read mapfile declare typeset let eval exec exit trap wait kill",
         "JavaScript" => "let const var function class extends if else for while do in of return break continue async await new switch case default throw try catch finally export import from interface type typeof instanceof void delete this super implements public private protected",
         "C/C++" => "struct enum class namespace typedef using template typename const static extern volatile if else for while do return break continue switch case default try catch throw new delete public private protected virtual override auto void int char float double bool unsigned signed long short sizeof nullptr",
         _ => "",
@@ -88,7 +88,7 @@ pub(super) fn highlight(text: &str, path: &str) -> String {
     result
 }
 
-pub(super) fn refresh(window: &AppWindow, text: &str) {
+pub(super) fn refresh(window: &EditorWindow, text: &str) {
     let path = window.get_editor_path();
     window.set_editor_language(language(path.as_str()).into());
     let mut spans = highlight(text, path.as_str());
@@ -128,5 +128,29 @@ mod tests {
     fn plain_text_has_no_highlighting() {
         assert!(highlight("let x = 123", "notes.txt").is_empty());
         assert!(highlight("# comment\nvalue = 123", "config.toml").contains("ff6a9955"));
+    }
+
+    #[test]
+    fn shell_files_highlight_keywords_strings_comments_and_numbers() {
+        let result = highlight("#!/bin/sh\nif [ \"$1\" = \"ok\" ]; then\n  echo 42\nfi\n", "deploy.sh");
+        assert!(result.contains("ff6a9955"));
+        assert!(result.contains("ffce9178"));
+        assert!(result.contains("ffc586c0"));
+        assert!(result.contains("ffb5cea8"));
+    }
+
+    #[test]
+    fn unterminated_shell_quote_does_not_color_following_lines() {
+        let text = "sudo bash -c '\necho plain\necho \"quoted\"\n";
+        for entry in highlight(text, "deploy.sh")
+            .split(';')
+            .filter(|entry| !entry.is_empty())
+        {
+            let mut fields = entry.split(':');
+            let start: usize = fields.next().unwrap().parse().unwrap();
+            let end: usize = fields.next().unwrap().parse().unwrap();
+            let value = &text[start..end];
+            assert!(!value.contains('\n'), "span crossed a line boundary: {value:?}");
+        }
     }
 }

@@ -699,13 +699,13 @@ pub(super) fn wire_sftp_callbacks(
         });
     }
 
-    // Rebuild the editor's line-number gutter after each edit (#81). The text
-    // comes straight from the TextInput so we don't re-read the property.
+    // Refresh editor syntax after edits. The debounced callback keeps typing
+    // responsive while the native TextInput owns selection and IME handling.
     {
         let weak = editor.as_weak();
-        editor.on_editor_recount(move |text: SharedString| {
+        editor.on_editor_highlight(move |text: SharedString| {
             if let Some(w) = weak.upgrade() {
-                w.set_editor_lines(editor_lines_for(text.as_str()));
+                editor_syntax::refresh(&w, text.as_str());
             }
         });
     }
@@ -807,9 +807,9 @@ pub(super) fn wire_sftp_callbacks(
             let replaced = editor
                 .get_editor_content()
                 .replace(query.as_str(), replacement.as_str());
+            editor_syntax::refresh(&editor, &replaced);
             editor.set_editor_content(replaced.clone().into());
             editor.set_editor_dirty(true);
-            editor.set_editor_lines(editor_lines_for(&replaced));
             editor.set_editor_match_count(0);
         });
     }
