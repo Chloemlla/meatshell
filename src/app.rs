@@ -11,12 +11,12 @@ pub(crate) mod core;
 mod jump_list;
 pub mod launch;
 mod port_forward;
-mod session_trigger;
 mod quick_commands;
 mod resource_ui;
 mod session_event;
 mod session_models;
 mod session_runtime;
+mod session_trigger;
 mod sftp_callbacks;
 mod sftp_ui;
 mod sidebar;
@@ -30,12 +30,12 @@ mod window;
 
 use self::auth_dialogs::*;
 use self::port_forward::*;
-use self::session_trigger::*;
 use self::quick_commands::*;
 use self::resource_ui::*;
 use self::session_event::*;
 use self::session_models::*;
 use self::session_runtime::*;
+use self::session_trigger::*;
 use self::sftp_callbacks::*;
 use self::sftp_ui::*;
 use self::sidebar::*;
@@ -71,13 +71,11 @@ const RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// Echo produced shortly after a physical keypress should feel immediate. This
 /// temporary 120 Hz ceiling is still coalesced, then falls back to 30 Hz once
 /// the user stops typing so firehose output keeps its existing CPU protection.
-const INTERACTIVE_RENDER_MIN_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(8);
+const INTERACTIVE_RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 const INTERACTIVE_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(180);
 /// A scrolled-back viewport is content-anchored, so sustained output only
 /// needs occasional model refreshes for its scrollbar metadata (#306).
-const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(100);
+const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     if let Ok(bufs) = bufs.lock() {
@@ -166,8 +164,8 @@ use tokio::runtime::Runtime;
 
 use crate::app::core::{AppCore, TabRoute, TabRoutes, WindowRegistry, WindowState};
 use crate::config::{
-    is_reserved_session_group, named_display_groups, AuthMethod, ConfigStore,
-    OutputHighlightRule, Secret, Session, SessionKind,
+    is_reserved_session_group, named_display_groups, AuthMethod, ConfigStore, OutputHighlightRule,
+    Secret, Session, SessionKind,
 };
 use crate::i18n::t;
 use crate::layout::{LogicalRect, TerminalWheelHit};
@@ -175,9 +173,7 @@ use crate::resource::system::{format_bytes_per_sec, format_mem};
 use crate::resource::{LocalSnap, NetHist, TabStatus, TabStatuses};
 use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
-use crate::sftp::{
-    download_target_path, spawn_sftp, DownloadConflict, SftpHandles, SftpLastCwd,
-};
+use crate::sftp::{download_target_path, spawn_sftp, DownloadConflict, SftpHandles, SftpLastCwd};
 use crate::ssh::{
     format_mtime, format_size, spawn_session, test_session_auth, ProcInfo, SessionCommand,
     SessionEvent, SessionHandle, SystemDetails,
@@ -366,6 +362,7 @@ fn teardown_window(
     sftp_handles: &SftpHandles,
     proc_weak: &slint::Weak<ProcWindow>,
     sys_weak: &slint::Weak<SystemInfoWindow>,
+    editor_weak: &slint::Weak<EditorWindow>,
 ) {
     abort_window_prompts(window_id);
     abort_window_bg_tasks(window_id);
@@ -389,6 +386,9 @@ fn teardown_window(
         let _ = w.hide();
     }
     if let Some(w) = sys_weak.upgrade() {
+        let _ = w.hide();
+    }
+    if let Some(w) = editor_weak.upgrade() {
         let _ = w.hide();
     }
 }
@@ -710,9 +710,7 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // wrong once several windows share the loop.
     let loop_result = slint::run_event_loop();
     if let Err(e) = &loop_result {
-        tracing::warn!(
-            "event loop exited with error ({e:#}); running bounded shutdown anyway"
-        );
+        tracing::warn!("event loop exited with error ({e:#}); running bounded shutdown anyway");
     }
     // Bound the shutdown instead of relying on Rust's drop glue: tokio's
     // Runtime Drop waits indefinitely for tasks that never finished
@@ -926,6 +924,9 @@ fn open_window(
     proc_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
     proc_win.set_proc_list(ModelRc::from(proc_rows_model.clone()));
     let sys_win = Rc::new(SystemInfoWindow::new().context("failed to build system info window")?);
+    let editor_win = Rc::new(EditorWindow::new().context("failed to build editor window")?);
+    editor_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    sync_editor_theme(&window, &editor_win);
     // Every fallible construction has now succeeded — register the window.
     // (cascade_origin above was captured before this point, as required.)
     let window_id = registry.register(window.as_weak());
@@ -1374,7 +1375,10 @@ fn open_window(
             let mut s = store.borrow_mut();
             s.set_sidebar_collapsed(v);
             persist_config(&s);
-            let zen = weak.upgrade().map(|window| window.get_zen_mode()).unwrap_or(false);
+            let zen = weak
+                .upgrade()
+                .map(|window| window.get_zen_mode())
+                .unwrap_or(false);
             for handle in handles.borrow().values() {
                 handle.set_resource_monitoring(!v && !zen);
             }
@@ -1774,6 +1778,7 @@ fn open_window(
     {
         let weak = window.as_weak();
         let store = store.clone();
+        let editor_weak = editor_win.as_weak();
         window.on_set_ui_scale(move |percent: i32| {
             let clamped = (percent.max(0) as u32).clamp(80, 200);
             {
@@ -1783,6 +1788,9 @@ fn open_window(
             }
             if let Some(w) = weak.upgrade() {
                 w.set_ui_scale(clamped as f32 / 100.0);
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                editor.set_ui_scale(clamped as f32 / 100.0);
             }
         });
     }
@@ -1878,19 +1886,26 @@ fn open_window(
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         let bufs = bufs.clone();
-        registry.add_config_listener(window_id, Rc::new(move || {
-            let Some(w) = weak.upgrade() else { return };
-            // Rebuild the list with the window's current search filter.
-            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
-            // Re-apply the theme to the chrome AND every open terminal buffer.
-            apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
-            // Language translations are process-global; refresh our flag only.
-            w.set_lang_en(crate::i18n::is_en());
-            // Command-bar visibility is a global preference.
-            w.set_cmd_bar_hidden(store.borrow().cmd_bar_hidden());
-            // Persisted terminal font size (settings stepper) is global too.
-            w.set_term_font_size(store.borrow().font_size() as f32);
-        }));
+        let editor_weak = editor_win.as_weak();
+        registry.add_config_listener(
+            window_id,
+            Rc::new(move || {
+                let Some(w) = weak.upgrade() else { return };
+                // Rebuild the list with the window's current search filter.
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                // Re-apply the theme to the chrome AND every open terminal buffer.
+                apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
+                // Language translations are process-global; refresh our flag only.
+                w.set_lang_en(crate::i18n::is_en());
+                // Command-bar visibility is a global preference.
+                w.set_cmd_bar_hidden(store.borrow().cmd_bar_hidden());
+                // Persisted terminal font size (settings stepper) is global too.
+                w.set_term_font_size(store.borrow().font_size() as f32);
+                if let Some(editor) = editor_weak.upgrade() {
+                    sync_editor_theme(&w, &editor);
+                }
+            }),
+        );
     }
     {
         let weak = window.as_weak();
@@ -2247,7 +2262,7 @@ fn open_window(
     // models: a model change can synchronously run binding callbacks, and one
     // of those re-entering `layout.borrow*()` while this shared guard is still
     // alive would panic (RefCell already borrowed) → abort in release.
-    let lay = layout.borrow().clone();
+    let lay = (*layout.borrow()).clone();
     refresh_panes(
         &window,
         &lay,
@@ -2274,7 +2289,7 @@ fn open_window(
             }
             content_size.set(next);
             if let Some(win) = weak.upgrade() {
-                let lay = layout.borrow().clone();
+                let lay = (*layout.borrow()).clone();
                 refresh_panes(
                     &win,
                     &lay,
@@ -2366,55 +2381,54 @@ fn open_window(
         let weak = window.as_weak();
         let store = store.clone();
         let terminals_model = terminals_model.clone();
-        window.on_zoom_term_font(move |tab_id: SharedString, direction: i32, window_wide: bool| {
-            let Some(w) = weak.upgrade() else {
-                return;
-            };
-            let settings_size = store.borrow().font_size() as i32;
-            if window_wide {
-                let next = if direction == 0 {
-                    settings_size
-                } else {
-                    w.get_term_font_size() as i32 + direction
+        window.on_zoom_term_font(
+            move |tab_id: SharedString, direction: i32, window_wide: bool| {
+                let Some(w) = weak.upgrade() else {
+                    return;
                 };
-                w.set_term_font_size(next.clamp(8, 32) as f32);
-                // Per-tab overrides would pin sessions at their old size and
-                // defeat "zoom everything", so drop them.
-                use slint::Model as _;
-                for row in terminals_model.iter() {
-                    if row.font_size > 0 {
-                        let id = row.id.to_string();
-                        update_terminal_row(&terminals_model, &id, |r| r.font_size = 0);
+                let settings_size = store.borrow().font_size() as i32;
+                if window_wide {
+                    let next = if direction == 0 {
+                        settings_size
+                    } else {
+                        w.get_term_font_size() as i32 + direction
+                    };
+                    w.set_term_font_size(next.clamp(8, 32) as f32);
+                    // Per-tab overrides would pin sessions at their old size and
+                    // defeat "zoom everything", so drop them.
+                    use slint::Model as _;
+                    for row in terminals_model.iter() {
+                        if row.font_size > 0 {
+                            let id = row.id.to_string();
+                            update_terminal_row(&terminals_model, &id, |r| r.font_size = 0);
+                        }
                     }
+                    return;
                 }
-                return;
-            }
-            let tab_id = tab_id.to_string();
-            if tab_id.is_empty() || tab_id == "welcome" {
-                return;
-            }
-            use slint::Model as _;
-            let Some(row) = terminals_model
-                .iter()
-                .find(|r| r.id.to_string() == tab_id)
-            else {
-                return;
-            };
-            if direction == 0 {
-                // Back to the Settings size, regardless of the window base.
-                update_terminal_row(&terminals_model, &tab_id, |r| {
-                    r.font_size = settings_size.clamp(8, 32)
-                });
-                return;
-            }
-            let base = if row.font_size > 0 {
-                row.font_size
-            } else {
-                w.get_term_font_size() as i32
-            };
-            let next = (base + direction).clamp(8, 32);
-            update_terminal_row(&terminals_model, &tab_id, |r| r.font_size = next);
-        });
+                let tab_id = tab_id.to_string();
+                if tab_id.is_empty() || tab_id == "welcome" {
+                    return;
+                }
+                use slint::Model as _;
+                let Some(row) = terminals_model.iter().find(|r| r.id.to_string() == tab_id) else {
+                    return;
+                };
+                if direction == 0 {
+                    // Back to the Settings size, regardless of the window base.
+                    update_terminal_row(&terminals_model, &tab_id, |r| {
+                        r.font_size = settings_size.clamp(8, 32)
+                    });
+                    return;
+                }
+                let base = if row.font_size > 0 {
+                    row.font_size
+                } else {
+                    w.get_term_font_size() as i32
+                };
+                let next = (base + direction).clamp(8, 32);
+                update_terminal_row(&terminals_model, &tab_id, |r| r.font_size = next);
+            },
+        );
     }
     {
         let terminals_model = terminals_model.clone();
@@ -2484,11 +2498,46 @@ fn open_window(
             content_size: content_size.clone(),
             proc_win: proc_win.clone(),
             sys_win: sys_win.clone(),
+            editor_win: editor_win.clone(),
             proc_weak: proc_win.as_weak(),
             sys_weak: sys_win.as_weak(),
         },
     );
 
+    {
+        let weak = editor_win.as_weak();
+        let main_weak = window.as_weak();
+        editor_win.on_close_editor(move || {
+            if let (Some(editor), Some(main)) = (weak.upgrade(), main_weak.upgrade()) {
+                editor.set_editor_open(false);
+                let _ = editor.hide();
+                main.set_editor_open(false);
+            }
+        });
+    }
+    {
+        let weak = editor_win.as_weak();
+        editor_win.on_win_drag(move || {
+            if let Some(w) = weak.upgrade() {
+                w.window().with_winit_window(|ww| {
+                    let _ = ww.drag_window();
+                });
+                schedule_slint_pointer_ungrab(weak.clone());
+            }
+        });
+    }
+    {
+        use i_slint_backend_winit::winit::window::ResizeDirection;
+        let weak = editor_win.as_weak();
+        editor_win.on_win_resize_se(move || {
+            if let Some(w) = weak.upgrade() {
+                w.window().with_winit_window(|ww| {
+                    let _ = ww.drag_resize_window(ResizeDirection::SouthEast);
+                });
+                schedule_slint_pointer_ungrab(weak.clone());
+            }
+        });
+    }
     {
         let proc_weak = proc_win.as_weak();
         let handles = handles.clone();
@@ -2596,6 +2645,7 @@ fn open_window(
         sftp_follow_cd.clone(),
         core.tab_routes.clone(),
         tab_titles.clone(),
+        editor_win.clone(),
     );
 
     // Recompute the sidebar whenever the active tab changes (fired from Slint's
@@ -2653,6 +2703,7 @@ fn open_window(
         let store = store.clone();
         let bufs_theme = bufs.clone();
         let proc_weak = proc_win.as_weak();
+        let editor_weak = editor_win.as_weak();
         let registry = registry.clone();
         window.on_toggle_theme(move || {
             let Some(w) = weak.upgrade() else { return };
@@ -2663,6 +2714,9 @@ fn open_window(
             // is a separate instance) so an open process window follows.
             if let Some(p) = proc_weak.upgrade() {
                 sync_proc_theme(&w, &p);
+            }
+            if let Some(editor) = editor_weak.upgrade() {
+                sync_editor_theme(&w, &editor);
             }
             let pref = if next_dark { "dark" } else { "light" };
             {
@@ -3028,7 +3082,12 @@ fn open_window(
         sftp_last_cwd.clone(),
         tab_titles.clone(),
     );
-    wire_sftp_callbacks(&window, sftp_handles.clone(), sftp_last_cwd.clone());
+    wire_sftp_callbacks(
+        &window,
+        &editor_win,
+        sftp_handles.clone(),
+        sftp_last_cwd.clone(),
+    );
     wire_key_input(
         &window,
         handles.clone(),
@@ -3037,6 +3096,7 @@ fn open_window(
         store.clone(),
         ConnectCtx {
             weak: window.as_weak(),
+            editor: editor_win.as_weak(),
             window_id,
             runtime: runtime.clone(),
             handles: handles.clone(),
@@ -3163,6 +3223,7 @@ fn open_window(
         let close_sftp_handles = sftp_handles.clone();
         let ev_proc_weak = proc_win.as_weak();
         let ev_sys_weak = sys_win.as_weak();
+        let ev_editor_weak = editor_win.as_weak();
         let ev_store = store.clone();
         let ev_activity = activity.clone();
         let ev_exit_confirmed = exit_confirmed.clone();
@@ -3520,6 +3581,7 @@ fn open_window(
                             &close_sftp_handles,
                             &ev_proc_weak,
                             &ev_sys_weak,
+                            &ev_editor_weak,
                         );
                         if ev_registry.unregister(window_id) {
                             let _ = slint::quit_event_loop();
@@ -3540,6 +3602,7 @@ fn open_window(
         let cc_ds = dock_stacks.clone();
         let close_handles = handles.clone();
         let close_sftp_handles = sftp_handles.clone();
+        let editor_weak = editor_win.as_weak();
         let close_exit_confirmed = exit_confirmed.clone();
         let close_registry = registry.clone();
         let close_core = core.clone();
@@ -3565,6 +3628,7 @@ fn open_window(
                 &close_sftp_handles,
                 &proc_weak,
                 &sys_weak,
+                &editor_weak,
             );
             if close_registry.unregister(window_id) {
                 let _ = slint::quit_event_loop();
@@ -3603,6 +3667,7 @@ fn open_window(
         let close_sftp_handles = sftp_handles.clone();
         let wc_proc_weak = proc_win.as_weak();
         let wc_sys_weak = sys_win.as_weak();
+        let wc_editor_weak = editor_win.as_weak();
         let wc_store = store.clone();
         let wc_ds = dock_stacks.clone();
         let wc_exit_confirmed = exit_confirmed.clone();
@@ -3624,6 +3689,7 @@ fn open_window(
                         &close_sftp_handles,
                         &wc_proc_weak,
                         &wc_sys_weak,
+                        &wc_editor_weak,
                     );
                     let _ = w.hide();
                     if wc_registry.unregister(window_id) {
@@ -3689,10 +3755,8 @@ fn open_window(
             }
             match origin {
                 Some(pos) => {
-                    w.window().set_position(slint::PhysicalPosition::new(
-                        pos.x + 40,
-                        pos.y + 40,
-                    ));
+                    w.window()
+                        .set_position(slint::PhysicalPosition::new(pos.x + 40, pos.y + 40));
                 }
                 None => center_window(&w),
             }
@@ -4129,7 +4193,9 @@ fn sync_sessions_for_window(
     store: &ConfigStore,
     model: &VecModel<SessionInfo>,
 ) {
-    let Some(window) = window.upgrade() else { return };
+    let Some(window) = window.upgrade() else {
+        return;
+    };
     let query = window.get_host_search_query().to_string();
     // Prefer in-place row updates: they keep the list's scroll position and
     // any running drag alive and skip the reallocation. A full set_vec
@@ -4172,6 +4238,7 @@ fn wire_session_callbacks(
     sftp_follow_cd: Arc<std::sync::atomic::AtomicBool>,
     tab_routes: TabRoutes,
     tab_titles: Rc<RefCell<HashMap<String, String>>>,
+    editor_win: Rc<EditorWindow>,
 ) {
     // Working set of port forwards (#56) for the session being created/edited.
     // The forward add/delete callbacks mutate it; saving reads it into
@@ -4456,7 +4523,11 @@ fn wire_session_callbacks(
                 ef_edit.borrow_mut().push(blank_forward_draft());
             }
             *et_edit.borrow_mut() = trigger_drafts(&session.triggers);
-            *ets_edit.borrow_mut() = session.triggers.iter().map(|t| t.response.clone()).collect();
+            *ets_edit.borrow_mut() = session
+                .triggers
+                .iter()
+                .map(|t| t.response.clone())
+                .collect();
             if et_edit.borrow().is_empty() {
                 et_edit.borrow_mut().push(blank_trigger_draft());
                 ets_edit.borrow_mut().push(Secret::default());
@@ -4632,7 +4703,8 @@ fn wire_session_callbacks(
                     .upgrade()
                     .map(|w| w.get_host_search_query().to_string())
                     .unwrap_or_default();
-                let in_place = refresh_session_rows_in_place(&store.borrow(), &sessions_model, &query);
+                let in_place =
+                    refresh_session_rows_in_place(&store.borrow(), &sessions_model, &query);
                 if !in_place {
                     // The hop changed the row count (e.g. a cross-group hop
                     // emptied the ungrouped section): the set_vec rebuild
@@ -4808,13 +4880,16 @@ fn wire_session_callbacks(
                     return;
                 }
             };
-            let triggers = match validated_triggers(&edit_triggers.borrow(), &edit_trigger_secrets.borrow()) {
-                Ok(triggers) => triggers,
-                Err(message) => {
-                    if let Some(w) = weak.upgrade() { w.set_dialog_test_status(message.into()); }
-                    return;
-                }
-            };
+            let triggers =
+                match validated_triggers(&edit_triggers.borrow(), &edit_trigger_secrets.borrow()) {
+                    Ok(triggers) => triggers,
+                    Err(message) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_dialog_test_status(message.into());
+                        }
+                        return;
+                    }
+                };
             // The edit dialog never echoes the real password (issue #10): a blank
             // field while editing means "keep the existing password" rather than
             // "clear it".  Only overwrite when the user actually typed something.
@@ -4970,13 +5045,16 @@ fn wire_session_callbacks(
                     return;
                 }
             };
-            let triggers = match validated_triggers(&edit_triggers.borrow(), &edit_trigger_secrets.borrow()) {
-                Ok(triggers) => triggers,
-                Err(message) => {
-                    if let Some(w) = weak.upgrade() { w.set_dialog_test_status(message.into()); }
-                    return;
-                }
-            };
+            let triggers =
+                match validated_triggers(&edit_triggers.borrow(), &edit_trigger_secrets.borrow()) {
+                    Ok(triggers) => triggers,
+                    Err(message) => {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_dialog_test_status(message.into());
+                        }
+                        return;
+                    }
+                };
             let session = session_from_draft(&draft, existing.as_ref(), forwards, triggers);
             let weak_done = weak.clone();
 
@@ -5189,7 +5267,9 @@ fn wire_session_callbacks(
         window.on_update_trigger(move |index: i32, trigger: TriggerDraft| {
             let i = index as usize;
             let mut values = triggers.borrow_mut();
-            if i < values.len() { values[i] = trigger; }
+            if i < values.len() {
+                values[i] = trigger;
+            }
         });
     }
     {
@@ -5200,8 +5280,12 @@ fn wire_session_callbacks(
             let i = index as usize;
             let mut values = triggers.borrow_mut();
             let mut saved = secrets.borrow_mut();
-            if i < values.len() { values.remove(i); }
-            if i < saved.len() { saved.remove(i); }
+            if i < values.len() {
+                values.remove(i);
+            }
+            if i < saved.len() {
+                saved.remove(i);
+            }
             if values.is_empty() {
                 values.push(blank_trigger_draft());
                 saved.push(Secret::default());
@@ -5403,6 +5487,7 @@ fn wire_session_callbacks(
             // Shared with in-place reconnect (#79) via start_session_in_tab.
             let ctx = ConnectCtx {
                 weak: weak.clone(),
+                editor: editor_win.as_weak(),
                 window_id,
                 runtime: runtime.clone(),
                 handles: handles.clone(),
@@ -7314,18 +7399,12 @@ fn wire_key_input(
                     if buf.mouse_tracked {
                         let encoding = screen.mouse_protocol_encoding();
                         let (btn, release) = match kind {
-                            1 => (button as u8, true), // release
-                            2 => (35, false),          // drag motion with button held
+                            1 => (button as u8, true),  // release
+                            2 => (35, false),           // drag motion with button held
                             _ => (button as u8, false), // press
                         };
                         Some(encode_mouse_event(
-                            btn,
-                            release,
-                            col,
-                            row,
-                            cols,
-                            rows,
-                            encoding,
+                            btn, release, col, row, cols, rows, encoding,
                         ))
                     } else {
                         None
@@ -7416,7 +7495,10 @@ fn should_drop_macos_bare_ctrl_marker(key: &str, ctrl: bool, is_macos: bool) -> 
 /// Slint measures each line with the same wrapping and font as the editor.
 fn editor_lines_for(content: &str) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(
-        content.split('\n').map(SharedString::from).collect::<Vec<_>>(),
+        content
+            .split('\n')
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
     ))
 }
 
