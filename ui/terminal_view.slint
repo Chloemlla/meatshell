@@ -403,6 +403,9 @@ export component TerminalView inherits Rectangle {
     // arrow keys (alternate-scroll).
     callback terminal-wheel(int /* dir */, int /* col */, int /* row */);
     callback terminal-scroll-to(int);       // jump to an absolute scrollback offset (#103)
+    // Handle Home/End/PageUp/PageDown locally only while the normal terminal
+    // is scrolled through history. Returns false when the PTY must receive it.
+    callback terminal-scrollback-key(string /* key */) -> bool;
     // Forward a mouse button event to the PTY for mouse-tracking TUI apps
     // (btop/htop/mc). kind: 0=press 1=release 2=drag-motion; button: 0=left
     // 1=middle 2=right; col/row are grid cells. Returns true when the event was
@@ -1214,6 +1217,14 @@ export component TerminalView inherits Rectangle {
                     // ── macOS: swallow any other ⌘ combo (control == Cmd here) so it
                     // isn't typed into the shell as a literal character. ──
                     } else if (Theme.is-mac && event.modifiers.control) {
+                        accept
+                    // ── Local history navigation ────────────────────────────
+                    // Only Rust can authoritatively tell whether this normal
+                    // terminal is scrolled back. When it declines, preserve the
+                    // regular PTY route so less/vim/tmux own these keys.
+                    } else if ((event.text == Key.Home || event.text == Key.End
+                                || event.text == Key.PageUp || event.text == Key.PageDown)
+                            && root.terminal-scrollback-key(event.text)) {
                         accept
                     // ── All other keys (printable, Ctrl+X, arrows, …) → the shell.
                     // The control flag is the *physical* Ctrl key: `meta` on macOS,
