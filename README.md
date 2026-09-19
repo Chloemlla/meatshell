@@ -211,6 +211,10 @@ CLI 的 `<session-id-or-name>` 可由 `meatshell cli sessions` 获取，传会�
   "mcpServers": {
     "meatshell": {
       "command": "/absolute/path/to/meatshell",
+      //Mac OS
+      //"command": "/Applications/MeatShell.app/Contents/MacOS/meatshell",
+      //Linux
+      //your path 
       "args": ["mcp", "serve"]
     }
   }

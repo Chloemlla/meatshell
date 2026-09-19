@@ -333,10 +333,10 @@ pub(super) fn apply_session_event_to_window(
         } => {
             if error.is_empty() {
                 // Open the built-in viewer/editor (#70).
-                editor.set_editor_lines(editor_lines_for(&content));
                 editor.set_editor_tab_id(tab_id.into());
                 editor.set_editor_path(path.into());
                 editor.set_editor_name(name.into());
+                editor_syntax::refresh(editor, &content);
                 editor.set_editor_content(content.into());
                 editor.set_editor_readonly(!edit);
                 editor.set_editor_dirty(false);

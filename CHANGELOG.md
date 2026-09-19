@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **内置编辑器支持实时基础语法染色并优化大文本显示。** 按扩展名识别 Rust、Python、Shell、JSON、YAML、TOML、JavaScript/TypeScript 和 C/C++，区分关键字、字符串、注释、数字和配置键，并适配深浅主题。行号复用原生排版，仅绘制可见行号；滚动和光标闪烁复用排版缓存。超过 10,000 行的文本停止读取并提示文本过大，保留现有字节大小限制。
+- **Add live lexical highlighting and improve large-text display in the built-in editor.** Detect Rust, Python, Shell, JSON, YAML, TOML, JavaScript/TypeScript, and C/C++ by extension, with theme-aware colors for keywords, strings, comments, numbers, and configuration keys. Draw only visible gutter numbers using native text layout, and reuse layouts when scrolling or blinking the cursor. Stop reading files over 10,000 lines with a text-too-large message, retaining the existing byte limit.
+
 - **修复替换远端已有文件时的上传与保存失败。** SFTP 的 `rename` 不允许覆盖已存在的目标，因此上传同名文件、内置编辑器保存回远端、文件夹上传和「复制到」此前都会以 `rename remote …: Failure` 失败。现在改名到目标失败时会先把原文件改名让位，成功后为替换后的文件保留原有权限位并删除让位副本，中途任何一步失败都会把原文件改回原名；GUI、CLI `upload` 与 MCP `upload_file` 共用同一实现。
 - **Fix uploads and saves that replace an existing remote file.** SFTP `rename` refuses to overwrite an existing target, so uploading a file that was already there, saving from the built-in editor, uploading a folder, and "copy to" all failed with `rename remote …: Failure`. The rename now moves the existing file aside first, keeps its permissions on the replacement, deletes the displaced copy on success, and restores the original name if any step fails. The GUI, the CLI `upload` command, and the MCP `upload_file` tool share the same implementation.
 

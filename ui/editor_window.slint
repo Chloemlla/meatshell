@@ -28,7 +28,10 @@ export component EditorWindow inherits Window {
     in-out property <bool> editor-dirty: false;
     in-out property <bool> editor-open: false;
     property <bool> editor-focus-pending: false;
-    in-out property <[string]> editor-lines;
+    in-out property <string> editor-syntax-source;
+    in-out property <string> editor-syntax-spans;
+    in-out property <string> editor-language;
+    property <bool> editor-highlight-pending: false;
     in-out property <string> editor-find-query;
     in-out property <string> editor-replace-text;
     in-out property <int> editor-match-count: 0;
@@ -36,7 +39,7 @@ export component EditorWindow inherits Window {
 
     callback save-file();
     callback close-editor();
-    callback editor-recount(string);
+    callback editor-highlight(string);
     callback editor-count-matches(string, string) -> int;
     callback editor-find-step(string, string, int, bool) -> EditorFindResult;
     callback editor-replace-all(string, string);
@@ -95,14 +98,20 @@ export component EditorWindow inherits Window {
             }
             HorizontalLayout {
                 padding-left: 12px;
-                spacing: 8px;
-                Image {
-                    source: @image-url("../assets/icon.png");
-                    width: 16px;
-                    height: 16px;
+                spacing: 4px;
+                Rectangle {
+                    width: 20px;
+                    height: 36px;
+                    Image {
+                        x: 2px;
+                        y: (parent.height - self.height) / 2;
+                        width: 16px;
+                        height: 16px;
+                        source: @image-url("../assets/icon.png");
+                    }
                 }
                 Text {
-                    text: root.editor-name
+                    text: root.editor-name + "  ·  " + root.editor-language
                         + (root.editor-readonly
                             ? "  ·  " + @tr("Read-only")
                             : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""));
@@ -236,36 +245,21 @@ export component EditorWindow inherits Window {
                     width: 48px;
                     background: Theme.bg-panel-alt;
                     clip: true;
-                    VerticalLayout {
+                    TextInput {
+                        x: 0px;
                         y: ed-scroll.viewport-y + 8px;
-                        width: parent.width;
-                        height: self.preferred-height;
-                        spacing: 0px;
-                        padding: 0px;
-                        for line[index] in root.editor-lines: Rectangle {
-                            height: line-measure.preferred-height;
-                            line-measure := TextInput {
-                                x: parent.width;
-                                width: edit-input.width;
-                                height: self.preferred-height;
-                                text: line;
-                                read-only: true;
-                                single-line: false;
-                                wrap: char-wrap;
-                                font-family: edit-input.font-family;
-                                font-size: edit-input.font-size;
-                            }
-                            Text {
-                                width: parent.width - 6px;
-                                height: line-measure.preferred-height;
-                                text: "\{index + 1}";
-                                horizontal-alignment: right;
-                                vertical-alignment: top;
-                                font-family: edit-input.font-family;
-                                font-size: edit-input.font-size;
-                                color: Theme.text-muted;
-                            }
-                        }
+                        width: edit-input.width;
+                        height: edit-input.height;
+                        text: root.editor-content;
+                        syntax-source: root.editor-content;
+                        line-number-width: parent.width - 6px;
+                        read-only: true;
+                        enabled: false;
+                        single-line: false;
+                        wrap: edit-input.wrap;
+                        font-family: edit-input.font-family;
+                        font-size: edit-input.font-size;
+                        color: Theme.text-muted;
                     }
                 }
                 Rectangle { width: 1px; background: Theme.border-subtle; }
@@ -290,6 +284,8 @@ export component EditorWindow inherits Window {
                             width: max(1px, ed-scroll.visible-width - 16px);
                             height: max(ed-scroll.visible-height - 16px, self.preferred-height);
                             text <=> root.editor-content;
+                            syntax-source: root.editor-syntax-source;
+                            syntax-spans: root.editor-syntax-spans;
                             read-only: root.editor-readonly;
                             single-line: false;
                             wrap: char-wrap;
@@ -311,7 +307,7 @@ export component EditorWindow inherits Window {
                             }
                             edited => {
                                 root.editor-dirty = true;
-                                root.editor-recount(root.editor-content);
+                                root.editor-highlight-pending = true;
                                 root.editor-match-count = root.editor-count-matches(
                                     root.editor-content, root.editor-find-query);
                             }
@@ -334,11 +330,35 @@ export component EditorWindow inherits Window {
                 }
             }
         }
-        Text { text: "◢"; color: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
-               font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+        // Draw the resize grip with rectangles instead of a Unicode glyph. The
+        // latter renders as a tofu box on systems without that character.
+        Rectangle {
+            x: 3px; y: 12px; width: 3px; height: 1px;
+            background: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+        }
+        Rectangle {
+            x: 6px; y: 10px; width: 3px; height: 1px;
+            background: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+        }
+        Rectangle {
+            x: 9px; y: 8px; width: 3px; height: 1px;
+            background: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+        }
+        Rectangle {
+            x: 12px; y: 5px; width: 3px; height: 1px;
+            background: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+        }
     }
 
     init => { root.editor-focus-pending = true; }
+    highlight-timer := Timer {
+        interval: 100ms;
+        running: root.editor-open && root.editor-highlight-pending;
+        triggered => {
+            root.editor-highlight-pending = false;
+            root.editor-highlight(root.editor-content);
+        }
+    }
     focus-timer := Timer {
         interval: 0ms;
         running: root.editor-focus-pending;

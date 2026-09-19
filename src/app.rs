@@ -24,6 +24,8 @@ mod single_instance;
 mod tab_callbacks;
 mod tab_transfer;
 mod dock_stacks;
+#[path = "app/editor_syntax.rs"]
+mod editor_syntax;
 mod terminal_ui;
 mod webdav;
 mod window;
@@ -1903,6 +1905,10 @@ fn open_window(
                 w.set_term_font_size(store.borrow().font_size() as f32);
                 if let Some(editor) = editor_weak.upgrade() {
                     sync_editor_theme(&w, &editor);
+                    if editor.get_editor_open() {
+                        let content = editor.get_editor_content();
+                        editor_syntax::refresh(&editor, content.as_str());
+                    }
                 }
             }),
         );
@@ -2717,6 +2723,10 @@ fn open_window(
             }
             if let Some(editor) = editor_weak.upgrade() {
                 sync_editor_theme(&w, &editor);
+                if editor.get_editor_open() {
+                    let content = editor.get_editor_content();
+                    editor_syntax::refresh(&editor, content.as_str());
+                }
             }
             let pref = if next_dark { "dark" } else { "light" };
             {
@@ -5668,11 +5678,10 @@ fn save_layout(
         .window()
         .with_winit_window(|ww| ww.is_maximized())
         .unwrap_or_else(|| win.get_window_maximized());
-    let (saved_w, saved_h) = s.window_size();
-    if !native_maximized && (saved_w <= 0.0 || saved_h <= 0.0) && w > 200.0 && h > 200.0 {
-        // Normal resize events keep this cache current. Only fall back to the
-        // close-time geometry for a first run where no valid resize was seen;
-        // do not issue a new native resize while the window is shutting down.
+    if !native_maximized && w > 200.0 && h > 200.0 {
+        // Resize events normally keep this cache current. Persist the final
+        // valid native geometry as well, because a close can arrive before the
+        // last resize callback has reached the UI store.
         s.set_window_size(w, h);
     }
     persist_config(&s);
@@ -7491,17 +7500,6 @@ fn should_drop_macos_bare_ctrl_marker(key: &str, ctrl: bool, is_macos: bool) -> 
 /// when true the four arrow keys must use SS3 sequences (`\x1bOA`…) instead
 /// of the default CSI sequences (`\x1b[A`…).  Full-screen apps like nano and
 /// vim set this mode on startup.
-/// Preserve logical lines (including blank and trailing lines) for the gutter.
-/// Slint measures each line with the same wrapping and font as the editor.
-fn editor_lines_for(content: &str) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(
-        content
-            .split('\n')
-            .map(SharedString::from)
-            .collect::<Vec<_>>(),
-    ))
-}
-
 /// Write `text` to the system clipboard. Call from a dedicated thread, never the
 /// UI thread (arboard pumps the Win32 message loop / blocks).
 ///
