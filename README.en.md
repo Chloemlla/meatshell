@@ -8,6 +8,32 @@ FinalShell's core experience (resource-monitor sidebar, session management,
 tabbed terminals) while cutting memory use from the 400 MB+ of a JVM app down to
 the tens-of-MB range of a native binary.
 
+## ⚡ Fork Enhancements
+
+This branch (`Chloemlla/meatshell`) continues from upstream `yituorou/meatshell` and
+builds its own releases. The table lists work that exists only here; see
+[CHANGELOG.md](CHANGELOG.md) for the per-change detail.
+
+| Feature | What it does |
+| ------- | ------------ |
+| **Live MCP activity audit** | Settings → Interface → MCP polls `mcp_activity.jsonl` once a second and shows what an AI client has done through `meatshell mcp serve` (time, caller, tool, command / path, status, duration), with Refresh / Clear. Only whitelisted arguments are written, inline passwords and tokens in commands are redacted first, and the file is trimmed to the newest 1000 records past 2 MiB. |
+| **Expandable activity rows** | A collapsed row folds the command's newlines into a one-line summary; clicking expands it to the full command text, growing the row to fit, with a chevron marking the state, so multi-line commands no longer overlap each other. |
+| **Operate sessions by name** | The `session_id` argument of the CLI and MCP tools also accepts a session's display name (exact id first, then exact name, then a unique case-insensitive name); an ambiguous name errors and lists the candidate ids, so an AI need not look up an id first. |
+| **Complete MCP tool contract** | All seven tools gained a `title`, an operational description, and `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` annotations, with per-argument limits spelled out: the 300-second timeout ceiling, the output cap, the 512 KiB / 20000 lines / 64 KiB-per-line bounds on text reads, and the upload sandbox and replace semantics. |
+| **Remote commands no longer report false success** | When the server refused the exec request, or the channel closed before an exit status arrived, `run_command` now errors instead of returning an empty "success"; a command killed by a signal reports a new `exit_signal` field, which the CLI prints too. |
+| **Optional MCP allowlists** | `MEATSHELL_MCP_ALLOWED_SESSIONS` and `MEATSHELL_MCP_COMMAND_PREFIXES` restrict which sessions and command prefixes MCP may use to an explicit list. |
+| **Replacing an existing remote file** | SFTP `rename` will not overwrite an existing target, so uploading a file that was already there, saving from the built-in editor, uploading a folder, and "copy to" all failed with `rename remote …: Failure`. The original is now moved aside first, the replacement keeps its permission bits, the displaced copy is removed on success, and the original name is restored if any step fails. The GUI, the CLI `upload` command, and the MCP `upload_file` tool share one implementation. |
+| **Tighter local writes and file opening** | SFTP downloads land through a unique temp file plus rename; opening externally blocks dangerous executables; `read_dir` rejects slash-bearing names; closing SFTP cancels tracked transfers and aborts the rest. |
+| **Tighter SSH edges** | `https://` outbound proxies are refused; CONNECT credentials and tokens are held in `Zeroizing` buffers; `known_hosts` writes are serialized under a lock onto an fsync'd unique temp file and refuse symlink targets; Argon2 cost caps are tightened; suppress-echo is bounded by time and bytes; passwords and keyboard-interactive responses are `Zeroizing`. |
+| **Atomic credential writes** | `secret.key` is written atomically (pid+uuid temp file, 0600, rename) and the legacy plaintext is removed after a successful migration; `is_encrypted()` judges by a successful decryption instead of prefix matching; a damaged key is backed up as `secret.key.broken` before regeneration; legacy DES decryption keeps key material and plaintext in `Zeroizing` buffers. |
+| **Bounded terminal memory** | ZMODEM receive caps subpackets at 1 MiB, session bytes at 4 GiB and files at 64, deleting a partial file unless ZEOF arrived; Telnet subnegotiation force-returns to Data past 4096 bytes / 30 s; serial writes move to a separate thread without `tcdrain`; the local PTY reader joins and ends its child process on exit. |
+| **No blocking work on the UI thread** | WebDAV upload / download, system-metric sampling, and MCP activity polling run off the UI thread (`spawn_blocking` with results posted back to the event loop and re-entry guards); high-frequency config writes are debounced; clipboard copies use a single background worker; a window's background tasks are aborted when it closes; poisoned locks degrade instead of panicking; the export notice now says passwords are obfuscated, not encrypted. |
+| **58 architecture-audit findings resolved** | Eight parallel read-only passes over about 32k lines of `src/` produced 58 findings (12 critical / 22 high / 21 medium / 3 low), each fixed with its status and commit hash recorded: 53 fixed and CI-verified, 3 explicitly skipped, 2 ruled false positives. See [docs/architecture-audit-2026-08-30.md](docs/architecture-audit-2026-08-30.md). |
+| **A downloadable build for every push to `main`** | A successful build on `main` is auto-published as `v<version>-ci-<short-sha>` and marked Latest as a full release rather than a prerelease, so every commit has artifacts you can download. |
+| **Update checks point at this repository** | The in-app update check and the Footer / About links point at `Chloemlla/meatshell`; the Flatpak app ID is `io.github.chloemlla.meatshell`; `Cargo.toml`'s `repository` and the AUR `PKGBUILD` url / Maintainer were updated too, so a build from this repository is not sent to upstream. |
+| **Release caches that are actually reused** | Three defects where a cache looked configured but never hit are fixed: Flatpak no longer mints a fresh key from `github.sha`; the AppImage tooling is restored from a dedicated cache and only downloaded on a miss; the cache save is its own step guarded by `hashFiles()`, so a tolerated download failure cannot fail an otherwise green build. |
+| **Build and cross-platform fixes** | Fixes code the upstream merge brought in that fails to compile on every target (`Layout` never derived `Clone`), along with cross-platform compile errors and unused imports, and removes dead code left behind by an upstream feature that was decommissioned. |
+
 ## Screenshots
 
 <p align="center">

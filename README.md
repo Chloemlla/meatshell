@@ -7,6 +7,31 @@
 （资源监控侧栏、会话管理、多标签页终端）的同时，把内存占用从 400 MB+ 的
 JVM 压到几十 MB 原生级别。
 
+## ⚡ 本分支改进特性
+
+本分支（`Chloemlla/meatshell`）在上游 `yituorou/meatshell` 基础上继续维护并自主
+构建发布。下表是只存在于本分支、上游没有的改动；逐条明细见 [CHANGELOG.md](CHANGELOG.md)。
+
+| 特性 | 说明 |
+| ---- | ---- |
+| **MCP 活动实时审计** | 设置 → 界面 → MCP 每秒轮询 `mcp_activity.jsonl`，实时展示 AI 客户端通过 `meatshell mcp serve` 做过什么（时间、调用方、工具、命令 / 路径、状态、耗时），带 Refresh / Clear。记录只写白名单参数，命令内联的口令与 token 先脱敏，文件超过 2 MiB 时裁剪为最新 1000 条。 |
+| **活动行可展开** | 折叠行把命令里的换行折成单行摘要，点击展开可看到完整命令原文并按内容自动增高，行首 chevron 标记展开状态，避免多行命令在列表中互相压字。 |
+| **按会话名称操作** | CLI 与 MCP 的 `session_id` 参数同时接受会话 id 或显示名称（先精确 id，再精确名称，最后唯一的不区分大小写名称），重名时报错并列出候选 id，AI 不必先查询 id。 |
+| **MCP 工具契约补全** | 全部 7 个工具补齐 `title`、可操作描述与 `readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint` 注解，并逐个参数写明 300 秒超时上限、输出上限、文本读取的 512 KiB / 20000 行 / 单行 64 KiB 限制、上传沙箱与替换语义。 |
+| **远端命令不再假报成功** | 服务器拒绝 exec 请求、或通道先于退出状态关闭时，`run_command` 由返回空的「成功」改为直接报错；被信号杀死的命令新增 `exit_signal` 字段，CLI 也会打印该信号。 |
+| **MCP 命令白名单** | 可用 `MEATSHELL_MCP_ALLOWED_SESSIONS` 与 `MEATSHELL_MCP_COMMAND_PREFIXES` 环境变量，把 MCP 能操作的会话与命令前缀限制在显式清单内。 |
+| **覆盖远端已有文件** | SFTP `rename` 不允许覆盖已存在目标，此前上传同名文件、内置编辑器保存回远端、文件夹上传和「复制到」都会以 `rename remote …: Failure` 失败。现在先把原文件改名让位，写入后保留原权限位并删除让位副本，任一步失败都把原文件改回原名；GUI、CLI `upload` 与 MCP `upload_file` 共用同一实现。 |
+| **文件落地与打开收紧** | SFTP 下载的本地写入改为唯一临时文件 + rename；外部打开会拦截危险可执行文件；`read_dir` 拒绝含斜杠的文件名；关闭 SFTP 会取消已跟踪的传输任务并中止剩余任务。 |
+| **SSH 边界收紧** | 拒绝 `https://` 出站代理；CONNECT 凭据与 token 用 `Zeroizing` 包裹；`known_hosts` 写入加锁、落在 fsync 过的唯一临时文件上并拒绝符号链接目标；Argon2 参数上限收紧；suppress-echo 按时间与字节数设限；密码与键盘交互应答使用 `Zeroizing`。 |
+| **凭据落盘原子化** | `secret.key` 改为原子写入（pid+uuid 临时文件、0600、rename），旧格式明文在迁移成功后删除；`is_encrypted()` 改以能否成功解密判断而非前缀匹配；损坏的密钥先备份为 `secret.key.broken` 再重建；旧版 DES 解密全程使用 `Zeroizing` 缓冲区。 |
+| **终端资源上限** | ZMODEM 接收限制子包 1 MiB、单会话 4 GiB、文件数 64，未收到 ZEOF 就删除半成品文件；Telnet 子协商超过 4096 字节或 30 秒时强制回到数据态；串口写改为独立线程且不再 `tcdrain`；本地 PTY 读线程在退出时 join 并结束子进程。 |
+| **UI 线程不再被阻塞** | WebDAV 上传 / 下载、系统指标采样与 MCP 活动轮询移出 UI 线程（`spawn_blocking` 加回投事件循环，带重入保护）；高频配置写入改为防抖；剪贴板复制由单个后台线程处理；窗口关闭时中止该窗口的后台任务；锁中毒时降级继续而不是 panic；导出提示改为说明密码是混淆而非加密。 |
+| **58 项架构审计全部落地** | 8 个并行只读分组覆盖约 3.2 万行 `src/`，产出 58 条缺陷（12 严重 / 22 高 / 21 中 / 3 低），逐条修复并回填状态与提交哈希：53 条已修复并经 CI 验证，3 条明确跳过、2 条判定为误报。报告见 [docs/architecture-audit-2026-08-30.md](docs/architecture-audit-2026-08-30.md)。 |
+| **推 main 即有可下载构建** | 推送 `main` 构建成功后自动发布为 `v<版本>-ci-<短哈希>` 并标记 Latest（正式发布，而非 prerelease），每个提交都有产物可直接下载。 |
+| **更新检查指向本仓** | 应用内更新检查、Footer 与 About 链接改指 `Chloemlla/meatshell`；Flatpak 应用 ID 改为 `io.github.chloemlla.meatshell`；`Cargo.toml` 的 `repository` 与 AUR `PKGBUILD` 的 url / Maintainer 一并更新，避免用本仓构建却被引导去上游。 |
+| **发布缓存真正复用** | 修掉三处「配了缓存却从未命中」：Flatpak 不再用 `github.sha` 铸新 key；AppImage 工具链从专用缓存恢复、仅未命中时下载；缓存保存拆成独立且受 `hashFiles()` 保护的步骤，使被容忍的下载失败不会弄红构建。 |
+| **构建与交叉编译修复** | 修复上游合并带入、在所有平台都无法编译的代码（`Layout` 未派生 `Clone`），以及跨平台编译错误与未使用导入，并清理上游已下线功能的残留死代码。 |
+
 ## 截图
 
 <p align="center">
