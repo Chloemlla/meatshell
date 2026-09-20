@@ -136,7 +136,11 @@ export component SftpPanel inherits Rectangle {
     // The full toolbar needs roughly 480px once a useful path field is included.
     // Below that, switch deliberately to a two-row compact layout instead of
     // allowing fixed-size controls to squeeze the path and each other (#285).
-    property <bool> narrow-toolbar: !root.show-tree && root.width < 480px;
+    // When the directory tree is visible (panel docked top/bottom), the toolbar
+    // still spans the full panel width — but the *content* area below is narrower
+    // by the tree extent.  Raise the narrow threshold so the toolbar adapts
+    // before buttons get clipped at the right edge (#433).
+    property <bool> narrow-toolbar: root.width < (480px + (root.show-tree ? root.tree-width + 5px : 0px));
     property <bool> show-type-col: root.show-type;
     property <bool> show-size-col-user: root.show-size;
     property <bool> show-modified-col-user: root.show-modified;
@@ -324,7 +328,7 @@ export component SftpPanel inherits Rectangle {
                 // Keep parent navigation discoverable in the narrow layout
                 // instead of hiding this primary action in the overflow menu
                 // (#322). It stays beside the other compact toolbar actions.
-                if root.narrow-toolbar && root.panel-mode == "files" : Rectangle {
+                if root.narrow-toolbar && !root.show-tree && root.panel-mode == "files" : Rectangle {
                     width: 24px; height: 22px;
                     border-radius: Theme.radius-sm;
                     background: compact-up-ta.has-hover ? Theme.bg-hover : transparent;
@@ -460,7 +464,7 @@ export component SftpPanel inherits Rectangle {
                 // Secondary path actions move into an overflow menu in compact
                 // mode so they never compete with the path field for width.
                 compact-more-btn := Rectangle {
-                    visible: root.narrow-toolbar && root.panel-mode == "files";
+                    visible: root.narrow-toolbar && !root.show-tree && root.panel-mode == "files";
                     width: 24px;
                     height: 22px;
                     border-radius: Theme.radius-sm;
@@ -586,7 +590,7 @@ export component SftpPanel inherits Rectangle {
                 // moving it to a real second layout row. The layout spacing keeps
                 // a stable gutter regardless of first-row alignment/padding.
                 HorizontalLayout {
-                    visible: root.narrow-toolbar && root.panel-mode == "files";
+                    visible: root.narrow-toolbar && !root.show-tree && root.panel-mode == "files";
                     height: self.visible ? 22px : 0px;
                     padding-left: 6px;
                     padding-right: 6px;

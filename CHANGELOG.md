@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复窗口收窄时终端换行错位、全屏交互程序（如 menuconfig）显示错乱，以及 SFTP 面板工具栏按钮被裁剪的问题（#433）。** 终端列数计算预留一列安全边距，避免因取整误差把最后几列内容推出可视区域——这既修复了长行不能自动换行的问题，也修复了全屏字符界面程序（如 menuconfig）出现的乱码、错位和偶发卡顿。同时修正了显示目录树时 SFTP 面板判断"是否需要紧凑工具栏"的宽度阈值，使其正确扣除目录树占用的空间，工具栏按钮不再在收窄面板或拖动目录树分隔条时被裁剪或消失。
+- **Fix terminal line-wrap misalignment on narrow windows, display corruption in full-screen interactive programs (e.g. menuconfig), and clipped SFTP toolbar buttons (#433).** The terminal column count now reserves a one-column safety margin so rounding error can no longer push the last cell(s) past the visible grid — this fixes both long lines failing to wrap and full-screen TUI programs like menuconfig rendering garbled or occasionally freezing. Also corrected the SFTP panel's narrow-toolbar width threshold to account for the directory tree's width, so toolbar buttons no longer get clipped or disappear when the panel is narrow or the tree divider is dragged.
+
 - **内置编辑器支持实时基础语法染色并优化大文本显示。** 按扩展名识别 Rust、Python、Shell、JSON、YAML、TOML、JavaScript/TypeScript 和 C/C++，区分关键字、字符串、注释、数字和配置键，并适配深浅主题。行号复用原生排版，仅绘制可见行号；滚动和光标闪烁复用排版缓存。超过 10,000 行的文本停止读取并提示文本过大，保留现有字节大小限制。
 - **Add live lexical highlighting and improve large-text display in the built-in editor.** Detect Rust, Python, Shell, JSON, YAML, TOML, JavaScript/TypeScript, and C/C++ by extension, with theme-aware colors for keywords, strings, comments, numbers, and configuration keys. Draw only visible gutter numbers using native text layout, and reuse layouts when scrolling or blinking the cursor. Stop reading files over 10,000 lines with a text-too-large message, retaining the existing byte limit.
 
