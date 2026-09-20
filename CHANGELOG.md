@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复拖拽选择文本时蓝色选区溢出编辑器边界的问题（#440）。** 内置编辑器渲染补丁中，选区背景色块曾在裁剪区域生效之前绘制，因此在拖拽选择并触发自动滚动时，选区高亮可能画到编辑器自身边界之外。现在选区背景与文字、光标一样，统一在裁剪之后绘制。
+- **Fix the blue selection highlight painting past the editor's boundary while drag-selecting (#440).** In the native editor rendering patch, the selection background was filled before this input's own clip was applied, so during a drag-select that triggers auto-scroll the highlight could paint outside the editor's visible area. The selection background is now drawn inside the same clip as the glyphs and cursor.
+
 - **修复窗口收窄时终端换行错位、全屏交互程序（如 menuconfig）显示错乱，以及 SFTP 面板工具栏按钮被裁剪的问题（#433）。** 终端列数计算预留一列安全边距，避免因取整误差把最后几列内容推出可视区域——这既修复了长行不能自动换行的问题，也修复了全屏字符界面程序（如 menuconfig）出现的乱码、错位和偶发卡顿。同时修正了显示目录树时 SFTP 面板判断"是否需要紧凑工具栏"的宽度阈值，使其正确扣除目录树占用的空间，工具栏按钮不再在收窄面板或拖动目录树分隔条时被裁剪或消失。
 - **Fix terminal line-wrap misalignment on narrow windows, display corruption in full-screen interactive programs (e.g. menuconfig), and clipped SFTP toolbar buttons (#433).** The terminal column count now reserves a one-column safety margin so rounding error can no longer push the last cell(s) past the visible grid — this fixes both long lines failing to wrap and full-screen TUI programs like menuconfig rendering garbled or occasionally freezing. Also corrected the SFTP panel's narrow-toolbar width threshold to account for the directory tree's width, so toolbar buttons no longer get clipped or disappear when the panel is narrow or the tree divider is dragged.
 

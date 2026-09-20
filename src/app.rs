@@ -2911,7 +2911,14 @@ fn open_window(
                     }
                     WEvent::DroppedFile(path) => {
                         if let Some(win) = weak.upgrade() {
-                            handle_file_drop(&win, &sh, path.clone());
+                            // On Windows the handler queries the OS cursor
+                            // position itself (see `cursor_pos`), since OLE
+                            // drag-and-drop hover suppresses WM_MOUSEMOVE.
+                            // On macOS/X11/Wayland the compositor delivers
+                            // pointer motion during drag-hover as ordinary
+                            // CursorMoved events, so the last one we saw is
+                            // the drop point (#356).
+                            handle_file_drop(&win, &sh, path.clone(), last_cursor_logical);
                         }
                     }
                     WEvent::CursorMoved { position, .. } => {
@@ -3718,8 +3725,23 @@ fn cursor_pos() -> Option<(i32, i32)> {
 /// Handle an OS file drop: if it landed over the terminal panel (the shell page)
 /// of the active session tab, upload the file to that tab's current remote
 /// directory.
+///
+/// `hovered_pos` is the caller's best guess at the drop point in logical
+/// window-client coordinates, taken from the most recent `CursorMoved` event
+/// (see the `WEvent::DroppedFile` handler). Windows ignores it and queries
+/// the OS cursor directly instead: Win32 suppresses `WM_MOUSEMOVE` for the
+/// window while an OLE drag-and-drop is in progress, so `CursorMoved` can be
+/// stale by the time the drop lands. macOS and X11/Wayland do deliver real
+/// pointer motion during drag-hover as ordinary `CursorMoved` events, so the
+/// last one seen is accurate there — this is what previously left
+/// drag-and-drop upload a no-op on every non-Windows platform (#356).
 #[cfg(windows)]
-fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path::PathBuf) {
+fn handle_file_drop(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    _hovered_pos: Option<(f32, f32)>,
+) {
     let active = win.get_active_tab_id().to_string();
     if active == "welcome" {
         return;
@@ -3735,6 +3757,39 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
     // Drop point in logical client coordinates.
     let client_x = (cx - inner.x) as f32 / scale;
     let client_y = (cy - inner.y) as f32 / scale;
+    handle_file_drop_at(win, sftp_handles, path, client_x, client_y);
+}
+
+#[cfg(not(windows))]
+fn handle_file_drop(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    hovered_pos: Option<(f32, f32)>,
+) {
+    let Some((client_x, client_y)) = hovered_pos else {
+        // No CursorMoved was ever observed for this drag (e.g. the file was
+        // dropped the instant it entered the window). Without a position we
+        // cannot tell which panel it landed on, so do nothing rather than
+        // guess — matches the previous no-op rather than uploading to the
+        // wrong place.
+        return;
+    };
+    handle_file_drop_at(win, sftp_handles, path, client_x, client_y);
+}
+
+/// Shared drop-position → upload logic for both platform front-ends above.
+fn handle_file_drop_at(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    client_x: f32,
+    client_y: f32,
+) {
+    let active = win.get_active_tab_id().to_string();
+    if active == "welcome" {
+        return;
+    }
     // Accept drops anywhere over the whole terminal panel ("shell page"), so
     // dragging a file onto the terminal uploads it to the session's current
     // directory — not just onto the SFTP file list (#drag-onto-shell).
@@ -3775,9 +3830,6 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
         }
     }
 }
-
-#[cfg(not(windows))]
-fn handle_file_drop(_win: &AppWindow, _sftp_handles: &SftpHandles, _path: std::path::PathBuf) {}
 
 // ---------------------------------------------------------------------------
 // Model helpers
