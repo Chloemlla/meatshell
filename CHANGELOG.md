@@ -3,7 +3,10 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [Unreleased]
+## [0.7.4] - 2026-09-21
+
+- **修复会话断开（`exit` 或网络中断）后终端内容被清空的问题（#451）。** 断开连接时，释放缓存曾会新建一个空白的 vt100 解析器，导致"连接已断开，按 Enter 重新连接"提示打印在一块空屏幕上，而不是追加在断开前的原有内容后面。现在断开时只释放体积较大且无上限的原始重放缓冲区与历史滚动记录，当前可见屏幕内容保持不变；重新连接和手动"清空缓存"两个场景仍会像之前一样得到全新空白屏幕。
+- **Fix terminal content being wiped after a session disconnects (`exit` or network loss) (#451).** On disconnect, releasing the buffer used to create a brand-new, blank vt100 parser, so the "Disconnected — press Enter to reconnect" hint printed onto an empty screen instead of appending to whatever was on screen before the drop. Disconnect now only releases the large, unbounded raw replay buffer and scrollback history; the currently visible screen is left untouched. Reconnecting and the manual "Clear cache" action still get a fresh blank screen as before.
 
 - **修复 SFTP 面板拖拽上传文件/文件夹在 Windows 以外平台完全无效的问题（#356）。** 此前非 Windows 平台的拖放处理函数是空实现，拖入的文件不会上传，也没有任何提示。现在 macOS 与 Linux（X11、Wayland）会使用拖放悬停期间系统正常投递的指针位置来判断文件放在了哪个终端面板上，并复用与 Windows 相同的上传逻辑（含上传进度提示与会话同步镜像）。
 - **Fix SFTP drag-and-drop upload being a complete no-op on every platform except Windows (#356).** The non-Windows drop handler was an empty stub, so dropped files silently did nothing. macOS and Linux (X11, Wayland) now use the pointer position the OS normally delivers during drag-hover to determine which terminal panel the file was dropped on, and share the same upload path as Windows (including the upload-progress indicator and session-sync mirroring).
