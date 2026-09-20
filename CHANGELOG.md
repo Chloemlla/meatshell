@@ -5,6 +5,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **修复 SFTP 面板拖拽上传文件/文件夹在 Windows 以外平台完全无效的问题（#356）。** 此前非 Windows 平台的拖放处理函数是空实现，拖入的文件不会上传，也没有任何提示。现在 macOS 与 Linux（X11、Wayland）会使用拖放悬停期间系统正常投递的指针位置来判断文件放在了哪个终端面板上，并复用与 Windows 相同的上传逻辑（含上传进度提示与会话同步镜像）。
+- **Fix SFTP drag-and-drop upload being a complete no-op on every platform except Windows (#356).** The non-Windows drop handler was an empty stub, so dropped files silently did nothing. macOS and Linux (X11, Wayland) now use the pointer position the OS normally delivers during drag-hover to determine which terminal panel the file was dropped on, and share the same upload path as Windows (including the upload-progress indicator and session-sync mirroring).
+
 - **修复拖拽选择文本时蓝色选区溢出编辑器边界的问题（#440）。** 内置编辑器渲染补丁中，选区背景色块曾在裁剪区域生效之前绘制，因此在拖拽选择并触发自动滚动时，选区高亮可能画到编辑器自身边界之外。现在选区背景与文字、光标一样，统一在裁剪之后绘制。
 - **Fix the blue selection highlight painting past the editor's boundary while drag-selecting (#440).** In the native editor rendering patch, the selection background was filled before this input's own clip was applied, so during a drag-select that triggers auto-scroll the highlight could paint outside the editor's visible area. The selection background is now drawn inside the same clip as the glyphs and cursor.
 
