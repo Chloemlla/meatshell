@@ -187,7 +187,7 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                 // from this batch so stale scrollback is released immediately.
                 if let Some(closed) = take_closed_event(&mut drained) {
                     if let Some(h) = crate::app::term_buf(&rt.bufs, &tab_id_pump) {
-                        h.lock().unwrap().release_scrollback();
+                        h.lock().unwrap().release_history_keep_screen();
                     }
                     let rt_evt = rt.clone();
                     let tid = tab_id_pump.clone();

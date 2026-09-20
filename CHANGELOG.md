@@ -3,7 +3,19 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [Unreleased]
+## [0.7.4] - 2026-09-21
+
+- **修复会话断开（`exit` 或网络中断）后终端内容被清空的问题（#451）。** 断开连接时，释放缓存曾会新建一个空白的 vt100 解析器，导致"连接已断开，按 Enter 重新连接"提示打印在一块空屏幕上，而不是追加在断开前的原有内容后面。现在断开时只释放体积较大且无上限的原始重放缓冲区与历史滚动记录，当前可见屏幕内容保持不变；重新连接和手动"清空缓存"两个场景仍会像之前一样得到全新空白屏幕。
+- **Fix terminal content being wiped after a session disconnects (`exit` or network loss) (#451).** On disconnect, releasing the buffer used to create a brand-new, blank vt100 parser, so the "Disconnected — press Enter to reconnect" hint printed onto an empty screen instead of appending to whatever was on screen before the drop. Disconnect now only releases the large, unbounded raw replay buffer and scrollback history; the currently visible screen is left untouched. Reconnecting and the manual "Clear cache" action still get a fresh blank screen as before.
+
+- **修复 SFTP 面板拖拽上传文件/文件夹在 Windows 以外平台完全无效的问题（#356）。** 此前非 Windows 平台的拖放处理函数是空实现，拖入的文件不会上传，也没有任何提示。现在 macOS 与 Linux（X11、Wayland）会使用拖放悬停期间系统正常投递的指针位置来判断文件放在了哪个终端面板上，并复用与 Windows 相同的上传逻辑（含上传进度提示与会话同步镜像）。
+- **Fix SFTP drag-and-drop upload being a complete no-op on every platform except Windows (#356).** The non-Windows drop handler was an empty stub, so dropped files silently did nothing. macOS and Linux (X11, Wayland) now use the pointer position the OS normally delivers during drag-hover to determine which terminal panel the file was dropped on, and share the same upload path as Windows (including the upload-progress indicator and session-sync mirroring).
+
+- **修复拖拽选择文本时蓝色选区溢出编辑器边界的问题（#440）。** 内置编辑器渲染补丁中，选区背景色块曾在裁剪区域生效之前绘制，因此在拖拽选择并触发自动滚动时，选区高亮可能画到编辑器自身边界之外。现在选区背景与文字、光标一样，统一在裁剪之后绘制。
+- **Fix the blue selection highlight painting past the editor's boundary while drag-selecting (#440).** In the native editor rendering patch, the selection background was filled before this input's own clip was applied, so during a drag-select that triggers auto-scroll the highlight could paint outside the editor's visible area. The selection background is now drawn inside the same clip as the glyphs and cursor.
+
+- **修复窗口收窄时终端换行错位、全屏交互程序（如 menuconfig）显示错乱，以及 SFTP 面板工具栏按钮被裁剪的问题（#433）。** 终端列数计算预留一列安全边距，避免因取整误差把最后几列内容推出可视区域——这既修复了长行不能自动换行的问题，也修复了全屏字符界面程序（如 menuconfig）出现的乱码、错位和偶发卡顿。同时修正了显示目录树时 SFTP 面板判断"是否需要紧凑工具栏"的宽度阈值，使其正确扣除目录树占用的空间，工具栏按钮不再在收窄面板或拖动目录树分隔条时被裁剪或消失。
+- **Fix terminal line-wrap misalignment on narrow windows, display corruption in full-screen interactive programs (e.g. menuconfig), and clipped SFTP toolbar buttons (#433).** The terminal column count now reserves a one-column safety margin so rounding error can no longer push the last cell(s) past the visible grid — this fixes both long lines failing to wrap and full-screen TUI programs like menuconfig rendering garbled or occasionally freezing. Also corrected the SFTP panel's narrow-toolbar width threshold to account for the directory tree's width, so toolbar buttons no longer get clipped or disappear when the panel is narrow or the tree divider is dragged.
 
 - **内置编辑器支持实时基础语法染色并优化大文本显示。** 按扩展名识别 Rust、Python、Shell、JSON、YAML、TOML、JavaScript/TypeScript 和 C/C++，区分关键字、字符串、注释、数字和配置键，并适配深浅主题。行号复用原生排版，仅绘制可见行号；滚动和光标闪烁复用排版缓存。超过 10,000 行的文本停止读取并提示文本过大，保留现有字节大小限制。
 - **Add live lexical highlighting and improve large-text display in the built-in editor.** Detect Rust, Python, Shell, JSON, YAML, TOML, JavaScript/TypeScript, and C/C++ by extension, with theme-aware colors for keywords, strings, comments, numbers, and configuration keys. Draw only visible gutter numbers using native text layout, and reuse layouts when scrolling or blinking the cursor. Stop reading files over 10,000 lines with a text-too-large message, retaining the existing byte limit.
