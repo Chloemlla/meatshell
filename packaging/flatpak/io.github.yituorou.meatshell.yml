@@ -45,6 +45,10 @@ modules:
       - -DCHANNEL_TSMF=OFF
       # H.264 / RemoteFX GFX decoding uses the runtime's libavcodec.
       - -DWITH_FFMPEG=ON
+      # The freedesktop SDK does not ship Kerberos dev headers, so
+      # find_package(KRB5) fails the cmake configure step otherwise.
+      # NTLM auth (the common path for RDP) is unaffected.
+      - -DWITH_KRB5=OFF
     sources:
       - type: archive
         url: https://pub.freerdp.com/releases/freerdp-3.21.0.tar.xz
