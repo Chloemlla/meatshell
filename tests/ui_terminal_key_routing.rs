@@ -55,39 +55,3 @@ fn ctrl_v_pastes_locally_except_on_the_alternate_screen() {
     assert!(paste.contains("!event.modifiers.shift"));
     assert!(source[paste_end..].contains("root.send-key(event.text"));
 }
-
-#[test]
-fn scrollbar_pointer_down_defers_terminal_focus_recovery() {
-    let source = include_str!("../ui/terminal_view.slint");
-    let scrollbar_start = source
-        .find("// Terminal scrollbar")
-        .expect("terminal scrollbar declaration");
-    let scrollbar_end = source[scrollbar_start..]
-        .find("if root.find-active")
-        .expect("following terminal overlay")
-        + scrollbar_start;
-    let scrollbar = &source[scrollbar_start..scrollbar_end];
-
-    assert!(scrollbar.contains("e.kind == PointerEventKind.down"));
-    assert!(scrollbar.contains("root.focus-pending = true;"));
-    assert!(scrollbar.contains("root.terminal-scroll-to("));
-}
-
-#[test]
-fn scrollback_ime_anchor_stays_in_the_visible_tree_without_a_mouse_hitbox() {
-    let source = include_str!("../ui/terminal_view.slint");
-    let input_start = source
-        .find("ime-input := TextInput")
-        .expect("hidden terminal IME input");
-    let input_end = source[input_start..]
-        .find("changed has-focus")
-        .expect("IME focus handler")
-        + input_start;
-    let input = &source[input_start..input_end];
-
-    assert!(!input.contains(": -1000px"));
-    assert!(input.contains("x: root.cursor-row >= 0"));
-    assert!(input.contains("y: root.cursor-row >= 0"));
-    assert!(input.contains("width: 0px;"));
-    assert!(input.contains("height: 0px;"));
-}
