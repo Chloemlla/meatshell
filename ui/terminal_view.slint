@@ -1289,6 +1289,12 @@ export component TerminalView inherits Rectangle {
                     }
                     pointer-event(e) => {
                         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                            // The scrollbar is not focusable, but its pointer
+                            // interaction can leave the off-screen IME anchor
+                            // without keyboard focus. Restore it on the next
+                            // UI turn so scrollback keys and remote input work
+                            // immediately after a click or drag.
+                            root.focus-pending = true;
                             root.terminal-scroll-to(clamp(round(root.scroll-max * (1 - self.mouse-y / self.height)), 0, root.scroll-max));
                         }
                     }
