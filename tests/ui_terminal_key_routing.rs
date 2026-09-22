@@ -72,3 +72,22 @@ fn scrollbar_pointer_down_defers_terminal_focus_recovery() {
     assert!(scrollbar.contains("root.focus-pending = true;"));
     assert!(scrollbar.contains("root.terminal-scroll-to("));
 }
+
+#[test]
+fn scrollback_ime_anchor_stays_in_the_visible_tree_without_a_mouse_hitbox() {
+    let source = include_str!("../ui/terminal_view.slint");
+    let input_start = source
+        .find("ime-input := TextInput")
+        .expect("hidden terminal IME input");
+    let input_end = source[input_start..]
+        .find("changed has-focus")
+        .expect("IME focus handler")
+        + input_start;
+    let input = &source[input_start..input_end];
+
+    assert!(!input.contains(": -1000px"));
+    assert!(input.contains("x: root.cursor-row >= 0"));
+    assert!(input.contains("y: root.cursor-row >= 0"));
+    assert!(input.contains("width: 0px;"));
+    assert!(input.contains("height: 0px;"));
+}
