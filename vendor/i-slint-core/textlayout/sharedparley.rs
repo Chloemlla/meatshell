@@ -1405,11 +1405,6 @@ pub fn draw_text_input(
     }
     let layout = &cache.entry.as_ref().unwrap().1;
 
-    layout.selection_geometry(selection_range, |selection_rect| {
-        item_renderer
-            .fill_rectange_with_color(selection_rect, text_input.selection_background_color());
-    });
-
     item_renderer.save_state();
 
     let render = item_renderer.combine_clip(
@@ -1417,6 +1412,19 @@ pub fn draw_text_input(
         LogicalBorderRadius::zero(),
         LogicalLength::zero(),
     );
+
+    // Paint the selection background inside the same clip as the glyph runs
+    // and cursor below (#440). Filling it before the clip was pushed let the
+    // blue selection rectangle draw against whatever ambient clip the caller
+    // had active, instead of this input's own `size` — so during a drag
+    // (which repositions the input inside its scrolling parent every frame)
+    // the highlight could paint past the editor's visible boundary.
+    if render {
+        layout.selection_geometry(selection_range, |selection_rect| {
+            item_renderer
+                .fill_rectange_with_color(selection_rect, text_input.selection_background_color());
+        });
+    }
 
     if render && text_input.line_number_width().get() > 0. {
         // A single clipped gutter item shares the editor's exact text layout.

@@ -3326,7 +3326,14 @@ fn open_window(
                     }
                     WEvent::DroppedFile(path) => {
                         if let Some(win) = weak.upgrade() {
-                            handle_file_drop(&win, &sh, path.clone());
+                            // On Windows the handler queries the OS cursor
+                            // position itself (see `cursor_pos`), since OLE
+                            // drag-and-drop hover suppresses WM_MOUSEMOVE.
+                            // On macOS/X11/Wayland the compositor delivers
+                            // pointer motion during drag-hover as ordinary
+                            // CursorMoved events, so the last one we saw is
+                            // the drop point (#356).
+                            handle_file_drop(&win, &sh, path.clone(), last_cursor_logical);
                         }
                     }
                     WEvent::CursorMoved { position, .. } => {
@@ -4133,8 +4140,23 @@ fn cursor_pos() -> Option<(i32, i32)> {
 /// Handle an OS file drop: if it landed over the terminal panel (the shell page)
 /// of the active session tab, upload the file to that tab's current remote
 /// directory.
+///
+/// `hovered_pos` is the caller's best guess at the drop point in logical
+/// window-client coordinates, taken from the most recent `CursorMoved` event
+/// (see the `WEvent::DroppedFile` handler). Windows ignores it and queries
+/// the OS cursor directly instead: Win32 suppresses `WM_MOUSEMOVE` for the
+/// window while an OLE drag-and-drop is in progress, so `CursorMoved` can be
+/// stale by the time the drop lands. macOS and X11/Wayland do deliver real
+/// pointer motion during drag-hover as ordinary `CursorMoved` events, so the
+/// last one seen is accurate there — this is what previously left
+/// drag-and-drop upload a no-op on every non-Windows platform (#356).
 #[cfg(windows)]
-fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path::PathBuf) {
+fn handle_file_drop(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    _hovered_pos: Option<(f32, f32)>,
+) {
     let active = win.get_active_tab_id().to_string();
     if active == "welcome" {
         return;
@@ -4150,6 +4172,39 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
     // Drop point in logical client coordinates.
     let client_x = (cx - inner.x) as f32 / scale;
     let client_y = (cy - inner.y) as f32 / scale;
+    handle_file_drop_at(win, sftp_handles, path, client_x, client_y);
+}
+
+#[cfg(not(windows))]
+fn handle_file_drop(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    hovered_pos: Option<(f32, f32)>,
+) {
+    let Some((client_x, client_y)) = hovered_pos else {
+        // No CursorMoved was ever observed for this drag (e.g. the file was
+        // dropped the instant it entered the window). Without a position we
+        // cannot tell which panel it landed on, so do nothing rather than
+        // guess — matches the previous no-op rather than uploading to the
+        // wrong place.
+        return;
+    };
+    handle_file_drop_at(win, sftp_handles, path, client_x, client_y);
+}
+
+/// Shared drop-position → upload logic for both platform front-ends above.
+fn handle_file_drop_at(
+    win: &AppWindow,
+    sftp_handles: &SftpHandles,
+    path: std::path::PathBuf,
+    client_x: f32,
+    client_y: f32,
+) {
+    let active = win.get_active_tab_id().to_string();
+    if active == "welcome" {
+        return;
+    }
     // Accept drops anywhere over the whole terminal panel ("shell page"), so
     // dragging a file onto the terminal uploads it to the session's current
     // directory — not just onto the SFTP file list (#drag-onto-shell).
@@ -4190,9 +4245,6 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
         }
     }
 }
-
-#[cfg(not(windows))]
-fn handle_file_drop(_win: &AppWindow, _sftp_handles: &SftpHandles, _path: std::path::PathBuf) {}
 
 // ---------------------------------------------------------------------------
 // Model helpers
@@ -4328,6 +4380,10 @@ fn wire_session_callbacks(
             w.set_dialog_stop_bits("1".into());
             w.set_dialog_parity("none".into());
             w.set_dialog_flow("none".into());
+            w.set_dialog_rdp_domain("".into());
+            w.set_dialog_rdp_resolution(RDP_RESOLUTION_DEFAULT.into());
+            w.set_dialog_rdp_width("1280".into());
+            w.set_dialog_rdp_height("720".into());
             w.set_dialog_encoding("UTF-8".into());
             w.set_dialog_vt100_drawing(false);
             w.set_dialog_disable_shell_integration(false);
@@ -4575,6 +4631,17 @@ fn wire_session_callbacks(
                 w.set_dialog_stop_bits(session.stop_bits.to_string().into());
                 w.set_dialog_parity(session.parity.clone().into());
                 w.set_dialog_flow(session.flow_control.clone().into());
+                w.set_dialog_rdp_domain(session.rdp_domain.clone().into());
+                w.set_dialog_rdp_resolution(
+                    rdp_resolution_choice(
+                        session.rdp_fullscreen,
+                        session.rdp_width,
+                        session.rdp_height,
+                    )
+                    .into(),
+                );
+                w.set_dialog_rdp_width(session.rdp_width.to_string().into());
+                w.set_dialog_rdp_height(session.rdp_height.to_string().into());
                 w.set_dialog_encoding(session.encoding.clone().into());
                 w.set_dialog_vt100_drawing(session.vt100_drawing);
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
@@ -4940,12 +5007,18 @@ fn wire_session_callbacks(
                 _ if draft.user.trim().is_empty() => draft.host.to_string(),
                 _ => format!("{}@{}", draft.user, draft.host),
             };
-            // Telnet defaults to port 23, SSH to 22; serial ignores port.
-            let default_port = if kind == crate::config::SessionKind::Telnet {
-                23
-            } else {
-                22
+            // Telnet defaults to port 23, RDP to 3389, SSH to 22; serial ignores
+            // the port entirely.
+            let default_port = match kind {
+                crate::config::SessionKind::Telnet => 23,
+                crate::config::SessionKind::Rdp => 3389,
+                _ => 22,
             };
+            let (rdp_fullscreen, rdp_width, rdp_height) = rdp_display_settings(
+                &draft.rdp_resolution.to_string(),
+                draft.rdp_width,
+                draft.rdp_height,
+            );
             let new_session = Session {
                 id,
                 name: if draft.name.is_empty() {
@@ -4988,6 +5061,10 @@ fn wire_session_callbacks(
                 disable_shell_integration: draft.disable_shell_integration,
                 note: draft.note.to_string(),
                 jump_session_id: draft.jump_session_id.to_string(),
+                rdp_domain: draft.rdp_domain.to_string(),
+                rdp_fullscreen,
+                rdp_width,
+                rdp_height,
             };
             {
                 let mut s = store.borrow_mut();
@@ -5342,6 +5419,26 @@ fn wire_session_callbacks(
                     None => return,
                 }
             };
+            // ── RDP: hand the saved account to the system client, open no tab ──
+            // FinalShell does the same thing: meatshell stores host / port /
+            // user / password and starts the operating system's own remote
+            // desktop client (mstsc on Windows), so the session lives in a
+            // native window rather than in one of our tabs.
+            if session.kind == SessionKind::Rdp {
+                let message = match crate::rdp::launch(&session) {
+                    Ok(started) => format!(
+                        "{} {}",
+                        t("已用系统远程桌面打开", "Opened with the system remote desktop client"),
+                        started
+                    ),
+                    Err(err) => format!("{}: {err}", t("RDP 启动失败", "Failed to start RDP")),
+                };
+                tracing::info!("{message}");
+                if let Some(w) = weak.upgrade() {
+                    w.set_ssh_import_hint(message.into());
+                }
+                return;
+            }
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
             let tab_title = session.name.clone();
 
@@ -5353,6 +5450,9 @@ fn wire_session_callbacks(
                 }
                 SessionKind::Telnet => format!("telnet {}:{}", session.host, session.port),
                 SessionKind::Local => format!("local {}", session.name),
+                // RDP opens in the system client instead of a tab (see the
+                // early return above); this label only exists for completeness.
+                SessionKind::Rdp => format!("rdp {}:{}", session.host, session.port),
             };
             // Compatibility mode also suppresses the SFTP side-channel so
             // bastions that only permit one proxied PTY connection stay alive.
@@ -5994,20 +6094,23 @@ fn refresh_dock_inner(
             h: p.rect.h,
         })
         .collect();
-    let unchanged_rows = panels_model.row_count() == panels.len()
-            && (panels.is_empty()
-                || (0..panels.len()).all(|i| {
-                    panels_model.row_data(i).is_some_and(|r| {
-                        let p = &panels[i];
-                        r.kind == p.kind
-                            && r.edge == p.edge
-                            && r.x == p.x
-                            && r.y == p.y
-                            && r.w == p.w
-                            && r.h == p.h
-                    })
-                }));
-    if !unchanged_rows {
+    // Update the rows in place whenever the list keeps its shape. `set_vec`
+    // resets the repeater and rebuilds every panel component, which would
+    // destroy the resize handle a drag currently holds (and renumber the items
+    // the pointer grab points at, stranding a divider drag) — so a resize would
+    // stop following the cursor after its first event. A changing panel count
+    // (dock / collapse / zen) is the only thing that needs the reset.
+    if panels_model.row_count() == panels.len() {
+        for (i, p) in panels.into_iter().enumerate() {
+            let unchanged = panels_model.row_data(i).is_some_and(|old| {
+                old.kind == p.kind && old.edge == p.edge && old.x == p.x && old.y == p.y
+                    && old.w == p.w && old.h == p.h
+            });
+            if !unchanged {
+                panels_model.set_row_data(i, p);
+            }
+        }
+    } else {
         panels_model.set_vec(panels);
     }
     let dividers: Vec<DividerGeomInfo> = geom
@@ -6836,6 +6939,7 @@ fn wire_key_input(
             }
         });
     }
+
 
     // Propagate PTY resize to the SSH worker and vt100 parser. Pixel
     // dimensions come from Slint; we approximate col/row counts using
