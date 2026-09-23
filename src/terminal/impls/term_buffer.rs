@@ -345,6 +345,11 @@ impl TermBuffer {
     /// The returned bytes are terminal-query replies that must be written back
     /// to the PTY immediately (DSR/CPR and primary device attributes, #328).
     pub(crate) fn ingest(&mut self, input: &[u8]) -> Vec<u8> {
+        // Log the stream as received, before client-side JSON reformatting,
+        // so the transcript matches what the remote actually sent (#265).
+        if let Some(log) = self.session_log.as_mut() {
+            log.write_output(input);
+        }
         let formatted = self
             .json_format_output
             .then(|| crate::terminal::format_json_output(input));

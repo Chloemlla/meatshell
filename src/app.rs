@@ -118,6 +118,41 @@ fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) -> Vec
     }
 }
 
+/// Open the session-log file for a new terminal tab when logging is on for
+/// `session` (global default or the session's own override, #265).
+fn open_session_log(
+    store: &ConfigStore,
+    session: &Session,
+) -> std::io::Result<Option<crate::terminal::SessionLogger>> {
+    if session.kind == SessionKind::Rdp || !store.session_log_active(session) {
+        return Ok(None);
+    }
+    let target = match session.kind {
+        SessionKind::Serial => format!("serial {} @{}", session.serial_port, session.baud_rate),
+        SessionKind::Local => "local".to_string(),
+        kind => {
+            let user = if session.user.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{}@", session.user.trim())
+            };
+            format!("{} {}{}:{}", kind.as_str(), user, session.host, session.port)
+        }
+    };
+    let name = if session.name.trim().is_empty() {
+        session.host.as_str()
+    } else {
+        session.name.as_str()
+    };
+    let log = crate::terminal::SessionLogger::create(&store.session_log_dir(), name, &target)
+        .map_err(|err| {
+            tracing::warn!("session log: cannot create file: {err}");
+            err
+        })?;
+    tracing::info!("session log: recording to {}", log.path().display());
+    Ok(Some(log))
+}
+
 fn record_ingested_chunk(chunk_len: usize, ingested_since_checkpoint: &mut usize) -> bool {
     debug_assert!(*ingested_since_checkpoint < INGEST_FRAME_BUDGET);
     if chunk_len == 0 {
@@ -157,7 +192,7 @@ use tokio::runtime::Runtime;
 use crate::app::core::{AppCore, TabRoute, TabRoutes, WindowRegistry, WindowState};
 use crate::config::{
     is_reserved_session_group, named_display_groups, AuthMethod, ConfigStore, OutputHighlightRule,
-    Secret, Session, SessionKind,
+    Secret, Session, SessionKind, SessionLogMode,
 };
 use crate::i18n::t;
 use crate::layout::{LogicalRect, TerminalWheelHit};
@@ -864,6 +899,9 @@ fn open_window(
         }
         window.set_output_highlight_enabled(s.output_highlight_enabled());
         window.set_json_format_output(s.json_format_output());
+        window.set_session_log_enabled(s.session_log_enabled());
+        window.set_session_log_dir(s.session_log_dir().to_string_lossy().to_string().into());
+        window.set_session_log_dir_custom(!s.session_log_dir_setting().is_empty());
         window.set_output_highlight_preset(s.output_highlight_preset().into());
         window.set_output_highlight_rules(output_highlight_rule_model(&s));
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
@@ -965,6 +1003,66 @@ fn open_window(
             let mut s = store.borrow_mut();
             s.set_download_always_ask(ask);
             let _ = s.save();
+        });
+    }
+    // --- Session logging (#265) -------------------------------------------
+    {
+        let store = store.clone();
+        window.on_set_session_log_enabled(move |enabled| {
+            let mut s = store.borrow_mut();
+            s.set_session_log_enabled(enabled);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_pick_session_log_dir(move || {
+            let start = store.borrow().session_log_dir();
+            let Some(folder) = rfd::FileDialog::new().set_directory(&start).pick_folder() else {
+                return;
+            };
+            let effective = {
+                let mut s = store.borrow_mut();
+                s.set_session_log_dir(folder.to_string_lossy().to_string());
+                let _ = s.save();
+                s.session_log_dir()
+            };
+            if let Some(w) = weak.upgrade() {
+                w.set_session_log_dir(effective.to_string_lossy().to_string().into());
+                w.set_session_log_dir_custom(true);
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_reset_session_log_dir(move || {
+            let effective = {
+                let mut s = store.borrow_mut();
+                s.set_session_log_dir(String::new());
+                let _ = s.save();
+                s.session_log_dir()
+            };
+            if let Some(w) = weak.upgrade() {
+                w.set_session_log_dir(effective.to_string_lossy().to_string().into());
+                w.set_session_log_dir_custom(false);
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_open_session_log_dir(move || {
+            let dir = store.borrow().session_log_dir();
+            if std::fs::create_dir_all(&dir).is_err() {
+                return;
+            }
+            #[cfg(windows)]
+            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&dir).spawn();
+            #[cfg(all(not(windows), not(target_os = "macos")))]
+            let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
         });
     }
     {
@@ -3972,6 +4070,7 @@ fn wire_session_callbacks(
             w.set_dialog_rdp_height("720".into());
             w.set_dialog_encoding("UTF-8".into());
             w.set_dialog_vt100_drawing(false);
+            w.set_dialog_session_log("default".into());
             w.set_dialog_disable_shell_integration(false);
             w.set_dialog_note("".into());
             w.set_dialog_editing(false);
@@ -4222,6 +4321,7 @@ fn wire_session_callbacks(
                 w.set_dialog_rdp_height(session.rdp_height.to_string().into());
                 w.set_dialog_encoding(session.encoding.clone().into());
                 w.set_dialog_vt100_drawing(session.vt100_drawing);
+                w.set_dialog_session_log(session.session_log.as_str().into());
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
                 w.set_dialog_note(session.note.clone().into());
                 w.set_dialog_editing(true);
@@ -4634,6 +4734,7 @@ fn wire_session_callbacks(
                 flow_control: draft.flow_control.to_string(),
                 encoding: draft.encoding.to_string(),
                 vt100_drawing: draft.vt100_drawing,
+                session_log: SessionLogMode::from_str(draft.session_log.as_str()),
                 forwards,
                 triggers,
                 disable_shell_integration: draft.disable_shell_integration,
@@ -5125,6 +5226,19 @@ fn wire_session_callbacks(
                     compile_output_rules(settings.output_highlight_rules()),
                 )
             };
+            // Session logging (#265): open the transcript before the first
+            // byte arrives. A failure is shown in the terminal, not fatal.
+            let (session_log, session_log_notice) = match open_session_log(&store.borrow(), &session)
+            {
+                Ok(log) => (log, None),
+                Err(err) => (
+                    None,
+                    Some(format!(
+                        "\x1b[33m{} {err}\x1b[0m\r\n",
+                        t("[会话日志] 无法创建日志文件:", "[session log] could not create log file:")
+                    )),
+                ),
+            };
             bufs.lock().unwrap().insert(
                 tab_id.clone(),
                 Arc::new(Mutex::new(TermBuffer {
@@ -5149,8 +5263,12 @@ fn wire_session_callbacks(
                     csi_state: CsiState::Normal,
                     csi_pending: Vec::new(),
                     raw: std::collections::VecDeque::new(),
+                    session_log,
                 })),
             );
+            if let Some(notice) = session_log_notice {
+                let _ = ingest_terminal_output(&bufs, &tab_id, notice.as_bytes());
+            }
             render_gates.lock().unwrap().insert(
                 tab_id.clone(),
                 Arc::new(TabRenderGate::new(RENDER_MIN_INTERVAL)),
@@ -6240,6 +6358,9 @@ fn wire_key_input(
                         if let Some(h) = term_buf(&ctx.bufs, tab_id.as_str()) {
                             let mut b = h.lock().unwrap();
                             b.release_scrollback();
+                            if let Some(log) = b.session_log.as_mut() {
+                                log.note("reconnecting");
+                            }
                         }
                     }
                     if let Some(st) =

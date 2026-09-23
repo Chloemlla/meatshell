@@ -44,6 +44,9 @@ pub(crate) struct TermBuffer {
     pub(crate) csi_state: CsiState,
     pub(crate) csi_pending: Vec<u8>,
     pub(crate) raw: VecDeque<u8>,
+    /// Plain-text transcript of this tab's output, when session logging is
+    /// on for it (#265). Dropping the buffer (tab close) closes the file.
+    pub(crate) session_log: Option<crate::terminal::SessionLogger>,
 }
 
 #[derive(Clone, Copy, PartialEq)]

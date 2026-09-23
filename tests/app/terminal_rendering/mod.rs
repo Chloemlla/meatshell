@@ -39,6 +39,7 @@ fn make_buf(
         csi_state: CsiState::Normal,
         csi_pending: Vec::new(),
         raw: std::collections::VecDeque::new(),
+        session_log: None,
     }
 }
 
