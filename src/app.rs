@@ -996,7 +996,7 @@ fn open_window(
         &all_quick_group_names(&store.borrow()),
     ));
     window.set_command_history(history_model(&store.borrow()));
-    window.set_history_view(history_view_model(&store.borrow(), "")); // #101
+    set_history_view(&window, &store.borrow(), ""); // #101, #419
 
     // Interface setting: SFTP follows the terminal's cd. The shell event pumps
     // read this AtomicBool on every CwdChanged, so toggling applies live to
@@ -6058,7 +6058,7 @@ fn wire_key_input(
         window.on_search_history(move |query: SharedString| {
             *hist_query.borrow_mut() = query.to_string();
             if let Some(w) = weak.upgrade() {
-                w.set_history_view(history_view_model(&store_rc.borrow(), &query));
+                set_history_view(&w, &store_rc.borrow(), &query);
             }
         });
     }
@@ -6079,7 +6079,7 @@ fn wire_key_input(
             if let Some(w) = weak.upgrade() {
                 let s = store_rc.borrow();
                 w.set_command_history(history_model(&s));
-                w.set_history_view(history_view_model(&s, &hist_query.borrow()));
+                set_history_view(&w, &s, &hist_query.borrow());
             }
         });
     }
@@ -6137,6 +6137,16 @@ fn wire_key_input(
                 let _ = s.save();
             }
             if let Some(w) = weak.upgrade() {
+                // Deleting the entry being edited resets the form; deleting one
+                // above it shifts the index so Save still hits the right entry.
+                let edit = edit_index_after_delete(w.get_qcm_edit_index(), index);
+                if edit < 0 && w.get_qcm_edit_index() >= 0 {
+                    w.set_qcm_name("".into());
+                    w.set_qcm_command("".into());
+                    w.set_qcm_group("".into());
+                    w.set_qcm_send_enter(true);
+                }
+                w.set_qcm_edit_index(edit);
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
             }
         });
@@ -6233,6 +6243,11 @@ fn wire_key_input(
                 }
             }
             if let Some(w) = weak.upgrade() {
+                // The copy lands right after `index`; later entries shift down.
+                let edit = w.get_qcm_edit_index();
+                if edit > index {
+                    w.set_qcm_edit_index(edit + 1);
+                }
                 w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
             }
         });
@@ -6270,18 +6285,24 @@ fn wire_key_input(
         let weak = window.as_weak();
         let collapsed = collapsed_quick_groups.clone();
         window.on_reorder_quick_command(move |index: i32, move_up: bool| {
-            let changed = {
+            let swapped = {
                 let mut s = store_rc.borrow_mut();
                 let mut commands = s.quick_commands().to_vec();
-                let changed = reorder_quick_command(&mut commands, index as usize, move_up);
-                if changed {
+                let swapped = reorder_quick_command(&mut commands, index as usize, move_up);
+                if swapped.is_some() {
                     s.set_quick_commands(commands);
                     let _ = s.save();
                 }
-                changed
+                swapped
             };
-            if changed {
+            if let Some(target) = swapped {
                 if let Some(w) = weak.upgrade() {
+                    // Keep the edit form bound to the entry it was loaded from.
+                    w.set_qcm_edit_index(edit_index_after_swap(
+                        w.get_qcm_edit_index(),
+                        index as usize,
+                        target,
+                    ));
                     w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
                 }
             }

@@ -504,6 +504,7 @@ export component AppWindow inherits Window {
     property <int> quick-external-sequence;
     in property <[string]> command-history;          // oldest first (newest last, #113)
     in property <[string]> history-view;             // filtered dropdown, oldest first (newest last, #101)
+    in property <[string]> history-preview;          // history-view flattened to one line each (#419)
     callback run-command(string /* tab-id */, string /* cmd */, bool /* to-all */);
     callback copy-text(string);                 // copy a history command (#96)
     callback delete-history(int /* index */);   // remove a history entry (#96)
@@ -1955,6 +1956,7 @@ export component AppWindow inherits Window {
                         focus-sequence: root.terminal-focus-sequence;
                         command-history: root.command-history;
                         history-view: root.history-view;
+                        history-preview: root.history-preview;
                         run-command(cmd, all) => { root.run-command(term.id, cmd, all); }
                         copy-text(t) => { root.copy-text(t); }
                         delete-history(i) => { root.delete-history(i); }
@@ -2344,6 +2346,7 @@ export component AppWindow inherits Window {
                         root.quick-external-send-enter = send-enter;
                         root.quick-external-sequence += 1;
                     }
+                    edit(i) => { root.edit-quick-command(i); }
                     toggle-group(group) => { root.toggle-quick-group(group); }
                     manage => {
                         root.qcm-name = "";
@@ -3762,7 +3765,9 @@ export component AppWindow inherits Window {
                                 font-family: Theme.font-mono;
                                 font-size: Theme.fs-sm;
                                 single-line: false;
-                                wrap: no-wrap;
+                                // Wrap so long one-liners stay fully visible while
+                                // editing; the box scrolls vertically (#419).
+                                wrap: word-wrap;
                             }
                         }
                     }
@@ -3889,11 +3894,15 @@ export component AppWindow inherits Window {
                             if q.orig-index >= 0 : Rectangle {
                                 height: 38px;
                                 border-radius: Theme.radius-sm;
-                                background: Theme.bg-root;
+                                // The row being edited in the form above is marked (#419).
+                                background: q.orig-index == root.qcm-edit-index ? Theme.accent.with-alpha(0.15) : Theme.bg-root;
+                                border-width: q.orig-index == root.qcm-edit-index ? 1px : 0px;
+                                border-color: Theme.accent;
                                 property <length> ctx-x;
                                 property <length> ctx-y;
                                 item-ta := TouchArea {
                                     clicked => { }  // grab so right-click pointer-events register inside the Flickable
+                                    double-clicked => { root.edit-quick-command(q.orig-index); }
                                     pointer-event(e) => {
                                         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
                                             ctx-x = self.mouse-x; ctx-y = self.mouse-y; qctx-menu.show();
@@ -3907,8 +3916,23 @@ export component AppWindow inherits Window {
                                         alignment: center;
                                         Text { text: q.name; color: Theme.text-primary; font-size: Theme.fs-sm;
                                                overflow: elide; }
-                                        Text { text: q.command; color: Theme.text-muted; font-size: Theme.fs-xs;
+                                        Text { text: q.command-preview; color: Theme.text-muted; font-size: Theme.fs-xs;
                                                overflow: elide; font-family: Theme.ui-font-family; }
+                                    }
+                                    // Edit (#419): previously only reachable via right-click.
+                                    Rectangle {
+                                        width: 24px; height: 28px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: Theme.radius-sm;
+                                        background: edit-ta.has-hover ? Theme.bg-hover : transparent;
+                                        edit-ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.edit-quick-command(q.orig-index); }
+                                        }
+                                        Text { text: "\u{E3C9}"; font-family: "Material Icons";
+                                               color: q.orig-index == root.qcm-edit-index ? Theme.accent : Theme.text-secondary;
+                                               font-size: Theme.fs-sm;
+                                               horizontal-alignment: center; vertical-alignment: center; }
                                     }
                                     Rectangle {
                                         width: 24px; height: 28px;
