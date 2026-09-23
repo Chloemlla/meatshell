@@ -928,12 +928,6 @@ impl ConfigStore {
         }
     }
 
-    /// Whether a new tab for `session` should be logged: the session's own
-    /// On/Off choice wins, otherwise the global default applies.
-    pub fn session_log_active(&self, session: &Session) -> bool {
-        session.session_log.resolve(self.session_log_enabled())
-    }
-
     /// Selected built-in rule set. Unknown values safely fall back to the
     /// conservative log-level preset for forward/backward compatibility.
     pub fn output_highlight_preset(&self) -> &str {

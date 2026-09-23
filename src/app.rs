@@ -118,14 +118,11 @@ fn ingest_terminal_output(bufs: &TermBuffers, tab_id: &str, chunk: &[u8]) -> Vec
     }
 }
 
-/// Open the session-log file for a new terminal tab when logging is on for
-/// `session` (global default or the session's own override, #265).
-fn open_session_log(
-    store: &ConfigStore,
-    session: &Session,
-) -> std::io::Result<Option<crate::terminal::SessionLogger>> {
-    if session.kind == SessionKind::Rdp || !store.session_log_active(session) {
-        return Ok(None);
+/// Header details and override for a tab's session log (#265); `None` for
+/// session kinds without a terminal.
+fn session_log_spec(session: &Session) -> Option<crate::terminal::SessionLogSpec> {
+    if session.kind == SessionKind::Rdp {
+        return None;
     }
     let target = match session.kind {
         SessionKind::Serial => format!("serial {} @{}", session.serial_port, session.baud_rate),
@@ -140,17 +137,29 @@ fn open_session_log(
         }
     };
     let name = if session.name.trim().is_empty() {
-        session.host.as_str()
+        session.host.clone()
     } else {
-        session.name.as_str()
+        session.name.clone()
     };
-    let log = crate::terminal::SessionLogger::create(&store.session_log_dir(), name, &target)
-        .map_err(|err| {
-            tracing::warn!("session log: cannot create file: {err}");
-            err
-        })?;
-    tracing::info!("session log: recording to {}", log.path().display());
-    Ok(Some(log))
+    Some(crate::terminal::SessionLogSpec {
+        name,
+        target,
+        mode: session.session_log,
+    })
+}
+
+/// Bring one tab's session log in line with the current settings; a failure
+/// is printed into that terminal rather than interrupting the session.
+fn apply_session_log_to_buffer(buffer: &mut TermBuffer, enabled: bool, dir: &std::path::Path) {
+    if let Err(err) = buffer.apply_session_log(enabled, dir) {
+        tracing::warn!("session log: cannot create file in {}: {err}", dir.display());
+        let notice = format!(
+            "\r\n\x1b[33m{} {} ({err})\x1b[0m\r\n",
+            t("[会话日志] 无法创建日志文件:", "[session log] could not create log file in"),
+            dir.display()
+        );
+        let _ = buffer.ingest(notice.as_bytes());
+    }
 }
 
 fn record_ingested_chunk(chunk_len: usize, ingested_since_checkpoint: &mut usize) -> bool {
@@ -1008,10 +1017,19 @@ fn open_window(
     // --- Session logging (#265) -------------------------------------------
     {
         let store = store.clone();
+        let bufs = bufs.clone();
         window.on_set_session_log_enabled(move |enabled| {
-            let mut s = store.borrow_mut();
-            s.set_session_log_enabled(enabled);
-            let _ = s.save();
+            let dir = {
+                let mut s = store.borrow_mut();
+                s.set_session_log_enabled(enabled);
+                let _ = s.save();
+                s.session_log_dir()
+            };
+            // Apply to tabs that are already open, not only to new ones.
+            let handles: Vec<TermBufferHandle> = bufs.lock().unwrap().values().cloned().collect();
+            for handle in handles {
+                apply_session_log_to_buffer(&mut handle.lock().unwrap(), enabled, &dir);
+            }
         });
     }
     {
@@ -5226,19 +5244,6 @@ fn wire_session_callbacks(
                     compile_output_rules(settings.output_highlight_rules()),
                 )
             };
-            // Session logging (#265): open the transcript before the first
-            // byte arrives. A failure is shown in the terminal, not fatal.
-            let (session_log, session_log_notice) = match open_session_log(&store.borrow(), &session)
-            {
-                Ok(log) => (log, None),
-                Err(err) => (
-                    None,
-                    Some(format!(
-                        "\x1b[33m{} {err}\x1b[0m\r\n",
-                        t("[会话日志] 无法创建日志文件:", "[session log] could not create log file:")
-                    )),
-                ),
-            };
             bufs.lock().unwrap().insert(
                 tab_id.clone(),
                 Arc::new(Mutex::new(TermBuffer {
@@ -5263,11 +5268,18 @@ fn wire_session_callbacks(
                     csi_state: CsiState::Normal,
                     csi_pending: Vec::new(),
                     raw: std::collections::VecDeque::new(),
-                    session_log,
+                    session_log: None,
+                    session_log_spec: session_log_spec(&session),
                 })),
             );
-            if let Some(notice) = session_log_notice {
-                let _ = ingest_terminal_output(&bufs, &tab_id, notice.as_bytes());
+            // Session logging (#265): open the transcript before the first
+            // byte arrives.
+            {
+                let (enabled, dir) = {
+                    let settings = store.borrow();
+                    (settings.session_log_enabled(), settings.session_log_dir())
+                };
+                with_term_buf(&bufs, &tab_id, |b| apply_session_log_to_buffer(b, enabled, &dir));
             }
             render_gates.lock().unwrap().insert(
                 tab_id.clone(),

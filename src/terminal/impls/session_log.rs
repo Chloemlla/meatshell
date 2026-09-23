@@ -179,6 +179,16 @@ impl TranscriptLines {
     }
 }
 
+/// What a tab needs to (re)open its session log at any time: the session's
+/// own On/Off/Default choice plus the header details. Kept on the terminal
+/// buffer so toggling the global setting applies to already-open tabs.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionLogSpec {
+    pub(crate) name: String,
+    pub(crate) target: String,
+    pub(crate) mode: crate::config::SessionLogMode,
+}
+
 /// Session-log file for one terminal tab.
 pub(crate) struct SessionLogger {
     writer: Option<BufWriter<File>>,
@@ -269,6 +279,20 @@ impl SessionLogger {
             }
         }
         self.flush();
+    }
+
+    /// Seed a log started mid-session with the text currently on screen, so
+    /// the transcript has the context the user was looking at. The last row
+    /// (usually the prompt, up to the cursor) stays open and continues with the next output.
+    pub(crate) fn write_screen_snapshot(&mut self, screen_text: &str) {
+        // Drop blank rows below the text but keep the last row's trailing
+        // spaces: they separate the prompt from the command typed next.
+        let text = screen_text.trim_end_matches(['\n', '\r']);
+        if text.trim().is_empty() {
+            return;
+        }
+        self.note("logging started mid-session; current screen follows");
+        self.write_output(text.replace('\n', "\r\n").as_bytes());
     }
 
     /// Record a chunk of terminal output.
@@ -387,6 +411,24 @@ mod tests {
         assert_eq!(sanitize_file_stem("prod: web/01"), "prod_ web_01");
         assert_eq!(sanitize_file_stem("  "), "session");
         assert_eq!(sanitize_file_stem("..hidden."), "hidden");
+    }
+
+    #[test]
+    fn screen_snapshot_keeps_prompt_open() {
+        let dir = std::env::temp_dir().join(format!("meatshell-log-test-{}", uuid::Uuid::new_v4()));
+        let path = {
+            let mut log = SessionLogger::create(&dir, "s", "local").unwrap();
+            log.write_screen_snapshot("line one\nuser@host:~$ \n\n\n");
+            log.write_output(b"ls\r\n");
+            log.path().to_path_buf()
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[1].starts_with("=== logging started mid-session"));
+        assert!(lines[2].ends_with("] line one"));
+        assert!(lines[3].ends_with("] user@host:~$ ls"));
+        assert!(lines[4].starts_with("=== session log closed"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

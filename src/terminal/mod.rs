@@ -41,7 +41,7 @@ pub(crate) use input::{
     store_pending_paste, take_pending_paste, terminal_uses_bracketed_paste, PendingPaste,
 };
 pub(crate) use charset::CharsetTracker;
-pub(crate) use session_log::SessionLogger;
+pub(crate) use session_log::{SessionLogSpec, SessionLogger};
 pub(crate) use encoding::TerminalEncoding;
 pub(crate) use json_output::format_json_output;
 #[cfg(any(target_os = "windows", test))]
