@@ -29,6 +29,50 @@ impl TermBuffer {
     /// so a dead tab does not keep a large scrollback allocation alive until
     /// it is closed. Both of those cases *want* a blank screen. A plain
     /// disconnect does not — see `release_history_keep_screen` below (#451).
+    /// Start or stop this tab's session log to match the global setting and
+    /// the session's own override (#265). Starting mid-session seeds the log
+    /// with the current screen; stopping closes the file with a footer.
+    pub(crate) fn apply_session_log(
+        &mut self,
+        global_enabled: bool,
+        dir: &std::path::Path,
+    ) -> std::io::Result<()> {
+        let Some(spec) = self.session_log_spec.as_ref() else {
+            return Ok(());
+        };
+        let wanted = spec.mode.resolve(global_enabled);
+        if wanted && self.session_log.is_none() {
+            let mut log = crate::terminal::SessionLogger::create(dir, &spec.name, &spec.target)?;
+            tracing::info!("session log: recording to {}", log.path().display());
+            log.write_screen_snapshot(&self.screen_text_to_cursor());
+            self.session_log = Some(log);
+        } else if !wanted {
+            self.session_log = None;
+        }
+        Ok(())
+    }
+
+    /// Screen rows down to the cursor row, the cursor row cut at the cursor
+    /// (padded with spaces up to it), for seeding a mid-session log.
+    fn screen_text_to_cursor(&self) -> String {
+        let screen = self.parser.screen();
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        let mut text = String::new();
+        for row in screen.rows(0, cols).take(cursor_row as usize) {
+            text.push_str(&row);
+            text.push('\n');
+        }
+        let current = screen
+            .rows(0, cursor_col)
+            .nth(cursor_row as usize)
+            .unwrap_or_default();
+        let pad = (cursor_col as usize).saturating_sub(current.chars().count());
+        text.push_str(&current);
+        text.extend(std::iter::repeat(' ').take(pad));
+        text
+    }
+
     pub(crate) fn release_scrollback(&mut self) {
         let (rows, cols) = self.parser.screen().size();
         self.parser = vt100::Parser::new(rows, cols, 5000);
@@ -345,6 +389,11 @@ impl TermBuffer {
     /// The returned bytes are terminal-query replies that must be written back
     /// to the PTY immediately (DSR/CPR and primary device attributes, #328).
     pub(crate) fn ingest(&mut self, input: &[u8]) -> Vec<u8> {
+        // Log the stream as received, before client-side JSON reformatting,
+        // so the transcript matches what the remote actually sent (#265).
+        if let Some(log) = self.session_log.as_mut() {
+            log.write_output(input);
+        }
         let formatted = self
             .json_format_output
             .then(|| crate::terminal::format_json_output(input));
