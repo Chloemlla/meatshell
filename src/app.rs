@@ -177,7 +177,8 @@ use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
     bare_ctrl_marker_workaround_enabled, cell_prefix, clear_pending_paste,
     compile_output_rules, encode_command_bar_input, encode_mouse_event, encode_pasted_text,
-    is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
+    is_back_tab, is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
+    BACK_TAB_BYTES,
     should_drop_bare_ctrl_marker, store_pending_paste, take_pending_paste,
     terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset, PendingPaste, RenderGates,
     TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
@@ -6325,7 +6326,10 @@ fn wire_key_input(
             //
             // 检测到 IME Shift 标记后，记录时间戳，让 Layer 2 在 1500ms 内
             // 拦截随后可能到来的 Backspace（右Shift场景，日志显示间隔约 914ms）。
-            if !ctrl && !alt {
+            // Shift+Tab → back-tab (ESC [ Z). Slint's Key.Backtab is U+0019,
+            // which the IME C0-marker filter below would otherwise drop.
+            let back_tab = is_back_tab(key.as_str(), ctrl, alt, shift);
+            if !ctrl && !alt && !back_tab {
                 if let Some(c) = key.as_str().chars().next() {
                     let cp = c as u32;
                     let is_standalone = matches!(cp, 0x08 | 0x09 | 0x0A | 0x0D | 0x1B)
@@ -6472,7 +6476,11 @@ fn wire_key_input(
                 return;
             }
 
-            let bytes = key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor);
+            let bytes = if back_tab {
+                BACK_TAB_BYTES.to_vec()
+            } else {
+                key_to_pty_bytes(key.as_str(), ctrl, alt, app_cursor)
+            };
             if cfg!(target_os = "macos")
                 && (ctrl || key.chars().any(|c| (0x10..=0x18).contains(&(c as u32))))
             {
