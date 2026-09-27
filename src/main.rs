@@ -45,7 +45,18 @@ impl StartMode {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    config::configure_profile(&mut args)?;
+    if args.iter().any(|arg| arg == "--config-info") {
+        let store = config::ConfigStore::load()?;
+        println!("{}", serde_json::json!({
+            "executable": std::env::current_exe()?,
+            "version": env!("CARGO_PKG_VERSION"),
+            "data_dir": config::data_dir(),
+            "session_count": store.sessions().len(),
+        }));
+        return Ok(());
+    }
 
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {

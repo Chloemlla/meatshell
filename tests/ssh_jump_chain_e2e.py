@@ -154,6 +154,7 @@ def session(name, host, port, jump=""):
 class Fixture:
     def __init__(self, binary, directory):
         self.root = pathlib.Path(directory)
+        self.explicit_profile = True
         self.exe = self.root / "meatshell.exe"
         shutil.copy2(binary, self.exe)
         self.config = self.root / "config"
@@ -193,7 +194,8 @@ class Fixture:
             dict(jsonrpc="2.0", id=2, method="tools/call",
                  params=dict(name=name, arguments=arguments)),
         ]
-        run = subprocess.run([str(self.exe), "mcp", "serve"], input="".join(
+        profile_args = ["--data-dir", str(self.config)] if self.explicit_profile else []
+        run = subprocess.run([str(self.exe), *profile_args, "mcp", "serve"], input="".join(
             json.dumps(r)+"\n" for r in requests), text=True, capture_output=True,
             encoding="utf-8", timeout=35)
         assert run.returncode == 0, run.stderr
@@ -209,6 +211,7 @@ class Fixture:
         return value
 
     def check(self, regression_only=False):
+        self.explicit_profile = not regression_only
         if regression_only:
             result = self.mcp("run_command", session_id="target", command="fixture",
                               timeout_seconds=5)
@@ -231,7 +234,7 @@ class Fixture:
             assert not result.get("isError"), result
             assert "fixture" in json.dumps(result), result
         print("PASS: two-hop SFTP listing and reading")
-        cli = subprocess.run([str(self.exe), "cli", "exec", "target", "--json", "--",
+        cli = subprocess.run([str(self.exe), "--data-dir", str(self.config), "cli", "exec", "target", "--json", "--",
                               "fixture"], capture_output=True, text=True, encoding="utf-8", timeout=30)
         assert cli.returncode == 0 and "multi-hop-command:target" in cli.stdout, cli.stderr
         print("PASS: CLI uses the same nested route")
