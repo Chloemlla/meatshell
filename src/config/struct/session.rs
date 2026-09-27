@@ -125,7 +125,8 @@ pub struct Session {
     pub proxy: String,
     /// Optional SSH jump host (bastion): the id of another saved SSH session to
     /// tunnel this connection through, like OpenSSH's ProxyJump. Empty = direct.
-    /// Single hop only; the jump session supplies its own host/user/auth (#211).
+    /// The jump session may reference another jump. The full chain is validated
+    /// before connecting; each hop supplies its own host/user/auth (#211).
     #[serde(default)]
     pub jump_session_id: String,
     #[serde(default)]

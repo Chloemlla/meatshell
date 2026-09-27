@@ -127,7 +127,7 @@ async fn read_remote_text_file(arguments: &Value, frontend: Frontend) -> Result<
 fn sftp_context(
     arguments: &Value,
     frontend: Frontend,
-) -> Result<(Session, Option<Session>, Duration)> {
+) -> Result<(Session, Vec<Session>, Duration)> {
     let store = load_store(frontend)?;
     if frontend == Frontend::Mcp && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
@@ -142,16 +142,7 @@ fn sftp_context(
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("SFTP tools only support SSH sessions"));
     }
-    let jump = if session.jump_session_id.trim().is_empty() {
-        None
-    } else {
-        Some(
-            store
-                .get(&session.jump_session_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("jump session not found: {}", session.jump_session_id))?,
-        )
-    };
+    let jump = store.resolve_jump_chain(&session)?;
     let timeout = optional_u64(arguments, "timeout_seconds")?
         .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
         .clamp(1, MAX_TIMEOUT_SECONDS);
@@ -219,16 +210,7 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("run_command only supports SSH sessions"));
     }
-    let jump = if session.jump_session_id.trim().is_empty() {
-        None
-    } else {
-        Some(
-            store
-                .get(&session.jump_session_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("jump session not found: {}", session.jump_session_id))?,
-        )
-    };
+    let jump = store.resolve_jump_chain(&session)?;
 
     let result = crate::ssh::execute_command(
         session,
