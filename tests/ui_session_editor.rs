@@ -42,6 +42,9 @@ slint::slint! {
     export component DialogFixture inherits Window {
         width: 700px; height: 1100px;
         in-out property <bool> open: true;
+        in-out property <bool> mac: false;
+        in-out property <bool> covered: false;
+        out property <int> cancel-count: 0;
         in-out property <string> password;
         in-out property <string> key;
         callback move-hop(int, int);
@@ -51,6 +54,9 @@ slint::slint! {
         }
         SessionDialog {
             is-editing: true;
+            is-mac: root.mac;
+            covered: root.covered;
+            cancel => { root.cancel-count += 1; root.open = false; }
             draft-name: "Example multi-hop session";
             draft-host: "target.example.invalid";
             draft-user: "demo";
@@ -256,6 +262,126 @@ fn closing_dialog_clears_ui_secret_buffers() {
         ui.set_open(true);
         slint::platform::update_timers_and_animations();
         assert!(ui.get_password().is_empty());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn session_cancel_shortcuts_work_on_open_and_in_focused_inputs() {
+    std::thread::spawn(|| {
+        use slint::platform::Key;
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Backend {
+            window: window.clone(),
+            clipboard: Rc::default(),
+        }))
+        .unwrap();
+        let ui = DialogFixture::new().unwrap();
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(700, 1100));
+        let settle = || {
+            slint::platform::update_timers_and_animations();
+            let mut pixels = vec![Rgb8Pixel::default(); 700 * 1100];
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 700);
+            });
+            slint::platform::update_timers_and_animations();
+        };
+        let key = |value: slint::SharedString| {
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: value.clone(),
+            });
+            window.dispatch_event(WindowEvent::KeyReleased { text: value });
+        };
+        settle();
+        ui.set_password("unsaved-fixture".into());
+        key(Key::Escape.into());
+        settle();
+        assert!(
+            !ui.get_open(),
+            "Escape must cancel immediately after opening"
+        );
+        assert!(ui.get_password().is_empty());
+        assert_eq!(ui.get_cancel_count(), 1);
+        key(Key::Escape.into());
+        assert_eq!(
+            ui.get_cancel_count(),
+            1,
+            "closed dialogs must not consume keys"
+        );
+
+        ui.set_open(true);
+        settle();
+        // The note input is within the real dialog's keyboard scope.
+        #[cfg(windows)]
+        {
+            press(&window, 250., 385.);
+            release(&window, 250., 385.);
+        }
+        key(Key::Escape.into());
+        settle();
+        assert!(!ui.get_open(), "a focused input must not swallow Escape");
+
+        ui.set_open(true);
+        ui.set_mac(true);
+        settle();
+        key(".".into());
+        assert!(ui.get_open(), "a plain period must not cancel");
+        ui.set_covered(true);
+        settle();
+        key(Key::Escape.into());
+        assert!(
+            ui.get_open(),
+            "a higher-priority dialog must keep ownership"
+        );
+        ui.set_covered(false);
+        settle();
+        let command = if cfg!(target_os = "macos") {
+            Key::Meta
+        } else {
+            Key::Control
+        };
+        window.dispatch_event(WindowEvent::KeyPressed {
+            text: command.into(),
+        });
+        key(".".into());
+        window.dispatch_event(WindowEvent::KeyReleased {
+            text: command.into(),
+        });
+        settle();
+        assert!(!ui.get_open(), "macOS Command-period must cancel");
+
+        ui.set_mac(false);
+        ui.set_open(true);
+        settle();
+        window.dispatch_event(WindowEvent::KeyPressed {
+            text: command.into(),
+        });
+        key(".".into());
+        window.dispatch_event(WindowEvent::KeyReleased {
+            text: command.into(),
+        });
+        assert!(ui.get_open(), "Command-period is macOS-only");
+        #[cfg(windows)]
+        {
+            press(&window, 490., 808.);
+            release(&window, 490., 808.);
+            settle();
+            key(Key::Escape.into());
+            settle();
+            assert!(
+                ui.get_open(),
+                "Escape must close the jump popup before its dialog"
+            );
+            key(Key::Escape.into());
+            settle();
+            assert!(
+                !ui.get_open(),
+                "focus must return to the dialog after popup dismissal"
+            );
+        }
     })
     .join()
     .unwrap();
