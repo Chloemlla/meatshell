@@ -4620,6 +4620,9 @@ export component AppWindow inherits Window {
         height: parent.height;
         is-open <=> root.dialog-open;
         is-editing <=> root.dialog-editing;
+        is-mac: root.is-mac;
+        covered: root.confirm-close-open || root.hostkey-prompt-open
+            || root.cred-prompt-open || root.mfa-prompt-open;
         draft-id <=> root.dialog-id;
         draft-name <=> root.dialog-name;
         draft-host <=> root.dialog-host;

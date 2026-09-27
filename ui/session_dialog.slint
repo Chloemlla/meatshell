@@ -534,6 +534,8 @@ export component JumpRow inherits Rectangle {
 export component SessionDialog inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <bool> is-editing: false;
+    in property <bool> is-mac: false;
+    in property <bool> covered: false;
     in-out property <string> draft-id;
     in-out property <string> draft-name;
     in-out property <string> draft-kind: "ssh";
@@ -612,6 +614,34 @@ export component SessionDialog inherits Rectangle {
             root.key-revealed = false;
         }
     }
+
+    // Capture before child inputs consume Escape. Slint maps macOS Command to
+    // the logical control modifier; Command-period is the native cancel shortcut.
+    dialog-keys := FocusScope {
+        enabled: root.is-open && !root.covered;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        property <bool> focus-pending: false;
+        init => { self.focus-pending = root.is-open && !root.covered; }
+        property <bool> active: root.is-open && !root.covered;
+        changed active => { self.focus-pending = self.active; }
+        Timer {
+            interval: 0ms;
+            running: dialog-keys.focus-pending;
+            triggered => {
+                dialog-keys.focus-pending = false;
+                if root.is-open && !root.covered { dialog-keys.focus(); }
+            }
+        }
+        capture-key-pressed(event) => {
+            if root.is-open && !root.covered
+                && (event.text == Key.Escape
+                    || (root.is-mac && event.text == "." && event.modifiers.control
+                        && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta)) {
+                root.cancel();
+                accept
+            } else { reject }
+        }
 
     // Swallow clicks on the backdrop
     TouchArea {
@@ -1526,5 +1556,6 @@ export component SessionDialog inherits Rectangle {
         }
         }
         }
+    }
     }
 }
