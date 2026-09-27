@@ -660,3 +660,12 @@ msgstr "Never record"
 
 msgid "Saves this session's terminal output as timestamped plain text. Keystrokes are not recorded. The folder is set in Settings → Session log."
 msgstr "Saves this session's terminal output as timestamped plain text. Keystrokes are not recorded. The folder is set in Settings → Session log."
+
+msgid "Discard unsaved changes?"
+msgstr "Discard unsaved changes?"
+
+msgid "This file has unsaved changes. Close without saving?"
+msgstr "This file has unsaved changes. Close without saving?"
+
+msgid "Discard and close"
+msgstr "Discard and close"
