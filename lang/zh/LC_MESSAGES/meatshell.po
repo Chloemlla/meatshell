@@ -657,3 +657,12 @@ msgstr "从不记录"
 
 msgid "Saves this session's terminal output as timestamped plain text. Keystrokes are not recorded. The folder is set in Settings → Session log."
 msgstr "将此会话的终端输出保存为带时间戳的纯文本，不记录按键。日志目录在「设置 → 会话日志」中设置。"
+
+msgid "Discard unsaved changes?"
+msgstr "放弃未保存的修改？"
+
+msgid "This file has unsaved changes. Close without saving?"
+msgstr "此文件有未保存的修改。确定不保存并关闭吗？"
+
+msgid "Discard and close"
+msgstr "放弃并关闭"

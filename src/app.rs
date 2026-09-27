@@ -746,15 +746,18 @@ fn open_window(
     window.set_sys_filesystem_rows(ModelRc::from(sys_filesystem_model.clone()));
     let proc_win = Rc::new(ProcWindow::new().context("failed to build process window")?);
     proc_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    proc_win.set_is_mac(cfg!(target_os = "macos"));
     proc_win.set_proc_list(ModelRc::from(proc_rows_model.clone()));
     let sys_win = Rc::new(SystemInfoWindow::new().context("failed to build system info window")?);
     let editor_win = Rc::new(EditorWindow::new().context("failed to build editor window")?);
     editor_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    editor_win.set_is_mac(cfg!(target_os = "macos"));
     sync_editor_theme(&window, &editor_win);
     // Every fallible construction has now succeeded — register the window.
     // (cascade_origin above was captured before this point, as required.)
     let window_id = registry.register(window.as_weak());
     sys_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    sys_win.set_is_mac(cfg!(target_os = "macos"));
     sys_win.set_metrics(ModelRc::from(sys_metrics_model.clone()));
     sys_win.set_nets(ModelRc::from(sys_net_rows_model.clone()));
     sys_win.set_disks(ModelRc::from(sys_disks_model.clone()));
@@ -2319,6 +2322,13 @@ fn open_window(
     {
         let weak = editor_win.as_weak();
         let main_weak = window.as_weak();
+        let close_request = editor_win.as_weak();
+        editor_win.window().on_close_requested(move || {
+            if let Some(editor) = close_request.upgrade() {
+                editor.invoke_request_close();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
         editor_win.on_close_editor(move || {
             if let (Some(editor), Some(main)) = (weak.upgrade(), main_weak.upgrade()) {
                 editor.set_editor_open(false);
@@ -3083,8 +3093,8 @@ fn open_window(
                         let Some(win) = weak.upgrade() else {
                             return EventResult::Propagate;
                         };
-                        if !macos_terminal_wheel_can_target_terminal(win.get_interface_open()) {
-                            // Do not carry a partially accumulated settings gesture
+                        if !macos_terminal_wheel_can_target_terminal(win.get_modal_open()) {
+                            // Do not carry a partially accumulated modal gesture
                             // into the terminal after the modal closes.
                             macos_wheel_accum = 0.0;
                             return EventResult::Propagate;
@@ -3589,8 +3599,8 @@ fn active_sftp_path(win: &AppWindow, tab_id: &str) -> String {
 
 // The raw macOS wheel fallback runs before the usual Slint hit testing. Keep
 // modal-state routing explicit so it cannot target a terminal behind a dialog.
-fn macos_terminal_wheel_can_target_terminal(interface_open: bool) -> bool {
-    !interface_open
+fn macos_terminal_wheel_can_target_terminal(modal_open: bool) -> bool {
+    !modal_open
 }
 
 fn terminal_wheel_hit(
@@ -7548,3 +7558,7 @@ mod log_highlight_tests;
 #[cfg(test)]
 #[path = "../tests/app/text_editor/mod.rs"]
 mod text_editor_tests;
+
+#[cfg(test)]
+#[path = "../tests/app/modal_layers.rs"]
+mod modal_layers_tests;

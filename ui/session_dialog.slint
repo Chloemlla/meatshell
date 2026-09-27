@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { ModalLayer } from "modal.slint";
 import { ComboBox, CheckBox } from "std-widgets.slint";
 import { LabeledInput, PrimaryButton, GhostButton, IconButton } from "widgets.slint";
 
@@ -531,11 +532,8 @@ export component JumpRow inherits Rectangle {
 // Modal dialog for creating / editing a session (SSH / Serial / Telnet).
 // The dialog is purely presentational — it stores values in mutable
 // properties and emits `submit` / `cancel` callbacks up to the main window.
-export component SessionDialog inherits Rectangle {
-    in-out property <bool> is-open: false;
+export component SessionDialog inherits ModalLayer {
     in-out property <bool> is-editing: false;
-    in property <bool> is-mac: false;
-    in property <bool> covered: false;
     in-out property <string> draft-id;
     in-out property <string> draft-name;
     in-out property <string> draft-kind: "ssh";
@@ -598,7 +596,7 @@ export component SessionDialog inherits Rectangle {
     callback delete-trigger(int /* index */);
     callback pick-key-file();   // open a native file picker for the private key
 
-    visible: is-open;
+    cancel-requested => { root.cancel(); }
     background: #00000080;
 
     // Clear the host-required flag each time the dialog opens (#110).
@@ -615,38 +613,6 @@ export component SessionDialog inherits Rectangle {
         }
     }
 
-    // Capture before child inputs consume Escape. Slint maps macOS Command to
-    // the logical control modifier; Command-period is the native cancel shortcut.
-    dialog-keys := FocusScope {
-        enabled: root.is-open && !root.covered;
-        focus-on-click: false;
-        focus-on-tab-navigation: false;
-        property <bool> focus-pending: false;
-        init => { self.focus-pending = root.is-open && !root.covered; }
-        property <bool> active: root.is-open && !root.covered;
-        changed active => { self.focus-pending = self.active; }
-        Timer {
-            interval: 0ms;
-            running: dialog-keys.focus-pending;
-            triggered => {
-                dialog-keys.focus-pending = false;
-                if root.is-open && !root.covered { dialog-keys.focus(); }
-            }
-        }
-        capture-key-pressed(event) => {
-            if root.is-open && !root.covered
-                && (event.text == Key.Escape
-                    || (root.is-mac && event.text == "." && event.modifiers.control
-                        && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta)) {
-                root.cancel();
-                accept
-            } else { reject }
-        }
-
-    // Swallow clicks on the backdrop
-    TouchArea {
-        width: 100%; height: 100%;
-    }
 
     Rectangle {
         width: 440px;
@@ -1556,6 +1522,5 @@ export component SessionDialog inherits Rectangle {
         }
         }
         }
-    }
     }
 }
