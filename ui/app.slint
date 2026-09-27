@@ -18,7 +18,7 @@ import { Theme } from "theme.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
-import { SessionDialog, SessionDraft, PortFwd, TriggerDraft } from "session_dialog.slint";
+import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, JumpHop } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
@@ -31,7 +31,7 @@ import { InterfacePanel, OutputRuleItem, WslProfileInfo } from "interface_panel.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo }
+export { SessionInfo, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -895,10 +895,16 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-group;
     // Existing group names (from Rust) for the dialog's group dropdown (#179).
     in property <[string]> session-groups;
-    // SSH jump host picker (#211): parallel label/id lists + selected index.
+    // SSH route editor (#211): candidates and ordered rows.
     in property <[string]> jump-choices;
     in property <[string]> jump-ids;
-    in-out property <int> dialog-jump-index: 0;
+    in-out property <[JumpHop]> dialog-jumps;
+    in-out property <bool> dialog-allow-secret-reveal: false;
+    callback reveal-session-secret(bool) -> string;
+    callback add-jump();
+    callback update-jump(int, int);
+    callback delete-jump(int);
+    callback move-jump(int, int);
     in-out property <string> dialog-kind: "ssh";
     in-out property <string> dialog-serial-port;
     in-out property <string> dialog-baud: "115200";
@@ -4594,8 +4600,13 @@ export component AppWindow inherits Window {
         draft-group <=> root.dialog-group;
         session-groups: root.session-groups;
         jump-choices: root.jump-choices;
-        jump-ids: root.jump-ids;
-        draft-jump-index <=> root.dialog-jump-index;
+        jumps: root.dialog-jumps;
+        allow-secret-reveal <=> root.dialog-allow-secret-reveal;
+        reveal-secret(key) => { root.reveal-session-secret(key) }
+        add-jump => { root.add-jump(); }
+        update-jump(row, choice) => { root.update-jump(row, choice); }
+        delete-jump(row) => { root.delete-jump(row); }
+        move-jump(from, to) => { root.move-jump(from, to); }
         draft-kind <=> root.dialog-kind;
         draft-serial-port <=> root.dialog-serial-port;
         draft-baud <=> root.dialog-baud;

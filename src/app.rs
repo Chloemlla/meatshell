@@ -14,6 +14,7 @@ mod port_forward;
 mod quick_commands;
 mod resource_ui;
 mod session_event;
+mod session_editor;
 mod session_models;
 mod session_runtime;
 mod session_trigger;
@@ -3922,6 +3923,8 @@ fn wire_session_callbacks(
         });
     }
 
+    session_editor::register(&window, store.clone());
+
     // New session -> open dialog with blank draft.
     let weak = window.as_weak();
     let ef_new = edit_forwards.clone();
@@ -3937,11 +3940,11 @@ fn wire_session_callbacks(
             w.set_dialog_forwards(forward_model(&ef_new.borrow()));
             w.set_dialog_triggers(trigger_model(&et_new.borrow()));
             let empty = Session::new_empty();
-            let (jump_labels, jump_ids, jump_idx) =
-                jump_candidates(&store_ng.borrow(), &empty.id, "");
+            let (jump_labels, jump_ids) = jump_candidates(&store_ng.borrow(), &empty.id);
             w.set_jump_choices(jump_labels);
             w.set_jump_ids(jump_ids);
-            w.set_dialog_jump_index(jump_idx);
+            w.set_dialog_jumps(ModelRc::default());
+            w.set_dialog_allow_secret_reveal(false);
             w.set_dialog_id(empty.id.into());
             w.set_dialog_name("".into());
             w.set_dialog_host("".into());
@@ -4185,8 +4188,8 @@ fn wire_session_callbacks(
                 w.set_dialog_port(session.port.to_string().into());
                 w.set_dialog_user(session.user.clone().into());
                 w.set_dialog_auth(session.auth.as_str().into());
-                // Never echo the stored password back into the UI (issue #10) —
-                // leave it blank; a blank field on save keeps the existing one.
+                // Keep secrets out of the UI until the opt-in eye is clicked.
+                // A blank field on save keeps the existing value (issue #10).
                 w.set_dialog_password("".into());
                 w.set_dialog_key_path(session.private_key_path.clone().into());
                 w.set_dialog_key_inline("".into());
@@ -4195,11 +4198,25 @@ fn wire_session_callbacks(
                 let (proxy_type, proxy_hostport) = split_proxy(&session.proxy);
                 w.set_dialog_proxy_type(proxy_type.into());
                 w.set_dialog_proxy_hostport(proxy_hostport.into());
-                let (jump_labels, jump_ids, jump_idx) =
-                    jump_candidates(&store, &session.id, &session.jump_session_id);
+                let (jump_labels, jump_ids) = jump_candidates(&store, &session.id);
+                let route = store.resolve_jump_chain(session);
+                let ids = match route {
+                    Ok(hops) => hops.into_iter().rev().map(|hop| hop.id).collect(),
+                    Err(err) => {
+                        w.set_dialog_test_status(err.to_string().into());
+                        if session.jump_session_ids.is_empty() {
+                            // Require an explicit repair: flattening only the immediate hop
+                            // would silently discard a broken inherited route.
+                            vec![String::new(), session.jump_session_id.clone()]
+                        } else {
+                            session.jump_session_ids.clone()
+                        }
+                    }
+                };
+                w.set_dialog_jumps(session_editor::jump_rows(ids, &jump_ids));
+                w.set_dialog_allow_secret_reveal(session.allow_secret_reveal);
                 w.set_jump_choices(jump_labels);
                 w.set_jump_ids(jump_ids);
-                w.set_dialog_jump_index(jump_idx);
                 w.set_dialog_group(session.group.clone().into());
                 w.set_dialog_kind(session.kind.as_str().into());
                 w.set_dialog_serial_port(session.serial_port.clone().into());
@@ -4544,105 +4561,15 @@ fn wire_session_callbacks(
                         return;
                     }
                 };
-            // The edit dialog never echoes the real password (issue #10): a blank
-            // field while editing means "keep the existing password" rather than
-            // "clear it".  Only overwrite when the user actually typed something.
-            let password = if draft.password.is_empty() {
-                store
-                    .borrow()
-                    .get(&id)
-                    .map(|s| s.password.clone())
-                    .unwrap_or_default()
-            } else {
-                Secret::new(draft.password.to_string())
-            };
-            let private_key_inline = if draft.private_key_inline_mode {
-                if draft.private_key_inline.is_empty() {
-                    store
-                        .borrow()
-                        .get(&id)
-                        .map(|s| s.private_key_inline.clone())
-                        .unwrap_or_default()
-                } else {
-                    Secret::new(draft.private_key_inline.to_string())
+            // Saving and testing use the same draft conversion, including blank-secret retention.
+            let existing = store.borrow().get(&id).cloned();
+            let new_session = session_from_draft(&draft, existing.as_ref(), forwards, triggers);
+            if let Err(err) = store.borrow().resolve_jump_chain(&new_session) {
+                if let Some(w) = weak.upgrade() {
+                    w.set_dialog_test_status(err.to_string().into());
                 }
-            } else {
-                Secret::default()
-            };
-            let private_key_path = if draft.private_key_inline_mode {
-                String::new()
-            } else {
-                draft.private_key_path.to_string().replace('\\', "/")
-            };
-            let kind = crate::config::SessionKind::from_str(&draft.kind.to_string());
-            // Auto-name: serial → port label; otherwise user@host, or just the
-            // host when no username was given (#110).
-            let auto_name = match kind {
-                crate::config::SessionKind::Serial => {
-                    format!("{} @{}", draft.serial_port, draft.baud_rate)
-                }
-                _ if draft.user.trim().is_empty() => draft.host.to_string(),
-                _ => format!("{}@{}", draft.user, draft.host),
-            };
-            // Telnet defaults to port 23, RDP to 3389, SSH to 22; serial ignores
-            // the port entirely.
-            let default_port = match kind {
-                crate::config::SessionKind::Telnet => 23,
-                crate::config::SessionKind::Rdp => 3389,
-                _ => 22,
-            };
-            let (rdp_fullscreen, rdp_width, rdp_height) = rdp_display_settings(
-                &draft.rdp_resolution.to_string(),
-                draft.rdp_width,
-                draft.rdp_height,
-            );
-            let new_session = Session {
-                id,
-                name: if draft.name.is_empty() {
-                    auto_name
-                } else {
-                    draft.name.to_string()
-                },
-                host: draft.host.to_string(),
-                port: if draft.port <= 0 {
-                    default_port
-                } else {
-                    draft.port as u16
-                },
-                user: draft.user.to_string(),
-                auth: AuthMethod::from_str(&draft.auth.to_string()),
-                password,
-                // Store the key path with forward slashes uniformly.
-                private_key_path,
-                private_key_inline,
-                proxy: draft.proxy.to_string(),
-                last_used: None,
-                group: draft.group.to_string(),
-                kind,
-                local_distribution: String::new(),
-                local_working_dir: String::new(),
-                serial_port: draft.serial_port.to_string(),
-                baud_rate: if draft.baud_rate <= 0 {
-                    115_200
-                } else {
-                    draft.baud_rate as u32
-                },
-                data_bits: draft.data_bits as u8,
-                stop_bits: draft.stop_bits as u8,
-                parity: draft.parity.to_string(),
-                flow_control: draft.flow_control.to_string(),
-                encoding: draft.encoding.to_string(),
-                vt100_drawing: draft.vt100_drawing,
-                forwards,
-                triggers,
-                disable_shell_integration: draft.disable_shell_integration,
-                note: draft.note.to_string(),
-                jump_session_id: draft.jump_session_id.to_string(),
-                rdp_domain: draft.rdp_domain.to_string(),
-                rdp_fullscreen,
-                rdp_width,
-                rdp_height,
-            };
+                return;
+            }
             {
                 let mut s = store.borrow_mut();
                 s.upsert(new_session);

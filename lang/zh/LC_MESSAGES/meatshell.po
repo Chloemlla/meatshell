@@ -612,3 +612,33 @@ msgstr "高度"
 
 msgid "Remote desktop size. In full screen, Ctrl+Alt+Enter switches back to a window."
 msgstr "远端桌面的分辨率；全屏连接后按 Ctrl+Alt+Enter 可切回窗口。"
+
+msgid "Hide secret"
+msgstr "隐藏凭据"
+
+msgid "Show secret"
+msgstr "查看凭据"
+
+msgid "Jump chain (optional)"
+msgstr "跳板机链路（可选）"
+
+msgid "Local → hops below → target. First hop connects first."
+msgstr "本机 → 下列跳板机 → 目标。按实际连接顺序排列，第一项最先连接。"
+
+msgid "+ Add jump host"
+msgstr "+ 添加跳板机"
+
+msgid "Target"
+msgstr "目标"
+
+msgid "Move to hop"
+msgstr "移至跳板"
+
+msgid "Hop"
+msgstr "跳板"
+
+msgid "Allow viewing saved credentials in this session"
+msgstr "允许在此会话中查看已保存的凭据"
+
+msgid "Unavailable"
+msgstr "不可用"

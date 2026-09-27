@@ -3,6 +3,7 @@ Run: python tests/ssh_jump_chain_e2e.py --exe /path/to/meatshell.exe
 All fixture configuration and executable copies are deleted after the run.
 """
 import argparse
+from contextlib import contextmanager
 import io
 import json
 import logging
@@ -136,7 +137,10 @@ class Node:
             pass
         finally:
             target.close()
-            channel.close()
+            try:
+                channel.close()
+            except (EOFError, OSError):
+                pass  # The fixture's outer transport may already be closed.
 
     def close(self):
         self.listener.close()
@@ -231,6 +235,22 @@ class Fixture:
                               "fixture"], capture_output=True, text=True, encoding="utf-8", timeout=30)
         assert cli.returncode == 0 and "multi-hop-command:target" in cli.stdout, cli.stderr
         print("PASS: CLI uses the same nested route")
+        # Editor-owned routes must match their displayed first-hop-first order,
+        # even when a hop still has a legacy reference of its own.
+        self.sessions[2]["jump_session_ids"] = ["outer", "inner"]
+        self.sessions[2]["jump_session_id"] = ""
+        self.save()
+        self.command()
+        result = self.mcp("list_remote_files", session_id="target", path=".", timeout_seconds=8)
+        assert not result.get("isError"), result
+        self.sessions[2]["jump_session_ids"] = ["inner", "outer"]
+        self.save()
+        result = self.mcp("run_command", session_id="target", command="fixture", timeout_seconds=5)
+        assert result.get("isError"), "Reversed editor route was ignored"
+        self.sessions[2]["jump_session_ids"] = []
+        self.sessions[2]["jump_session_id"] = "inner"
+        self.save()
+        print("PASS: explicit GUI order drives command/SFTP and rejects a reversed route")
         route = self.nodes[1].routes.pop(("target.invalid", 22))
         result = self.mcp("run_command", session_id="target", command="fixture", timeout_seconds=5)
         assert result.get("isError"), "Refused inner forwarding was bypassed"
@@ -268,12 +288,29 @@ class Fixture:
             self.save()
         print("PASS: timeout covers stalled ancestor SSH handshake")
 
+@contextmanager
+def fixture_directory():
+    directory = tempfile.TemporaryDirectory(prefix="meatshell-chain-test-")
+    try:
+        yield directory.name
+    finally:
+        # Windows scanners can briefly hold the just-exited executable open.
+        # Retry only the directory created above; never suppress final failure.
+        for attempt in range(50):
+            try:
+                directory.cleanup()
+                break
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.1)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True)
     parser.add_argument("--expect-old-failure", action="store_true")
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="meatshell-chain-test-") as directory:
+    with fixture_directory() as directory:
         fixture = Fixture(args.exe, directory)
         try:
             fixture.check(args.expect_old_failure)

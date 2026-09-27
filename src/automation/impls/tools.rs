@@ -237,6 +237,7 @@ fn safe_session(session: &Session) -> Value {
         "has_private_key": !session.private_key_path.trim().is_empty()
             || !session.private_key_inline.is_empty(),
         "jump_session_id": session.jump_session_id,
+        "jump_session_ids": session.jump_session_ids,
         "has_proxy": !session.proxy.trim().is_empty(),
     })
 }
