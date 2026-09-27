@@ -123,6 +123,7 @@ mod tests {
         draft.auth = "key".into();
         draft.private_key_inline_mode = true;
         draft.allow_secret_reveal = true;
+        draft.session_log = "on".into();
         draft.jumps = jump_rows(vec!["a".into(), "b".into()], &ModelRc::default());
         let session = session_from_draft(&draft, Some(&saved), vec![], vec![]);
         assert_eq!(session.password.as_str(), "fixture-password");
@@ -130,6 +131,7 @@ mod tests {
         assert_eq!(session.jump_session_ids, ["a", "b"]);
         assert!(session.jump_session_id.is_empty());
         assert!(session.allow_secret_reveal);
+        assert_eq!(session.session_log, SessionLogMode::On);
         draft.password = "replacement".into();
         draft.private_key_inline = "replacement-key".into();
         let session = session_from_draft(&draft, Some(&saved), vec![], vec![]);

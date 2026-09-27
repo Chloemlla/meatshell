@@ -128,6 +128,13 @@ pub struct ConfigFile {
     /// by default while still allowing users to preserve byte-for-byte display.
     #[serde(default)]
     pub json_format_disabled: bool,
+    /// Record terminal output of new tabs to plain-text session logs (#265).
+    /// Off by default; saved sessions can override it either way.
+    #[serde(default)]
+    pub session_log_enabled: bool,
+    /// Folder for session logs. Empty = `<log dir>/sessions`.
+    #[serde(default)]
+    pub session_log_dir: String,
     /// Global UI scale in percent (#100). 0 = default (100%).
     #[serde(default)]
     pub ui_scale: u32,
