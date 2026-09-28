@@ -4346,8 +4346,8 @@ fn wire_session_callbacks(
                 w.set_dialog_port(session.port.to_string().into());
                 w.set_dialog_user(session.user.clone().into());
                 w.set_dialog_auth(session.auth.as_str().into());
-                // Keep secrets out of the UI until the opt-in eye is clicked.
-                // A blank field on save keeps the existing value (issue #10).
+                // Start blank; the dialog only loads saved credentials after
+                // opt-in, initially masked. Blank on save still retains them (#10).
                 w.set_dialog_password("".into());
                 w.set_dialog_key_path(session.private_key_path.clone().into());
                 w.set_dialog_key_inline("".into());

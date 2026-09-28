@@ -558,6 +558,21 @@ export component SessionDialog inherits ModalLayer {
     property <bool> password-revealed: false;
     property <bool> key-revealed: false;
     callback reveal-secret(bool /* private key */) -> string;
+    // Opted-in credentials are loaded masked. Never overwrite an unsaved edit.
+    function load-saved-credentials() {
+        if root.is-open && root.allow-secret-reveal {
+            if root.draft-password == "" { root.draft-password = root.reveal-secret(false); }
+            if root.draft-key-inline-mode && root.draft-key-inline == "" {
+                root.draft-key-inline = root.reveal-secret(true);
+            }
+        }
+    }
+    changed allow-secret-reveal => {
+        root.password-revealed = false;
+        root.key-revealed = false;
+        root.load-saved-credentials();
+    }
+    changed draft-key-inline-mode => { root.load-saved-credentials(); }
     callback add-jump();
     callback update-jump(int, int);
     callback delete-jump(int);
@@ -605,6 +620,7 @@ export component SessionDialog inherits ModalLayer {
             self.host-missing = false;
             self.password-revealed = false;
             self.key-revealed = false;
+            root.load-saved-credentials();
         } else {
             root.draft-password = "";
             root.draft-key-inline = "";
@@ -845,7 +861,9 @@ export component SessionDialog inherits ModalLayer {
                 input-background: Theme.bg-elevated;
                 idle-border: Theme.border-strong;
                 label: root.draft-auth == "keyboard-interactive" ? @tr("Password / first answer") : @tr("Password");
-                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                placeholder: root.is-editing
+                    ? (root.allow-secret-reveal ? @tr("Enter a new password") : @tr("Leave blank to keep the current password"))
+                    : "••••••••";
                 password: true;
                 reveal-enabled: root.allow-secret-reveal;
                 revealed <=> root.password-revealed;
@@ -996,7 +1014,7 @@ export component SessionDialog inherits ModalLayer {
                 idle-border: Theme.border-strong;
                 label: @tr("Key passphrase");
                 placeholder: root.is-editing
-                    ? @tr("Leave blank to keep the current passphrase")
+                    ? (root.allow-secret-reveal ? @tr("Enter a key passphrase") : @tr("Leave blank to keep the current passphrase"))
                     : @tr("Leave blank if the key isn't encrypted");
                 password: true;
                 reveal-enabled: root.allow-secret-reveal;
@@ -1014,6 +1032,13 @@ export component SessionDialog inherits ModalLayer {
                 }
             }
 
+            if root.allow-secret-reveal && (root.draft-kind == "ssh" || root.draft-kind == "rdp") : Text {
+                text: @tr("Credentials start hidden. Click the eye to view. Save to remember this option.");
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                wrap: word-wrap;
+            }
+
             // ── RDP-only fields ─────────────────────────────────────────────
             if root.draft-kind == "rdp" : LabeledInput {
                 input-background: Theme.bg-elevated;
@@ -1027,7 +1052,9 @@ export component SessionDialog inherits ModalLayer {
                 input-background: Theme.bg-elevated;
                 idle-border: Theme.border-strong;
                 label: @tr("Password");
-                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                placeholder: root.is-editing
+                    ? (root.allow-secret-reveal ? @tr("Enter a new password") : @tr("Leave blank to keep the current password"))
+                    : "••••••••";
                 password: true;
                 reveal-enabled: root.allow-secret-reveal;
                 revealed <=> root.password-revealed;

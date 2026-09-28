@@ -666,3 +666,12 @@ msgstr "此文件有未保存的修改。确定不保存并关闭吗？"
 
 msgid "Discard and close"
 msgstr "放弃并关闭"
+
+msgid "Enter a new password"
+msgstr "输入新密码"
+
+msgid "Enter a key passphrase"
+msgstr "输入私钥口令"
+
+msgid "Credentials start hidden. Click the eye to view. Save to remember this option."
+msgstr "凭据默认隐藏，点击眼睛查看。保存后会记住此选项。"
