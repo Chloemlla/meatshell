@@ -376,3 +376,230 @@ fn detached_windows_share_cancel_keys_and_editor_guards_unsaved_changes() {
     .join()
     .unwrap();
 }
+
+// Coordinates below are measured with the Windows UI font in a fixed-size fixture.
+#[cfg(windows)]
+#[test]
+fn saved_secret_reveal_flows_through_the_real_app_window() {
+    std::thread::spawn(|| {
+        let (ui, window, _) = host();
+        window.set_size(slint::PhysicalSize::new(1000, 1100));
+        ui.set_ui_font_family("Microsoft YaHei".into());
+        let mut saved = Session::new_empty();
+        saved.id = "reveal-fixture".into();
+        saved.host = "example.invalid".into();
+        saved.password = Secret::new("fixture-only-password");
+        let dir = std::env::temp_dir().join(format!("ms-reveal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Rc::new(RefCell::new(crate::config::fixture_store(
+            dir.join("sessions.json"),
+            vec![saved.clone()],
+        )));
+        let mut outer = Session::new_empty();
+        outer.id = "a".into();
+        outer.host = "a.invalid".into();
+        let mut inner = Session::new_empty();
+        inner.id = "b".into();
+        inner.host = "b.invalid".into();
+        inner.jump_session_id = "a".into();
+        store.borrow_mut().cache.sessions.extend([outer, inner]);
+        store.borrow_mut().cache.sessions[0].jump_session_id = "b".into();
+        wire_session_callbacks(
+            &ui,
+            99,
+            store.clone(),
+            Rc::new(WindowRegistry::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Rc::new(RefCell::new(crate::layout::Layout::new(vec![], "".into()))),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Arc::new(Runtime::new().unwrap()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Rc::new(EditorWindow::new().unwrap()),
+        );
+        ui.invoke_edit_session(saved.id.clone().into());
+        let render = || {
+            slint::platform::update_timers_and_animations();
+            let mut pixels = vec![slint::Rgb8Pixel::default(); 1000 * 1100];
+            window.request_redraw();
+            window.draw_if_needed(|r| {
+                r.render(&mut pixels, 1000);
+            });
+            slint::platform::update_timers_and_animations();
+            pixels
+        };
+        let pixels = render();
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+        image::save_buffer(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/reveal-before.png"),
+            &bytes,
+            1000,
+            1100,
+            image::ColorType::Rgb8,
+        )
+        .unwrap();
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+            render();
+        };
+        let password_pixels = |pixels: &[slint::Rgb8Pixel]| {
+            (590..650)
+                .flat_map(|y| {
+                    (312..650).map(move |x| {
+                        let p = pixels[y * 1000 + x];
+                        (p.r, p.g, p.b)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        click(308., 668.);
+        assert!(ui.get_dialog_allow_secret_reveal());
+        assert_eq!(
+            ui.get_dialog_password(),
+            "fixture-only-password",
+            "opt-in must load the saved value masked"
+        );
+        // Save without opening the eye: the permission must persist independently.
+        click(660., 1000.);
+        assert!(
+            !ui.get_dialog_open(),
+            "save failed: {}",
+            ui.get_dialog_test_status()
+        );
+        assert!(ui.get_dialog_password().is_empty());
+        let raw = std::fs::read_to_string(dir.join("sessions.json")).unwrap();
+        let disk: crate::config::ConfigFile = serde_json::from_str(&raw).unwrap();
+        assert!(
+            disk.sessions
+                .iter()
+                .find(|s| s.id == saved.id)
+                .unwrap()
+                .allow_secret_reveal
+        );
+        assert!(!raw.contains("fixture-only-password"));
+        ui.invoke_edit_session(saved.id.clone().into());
+        let masked = password_pixels(&render());
+        assert_eq!(ui.get_dialog_password(), "fixture-only-password");
+        click(680., 620.);
+        assert!(
+            masked != password_pixels(&render()),
+            "eye must visibly switch from dots to the saved text"
+        );
+        click(680., 620.);
+        assert!(
+            masked == password_pixels(&render()),
+            "second click must hide the value again"
+        );
+        // Type a replacement through the real TextInput, then save and reopen.
+        click(400., 620.);
+        let control = if cfg!(target_os = "macos") {
+            Key::Meta
+        } else {
+            Key::Control
+        };
+        window.dispatch_event(WindowEvent::KeyPressed {
+            text: control.into(),
+        });
+        key(&window, "a");
+        window.dispatch_event(WindowEvent::KeyReleased {
+            text: control.into(),
+        });
+        for ch in "fixture-new-password".chars() {
+            key(&window, ch.to_string());
+        }
+        assert_eq!(ui.get_dialog_password(), "fixture-new-password");
+        ui.set_dialog_allow_secret_reveal(false);
+        render();
+        ui.set_dialog_allow_secret_reveal(true);
+        render();
+        assert_eq!(
+            ui.get_dialog_password(),
+            "fixture-new-password",
+            "toggling opt-in must not overwrite a typed replacement"
+        );
+        click(660., 1000.);
+        assert!(!ui.get_dialog_open(), "replacement save failed");
+        ui.invoke_edit_session(saved.id.clone().into());
+        let masked_new = password_pixels(&render());
+        assert!(ui.get_dialog_allow_secret_reveal());
+        assert_eq!(ui.get_dialog_password(), "fixture-new-password");
+        click(680., 620.);
+        assert!(masked_new != password_pixels(&render()));
+        ui.set_dialog_allow_secret_reveal(false);
+        render();
+        click(660., 982.);
+        assert!(!ui.get_dialog_open(), "opt-out save failed");
+        ui.invoke_edit_session(saved.id.clone().into());
+        render();
+        assert!(!ui.get_dialog_allow_secret_reveal());
+        assert!(ui.get_dialog_password().is_empty());
+        assert!(ui.invoke_reveal_session_secret(false).is_empty());
+        ui.invoke_session_dialog_cancel();
+        render();
+        assert!(ui.get_dialog_password().is_empty());
+        let mut key_session = Session::new_empty();
+        key_session.id = "key-fixture".into();
+        key_session.host = "key.invalid".into();
+        key_session.auth = AuthMethod::Key;
+        key_session.password = Secret::new("fixture-passphrase");
+        key_session.private_key_inline = Secret::new("fixture-inline-key");
+        key_session.allow_secret_reveal = true;
+        store.borrow_mut().upsert(key_session);
+        store.borrow().save().unwrap();
+        ui.invoke_edit_session("key-fixture".into());
+        render();
+        assert_eq!(ui.get_dialog_password(), "fixture-passphrase");
+        assert_eq!(ui.get_dialog_key_inline(), "fixture-inline-key");
+        ui.invoke_session_dialog_cancel();
+        render();
+        assert!(ui.get_dialog_key_inline().is_empty());
+        let raw = std::fs::read_to_string(dir.join("sessions.json")).unwrap();
+        assert!(!raw.contains("fixture-new-password") && !raw.contains("fixture-inline-key"));
+        // Verify the newly typed value actually reached disk, not only the UI cache.
+        use base64::Engine as _;
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
+        let disk: crate::config::ConfigFile = serde_json::from_str(&raw).unwrap();
+        let password = &disk
+            .sessions
+            .iter()
+            .find(|s| s.id == saved.id)
+            .unwrap()
+            .password;
+        let encrypted = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(password.as_str().strip_prefix("enc:v1:").unwrap())
+            .unwrap();
+        let cipher = ChaCha20Poly1305::new_from_slice(&store.borrow().key).unwrap();
+        let decrypted = cipher
+            .decrypt(Nonce::from_slice(&encrypted[..12]), &encrypted[12..])
+            .unwrap();
+        assert_eq!(decrypted, b"fixture-new-password");
+        let _ = std::fs::remove_dir_all(dir);
+    })
+    .join()
+    .unwrap();
+}

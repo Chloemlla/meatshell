@@ -669,3 +669,12 @@ msgstr "This file has unsaved changes. Close without saving?"
 
 msgid "Discard and close"
 msgstr "Discard and close"
+
+msgid "Enter a new password"
+msgstr "Enter a new password"
+
+msgid "Enter a key passphrase"
+msgstr "Enter a key passphrase"
+
+msgid "Credentials start hidden. Click the eye to view. Save to remember this option."
+msgstr "Credentials start hidden. Click the eye to view. Save to remember this option."
