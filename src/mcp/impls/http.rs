@@ -50,7 +50,15 @@ fn default_bind() -> SocketAddr {
 struct SessionOwner {
     subject: String,
     expires_at: u64,
+    cancellation: CancellationToken,
 }
+impl Drop for SessionOwner {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+#[derive(Clone)]
+struct SessionCancellation(CancellationToken);
 struct Boundary {
     oauth: OAuth,
     origins: Vec<String>,
@@ -66,6 +74,42 @@ struct HttpTools {
     allow_config_import: bool,
     scope: String,
     calls: Arc<Semaphore>,
+}
+
+// Preserve provider-specific descriptor fields that rmcp 2.2's typed Tool
+// intentionally does not model, without modifying transport/SSE serialization.
+#[derive(Clone)]
+struct HttpService(HttpTools);
+impl rmcp::Service<RoleServer> for HttpService {
+    async fn handle_request(
+        &self,
+        request: rmcp::model::ClientRequest,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::ServerResult, ErrorData> {
+        let result = rmcp::Service::handle_request(&self.0, request, context).await?;
+        if let rmcp::model::ServerResult::ListToolsResult(list) = result {
+            let mut value = serde_json::to_value(list)
+                .map_err(|_| ErrorData::internal_error("invalid tool metadata", None))?;
+            for tool in value["tools"].as_array_mut().expect("tool array") {
+                tool["securitySchemes"] = tool["_meta"]["securitySchemes"].clone();
+            }
+            Ok(rmcp::model::ServerResult::CustomResult(
+                rmcp::model::CustomResult(value),
+            ))
+        } else {
+            Ok(result)
+        }
+    }
+    async fn handle_notification(
+        &self,
+        notification: rmcp::model::ClientNotification,
+        context: rmcp::service::NotificationContext<RoleServer>,
+    ) -> std::result::Result<(), ErrorData> {
+        rmcp::Service::handle_notification(&self.0, notification, context).await
+    }
+    fn get_info(&self) -> ServerInfo {
+        ServerHandler::get_info(&self.0)
+    }
 }
 
 impl ServerHandler for HttpTools {
@@ -113,6 +157,11 @@ impl ServerHandler for HttpTools {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Principal>())
             .ok_or_else(|| ErrorData::invalid_request("authentication context missing", None))?;
+        let session_cancel = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<SessionCancellation>())
+            .ok_or_else(|| ErrorData::invalid_request("session context missing", None))?;
         let remaining = oauth::remaining(principal.expires_at);
         if remaining.is_zero() {
             return Err(ErrorData::invalid_request("access token expired", None));
@@ -126,6 +175,7 @@ impl ServerHandler for HttpTools {
         let result = tokio::select! {
             biased;
             _ = context.ct.cancelled() => return Err(ErrorData::internal_error("request cancelled", None)),
+            _ = session_cancel.0.cancelled() => return Err(ErrorData::internal_error("session closed", None)),
             _ = tokio::time::sleep(remaining) => return Err(ErrorData::internal_error("request deadline or access token expiry reached", None)),
             result = super::tools::call_mcp(&request.name, &args, self.allow_config_import) => result,
         };
@@ -182,7 +232,7 @@ async fn guard(State(state): State<Arc<Boundary>>, request: Request, next: Next)
         .and_then(|v| v.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
         .map(|(_, token)| state.oauth.verify(token));
-    let principal = match principal {
+    let mut principal = match principal {
         Some(Ok(principal)) => principal,
         Some(Err(oauth::AuthError::InsufficientPermission)) => {
             let mut response = failure(
@@ -226,18 +276,22 @@ async fn guard(State(state): State<Arc<Boundary>>, request: Request, next: Next)
     if request.headers().get_all("mcp-session-id").iter().count() > 1 {
         return failure(StatusCode::BAD_REQUEST, "ambiguous session id");
     }
-    if let Some(session) = &session {
+    let session_cancel = if let Some(session) = &session {
         let owners = state.owners.lock().await;
-        if !owners.get(session).is_some_and(|owner| {
-            owner.subject == principal.subject && owner.expires_at > oauth::now()
-        }) {
-            // Identical response for unknown, expired, and other principals.
+        let Some(owner) = owners
+            .get(session)
+            .filter(|owner| owner.subject == principal.subject && owner.expires_at > oauth::now())
+        else {
             return failure(
                 StatusCode::NOT_FOUND,
                 "MCP session not found; initialize again",
             );
-        }
-    }
+        };
+        principal.expires_at = principal.expires_at.min(owner.expires_at);
+        Some(SessionCancellation(owner.cancellation.clone()))
+    } else {
+        None
+    };
     let method = request.method().clone();
     let (mut parts, body) = request.into_parts();
     let body = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, MAX_BODY)).await {
@@ -295,6 +349,9 @@ async fn guard(State(state): State<Arc<Boundary>>, request: Request, next: Next)
         None
     };
     parts.extensions.insert(principal.clone());
+    if let Some(cancel) = session_cancel {
+        parts.extensions.insert(cancel);
+    }
     // Do not propagate bearer tokens into the SDK's request context/debug view.
     parts.headers.remove(header::AUTHORIZATION);
     let request = Request::from_parts(parts, Body::from(body));
@@ -314,6 +371,7 @@ async fn guard(State(state): State<Arc<Boundary>>, request: Request, next: Next)
                 SessionOwner {
                     subject: principal.subject,
                     expires_at: oauth::now() + SESSION_TTL,
+                    cancellation: CancellationToken::new(),
                 },
             );
         }
@@ -405,7 +463,7 @@ pub(super) fn run(path: &str, allow_config_import: bool) -> Result<()> {
             initialize_lock: Mutex::new(()), sessions: sessions.clone(), requests: Semaphore::new(32), streams: Arc::new(Semaphore::new(16)) });
         let shutdown = CancellationToken::new();
         let tools = HttpTools { allow_config_import, scope: state.oauth.config.required_scope.clone(), calls: Arc::new(Semaphore::new(16)) };
-        let service = StreamableHttpService::new(move || Ok(tools.clone()), sessions,
+        let service = StreamableHttpService::new(move || Ok(HttpService(tools.clone())), sessions,
             StreamableHttpServerConfig::default().with_allowed_hosts([public_authority, config.bind.to_string()])
                 .with_cancellation_token(shutdown.child_token()));
         let mcp = Router::new().nest_service("/mcp", service)

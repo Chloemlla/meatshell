@@ -165,7 +165,7 @@ def main():
             assert request(listing, token(exp=int(time.time())-1), a)[0] == 401
             status, _, listed = request(listing, alice, a)
             assert status == 200 and len(listed['result']['tools']) == 8
-            assert all(t.get('_meta', {}).get('securitySchemes') for t in listed['result']['tools'])
+            assert all(t.get('securitySchemes') == t.get('_meta', {}).get('securitySchemes') and t['securitySchemes'][0]['type'] == 'oauth2' for t in listed['result']['tools'])
             assert request(method='GET', auth=alice, session=a)[0] == 405
             print('PASS: authenticated initialize/list, OAuth tool metadata and principal session isolation')
 
@@ -196,7 +196,20 @@ def main():
             assert request(auth=alice, session=a, raw='x'*(1024*1024+1))[0] == 413
             assert request(auth=alice, session=a, raw='{bad')[0] == 400
             assert request(listing, alice)[0] == 400
-            print('PASS: body cap, malformed JSON, initialization requirement')
+            slow = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            slow.putrequest('POST', '/mcp')
+            for k,v in {'Authorization': 'Bearer '+alice, 'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/event-stream', 'Mcp-Session-Id': a,
+                        'Content-Length': '1000'}.items():
+                slow.putheader(k,v)
+            slow.endheaders()
+            slow.send(b'{')
+            started = time.monotonic()
+            slow_response = slow.getresponse()
+            assert slow_response.status == 408 and 4 <= time.monotonic()-started < 8
+            slow_response.read()
+            slow.close()
+            print('PASS: body cap, slow-body deadline, malformed JSON, initialization requirement')
 
             # A silent synthetic SSH peer proves cancellation drops network work.
             peer = socket.socket()
@@ -240,8 +253,26 @@ def main():
                 arguments=dict(session_id='fixture', command='true', timeout_seconds=60))), short_token, a)
             assert accepted.is_set() and closed.wait(3), 'expired access token did not close in-flight SSH'
             assert time.monotonic() - started < 4
-            peer.close()
             print('PASS: token expiry cancels an in-flight operation and bounds its result stream')
+            accepted.clear()
+            closed.clear()
+            threading.Thread(target=silent_peer, daemon=True).start()
+            disposable = initialize(alice)
+            disconnected = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            disconnected.request('POST', '/mcp', body=json.dumps(dict(jsonrpc='2.0', id=80, method='tools/call',
+                params=dict(name='run_command', arguments=dict(session_id='fixture', command='true', timeout_seconds=60)))),
+                headers={'Authorization': 'Bearer '+alice, 'Content-Type': 'application/json',
+                         'Accept': 'application/json, text/event-stream', 'Mcp-Session-Id': disposable,
+                         'MCP-Protocol-Version': '2025-06-18'})
+            pending_response = disconnected.getresponse()
+            assert accepted.wait(5)
+            pending_response.close()
+            disconnected.close()
+            assert request(auth=alice, session=disposable, method='DELETE')[0] in (200,202)
+            assert closed.wait(5), 'DELETE after network disconnect did not close SSH'
+            assert request(listing, alice, disposable)[0] == 404
+            peer.close()
+            print('PASS: disconnected request can be explicitly terminated with session DELETE')
 
             # Reuse the existing synthetic SSH fixture, with a deliberately slow
             # in-memory upload endpoint. Cancelling must stop detached transfers.

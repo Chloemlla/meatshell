@@ -171,7 +171,7 @@ jobs:
             mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
             cp "target/${{ matrix.target }}/release/meatshell" "$CONTENTS/MacOS/"
-            cp THIRD_PARTY_NOTICES.md "$CONTENTS/Resources/"
+            cp THIRD_PARTY_NOTICES.md docs/REMOTE_MCP.md "$CONTENTS/Resources/"
 
             # Generate .icns from the 512×512 PNG using sips + iconutil (both
             # ship with every macOS, no extra tooling needed in CI).

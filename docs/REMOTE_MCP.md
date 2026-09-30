@@ -198,7 +198,8 @@ cargo test --features headless --bin meatshell
 cargo build --features headless
 python3 tests/remote_mcp_e2e.py --exe target/debug/meatshell
 python3 tests/config_import_e2e.py --exe target/debug/meatshell
-# Additional loopback SSH/SFTP tests require Python paramiko:
+# Synthetic HTTP and SSH/SFTP tests require Python cryptography + paramiko:
+python3 tests/ssh_jump_chain_e2e.py --exe target/debug/meatshell
 python3 tests/ssh_jump_chain_e2e.py --exe target/debug/meatshell --stage-timeouts
 cargo check                         # default desktop source compatibility
 ```

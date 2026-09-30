@@ -26,6 +26,7 @@ assets = [
     ["assets/meatshell.desktop", "usr/share/applications/", "644"],
     ["assets/icon@512.png", "usr/share/icons/hicolor/512x512/apps/meatshell.png", "644"],
     ["THIRD_PARTY_NOTICES.md", "usr/share/doc/meatshell/", "644"],
+    ["docs/REMOTE_MCP.md", "usr/share/doc/meatshell/", "644"],
 ]
 
 [features]
