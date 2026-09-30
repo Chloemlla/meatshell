@@ -41,14 +41,92 @@ Existing profile settings remain authoritative:
 - SFTP transfers/imports require `mcp_allow_file_transfers`
 - Applying configuration imports additionally requires startup flag
   `--allow-config-import` (before `--http-config`)
-- Unknown/changed SSH host keys fail closed. Establish the intended known_hosts
-  entries through the existing trusted workflow; never bypass this check
+- Unknown/changed SSH host keys fail closed. Seed verified host trust as described
+  below before using SSH/SFTP through the headless service; never bypass this check
 
 OAuth authorization adds an outer boundary; it does **not** enable these gates.
 Authorized subjects all access the same selected profile and the OS user's
 filesystem permissions. This is a **single-owner / trusted-operator** service,
 not a multi-tenant SSH hosting service. For separate users/data, run separate
 OS accounts, profiles and service instances. A subject allowlist is mandatory.
+
+### Seed verified SSH host trust before the first connection
+
+A session export/import **does not include SSH host trust**. A fresh profile is
+not ready to connect merely because its sessions and credentials were imported.
+The CLI/MCP service cannot approve the desktop host-key dialog: unknown or changed
+keys are rejected. Complete this one-time operator step before starting it.
+
+The trust file is `known_hosts` directly inside the explicitly selected private
+`--data-dir` (alongside `sessions.json`). It does not read `~/.ssh/known_hosts`.
+Use either of these supported approaches:
+
+1. Copy MeatShell's own `known_hosts` from a trusted profile whose server keys you
+   previously verified, using a secure local/admin transfer. Select only the
+   verified hosts needed by this service. Session host strings and ports must
+   still match exactly. A desktop-capable build can establish this trust first:
+   select that profile, compare every displayed SHA256 fingerprint against an
+   independently trusted server-console/admin record, then approve it. Do not
+   approve an unfamiliar key merely to make the connection work.
+2. Without a GUI, obtain the server's **public host key** through its trusted
+   console or authenticated administrator channel. For example, on that server,
+   inspect `/etc/ssh/ssh_host_ed25519_key.pub` and its fingerprint with
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256`. Use the actual public
+   host key configured by that server's SSH daemon; key paths and types can vary.
+   Transfer only the `.pub` key, compare its SHA256 fingerprint against the
+   independently verified console/admin value, and add an entry as shown below.
+   The server's private host key, your SSH login private key, and an OAuth signing
+   key are **never** entries in this file. Unverified `ssh-keyscan` output is not a
+   trust source; do not pipe it into the store or blindly accept its fingerprint.
+
+**MeatShell uses its own exact-string format**, not the OpenSSH `known_hosts`
+format. Each entry is exactly:
+
+```text
+<literal session.host>:<decimal port> <key-type> <base64-public-host-key>
+```
+
+Always include the port, including `:22`. Use the precise saved session host
+string: a DNS name and its IP address are different entries, and spelling/case is
+not normalized. Do not add OpenSSH-style `[host]:port` brackets, hashed hostnames,
+comma-separated host lists, wildcard patterns, markers, or a trailing key comment.
+For an unbracketed IPv6 session host `2001:db8::10` on port 22, the identifier is
+`2001:db8::10:22`. Blank lines and whole-line `#` comments are allowed. The stored
+key type and base64 must match the key that the server actually presents.
+
+For example, **after** verifying a single-line public key saved locally as
+`verified-bastion-host-key.pub`, run the following as the dedicated service OS
+account. Replace the example directory and exact session host/port. Stop the
+service/desktop while editing, and preserve a private backup of an existing trust
+file before modifying it. These commands append a verified new entry and strip
+any `.pub` comment; they do not establish trust or verify identity for you.
+
+```sh
+PROFILE=/var/lib/meatshell/profile
+umask 077
+mkdir -p "$PROFILE"
+chmod 700 "$PROFILE"
+# Compare the displayed SHA256 fingerprint with the trusted console/admin value.
+ssh-keygen -lf verified-bastion-host-key.pub -E sha256
+# Continue only after that comparison succeeds and you approve the identity.
+touch "$PROFILE/known_hosts"
+chmod 600 "$PROFILE/known_hosts"
+awk -v id='bastion.example.com:22' \
+  'NR == 1 { printf "%s %s %s\n", id, $1, $2 }' \
+  verified-bastion-host-key.pub >> "$PROFILE/known_hosts"
+```
+
+Keep the profile and file owned by the service account, with directory mode 0700
+and file mode 0600 on Linux (equivalent private ACLs on Windows). Restrict backup
+copies too. Seed **every jump host and the final target**, each under its own saved
+host/port, even when the target is reachable only through a jump. Keep the final
+target's saved hostname; do not substitute localhost or the bastion address. Repeat for any
+verified host-key type that can be negotiated; a different key is not implicitly
+trusted. Start the service only after completing this setup. Unknown/changed keys
+must continue to fail closed: investigate a change out of band, then deliberately
+replace the old host entry after re-verification. Never erase the store, enable
+accept-all behavior, or silently append an unverified replacement to bypass a
+failure. No real profile or trust file is supplied in this release.
 
 ## 2. Configure the external authorization server
 
