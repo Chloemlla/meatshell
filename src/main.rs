@@ -16,6 +16,8 @@ mod i18n;
 #[cfg(not(feature = "headless"))]
 mod layout;
 mod logging;
+#[cfg(any(test, not(feature = "headless")))]
+mod session_test;
 mod mcp;
 #[cfg(not(feature = "headless"))]
 mod rdp;

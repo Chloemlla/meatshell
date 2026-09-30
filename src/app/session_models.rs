@@ -496,7 +496,9 @@ pub(super) fn session_from_draft(
         note: draft.note.to_string(),
         jump_session_id: String::new(),
         jump_session_ids: if kind == SessionKind::Ssh {
-            draft.jumps.iter().map(|hop| hop.id.to_string()).collect()
+            crate::config::draft_jump_ids(
+                draft.jumps.iter().map(|hop| (hop.id.to_string(), hop.placeholder)),
+            )
         } else {
             Vec::new()
         },

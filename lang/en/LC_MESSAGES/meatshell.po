@@ -678,3 +678,9 @@ msgstr "Enter a key passphrase"
 
 msgid "Credentials start hidden. Click the eye to view. Save to remember this option."
 msgstr "Credentials start hidden. Click the eye to view. Save to remember this option."
+
+msgid "Save session"
+msgstr "Save session"
+
+msgid "Create session"
+msgstr "Create session"

@@ -5,6 +5,15 @@ use std::collections::HashSet;
 /// Bound recursive connection/authentication work even for malformed imports.
 const MAX_JUMP_HOPS: usize = 16;
 
+/// A fresh, never-selected editor row is optional UI scaffolding. Imported or
+/// previously selected empty/dangling hops stay in the route and fail validation.
+pub(crate) fn draft_jump_ids(rows: impl IntoIterator<Item = (String, bool)>) -> Vec<String> {
+    rows.into_iter()
+        .filter(|(id, placeholder)| !(*placeholder && id.trim().is_empty()))
+        .map(|(id, _)| id)
+        .collect()
+}
+
 impl ConfigStore {
     /// Immediate jump first; following entries are that jump's ancestors.
     /// Resolve the full graph before any network activity, never silently direct.
@@ -96,6 +105,43 @@ mod tests {
         s.jump_session_id = jump.into();
         s
     }
+    #[test]
+    fn unused_editor_rows_do_not_block_save_but_broken_routes_do() {
+        let mut target = session("target", "");
+        target.jump_session_ids = draft_jump_ids([(String::new(), true)]);
+        assert!(resolve_jump_chain(&[], &target).unwrap().is_empty());
+        target.jump_session_ids = draft_jump_ids([
+            ("outer".into(), false),
+            (String::new(), true),
+            ("inner".into(), false),
+        ]);
+        let saved = [session("outer", ""), session("inner", "")];
+        assert_eq!(
+            resolve_jump_chain(&saved, &target)
+                .unwrap()
+                .iter()
+                .map(|hop| hop.id.as_str())
+                .collect::<Vec<_>>(),
+            ["inner", "outer"]
+        );
+        // The legacy broken-route sentinel and saved empty entries are not placeholders.
+        target.jump_session_ids = draft_jump_ids([(String::new(), false), ("inner".into(), false)]);
+        assert!(resolve_jump_chain(&saved, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("Select a session"));
+        target.jump_session_ids = draft_jump_ids([("missing".into(), false)]);
+        assert!(resolve_jump_chain(&saved, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        target.jump_session_ids = draft_jump_ids([("target".into(), false)]);
+        assert!(resolve_jump_chain(&saved, &target)
+            .unwrap_err()
+            .to_string()
+            .contains("cycle"));
+    }
+
     #[test]
     fn direct_and_single_hop() {
         let direct = session("direct", "");

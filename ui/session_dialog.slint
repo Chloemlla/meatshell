@@ -24,6 +24,8 @@ export struct TriggerDraft {
 export struct JumpHop {
     id: string,
     choice: int,
+    // Only a newly added, never-selected row can be omitted on Save/Test.
+    placeholder: bool,
 }
 
 export struct SessionDraft {
@@ -572,7 +574,7 @@ export component SessionDialog inherits ModalLayer {
         root.key-revealed = false;
         root.load-saved-credentials();
     }
-    changed draft-key-inline-mode => { root.load-saved-credentials(); }
+    changed draft-key-inline-mode => { root.connection-draft-changed(); root.load-saved-credentials(); }
     callback add-jump();
     callback update-jump(int, int);
     callback delete-jump(int);
@@ -600,9 +602,75 @@ export component SessionDialog inherits ModalLayer {
     in property <[TriggerDraft]> triggers;
     property <bool> show-advanced: false;   // collapse proxy + forwarding (#56)
 
+    // A result belongs to the tested endpoint and credentials. Editing either
+    // cancels the old attempt before its result can label a different draft.
+    callback connection-draft-changed();
+    changed draft-kind => { root.connection-draft-changed(); }
+    changed draft-host => { root.connection-draft-changed(); }
+    changed draft-port => { root.connection-draft-changed(); }
+    changed draft-user => { root.connection-draft-changed(); }
+    changed draft-auth => { root.connection-draft-changed(); }
+    changed draft-password => { root.connection-draft-changed(); }
+    changed draft-key-path => { root.connection-draft-changed(); }
+    changed draft-key-inline => { root.connection-draft-changed(); }
+    changed draft-proxy-type => { root.connection-draft-changed(); }
+    changed draft-proxy-hostport => { root.connection-draft-changed(); }
+    changed draft-serial-port => { root.connection-draft-changed(); }
+    changed draft-baud => { root.connection-draft-changed(); }
+    changed draft-data-bits => { root.connection-draft-changed(); }
+    changed draft-stop-bits => { root.connection-draft-changed(); }
+    changed draft-parity => { root.connection-draft-changed(); }
+    changed draft-flow => { root.connection-draft-changed(); }
+
+    public function submit-current() {
+        root.stop-test();
+        // SSH/Telnet need a host; block submit and flag it (#110).
+        if (root.draft-kind != "serial" && root.draft-host == "") {
+            root.host-missing = true;
+            return;
+        }
+        root.host-missing = false;
+        root.submit({
+            id: root.draft-id,
+            name: root.draft-name,
+            kind: root.draft-kind,
+            host: root.draft-host,
+            port: root.draft-port.to-float(),
+            user: root.draft-user,
+            auth: root.draft-auth,
+            password: root.draft-password,
+            private-key-path: root.draft-key-path,
+            private-key-inline: root.draft-key-inline,
+            private-key-inline-mode: root.draft-key-inline-mode,
+            proxy: (root.draft-proxy-type == "none" || root.draft-proxy-hostport == "") ? ""
+                 : root.draft-proxy-type == "http" ? "http://" + root.draft-proxy-hostport
+                 : "socks5://" + root.draft-proxy-hostport,
+            group: root.draft-group,
+            serial-port: root.draft-serial-port,
+            baud-rate: root.draft-baud.to-float(),
+            data-bits: root.draft-data-bits.to-float(),
+            stop-bits: root.draft-stop-bits.to-float(),
+            parity: root.draft-parity,
+            flow-control: root.draft-flow,
+            rdp-domain: root.draft-rdp-domain,
+            rdp-resolution: root.draft-rdp-resolution,
+            rdp-width: root.draft-rdp-width.to-float(),
+            rdp-height: root.draft-rdp-height.to-float(),
+            encoding: root.draft-encoding,
+            vt100-drawing: root.draft-vt100-drawing,
+            session-log: root.draft-session-log,
+            disable-shell-integration: root.draft-disable-shell-integration,
+            note: root.draft-note,
+            jumps: root.jumps,
+            allow-secret-reveal: root.allow-secret-reveal,
+        });
+    }
+
     callback submit(SessionDraft);
     callback test-connection(SessionDraft);
     callback cancel();
+    callback closed();
+    callback stop-test();
     callback add-forward();
     callback update-forward(int /* index */, PortFwd);
     callback delete-forward(int /* index */);
@@ -622,6 +690,7 @@ export component SessionDialog inherits ModalLayer {
             self.key-revealed = false;
             root.load-saved-credentials();
         } else {
+            root.closed();
             root.draft-password = "";
             root.draft-key-inline = "";
             root.password-revealed = false;
@@ -1503,46 +1572,7 @@ export component SessionDialog inherits ModalLayer {
                 PrimaryButton {
                     text: is-editing ? @tr("Save") : @tr("Create");
                     clicked => {
-                        // SSH/Telnet need a host; block submit and flag it (#110).
-                        if (root.draft-kind != "serial" && root.draft-host == "") {
-                            root.host-missing = true;
-                            return;
-                        }
-                        root.host-missing = false;
-                        root.submit({
-                            id: root.draft-id,
-                            name: root.draft-name,
-                            kind: root.draft-kind,
-                            host: root.draft-host,
-                            port: root.draft-port.to-float(),
-                            user: root.draft-user,
-                            auth: root.draft-auth,
-                            password: root.draft-password,
-                            private-key-path: root.draft-key-path,
-                            private-key-inline: root.draft-key-inline,
-                            private-key-inline-mode: root.draft-key-inline-mode,
-                            proxy: (root.draft-proxy-type == "none" || root.draft-proxy-hostport == "") ? ""
-                                 : root.draft-proxy-type == "http" ? "http://" + root.draft-proxy-hostport
-                                 : "socks5://" + root.draft-proxy-hostport,
-                            group: root.draft-group,
-                            serial-port: root.draft-serial-port,
-                            baud-rate: root.draft-baud.to-float(),
-                            data-bits: root.draft-data-bits.to-float(),
-                            stop-bits: root.draft-stop-bits.to-float(),
-                            parity: root.draft-parity,
-                            flow-control: root.draft-flow,
-                            rdp-domain: root.draft-rdp-domain,
-                            rdp-resolution: root.draft-rdp-resolution,
-                            rdp-width: root.draft-rdp-width.to-float(),
-                            rdp-height: root.draft-rdp-height.to-float(),
-                            encoding: root.draft-encoding,
-                            vt100-drawing: root.draft-vt100-drawing,
-                            session-log: root.draft-session-log,
-                            disable-shell-integration: root.draft-disable-shell-integration,
-                            note: root.draft-note,
-                            jumps: root.jumps,
-                            allow-secret-reveal: root.allow-secret-reveal,
-                        });
+                        root.submit-current();
                     }
                 }
             }

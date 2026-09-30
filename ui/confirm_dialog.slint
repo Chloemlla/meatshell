@@ -52,6 +52,9 @@ export component ConfirmDialog inherits ModalLayer {
     // security prompts (e.g. host-key trust) so an accidental click outside the card
     // doesn't count as "reject" and abort the connection (#152).
     dismiss-on-backdrop: true;
+    // An optional non-confirming action, e.g. save a session while testing it.
+    in property <string> secondary-label;
+    callback secondary();
     callback confirm();
     callback cancel();
 
@@ -143,6 +146,10 @@ export component ConfirmDialog inherits ModalLayer {
             HorizontalLayout {
                 alignment: end;
                 spacing: 8px;
+                if root.secondary-label != "" : GhostButton {
+                    text: root.secondary-label;
+                    clicked => { root.secondary(); }
+                }
                 GhostButton {
                     text: @tr("Cancel");
                     clicked => { root.cancel(); }

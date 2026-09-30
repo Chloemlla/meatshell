@@ -48,18 +48,34 @@ slint::slint! {
         in-out property <string> password;
         in-out property <string> key;
         callback move-hop(int, int);
+        in-out property <string> test-status;
+        out property <int> submit-count: 0;
+        out property <int> stop-count: 0;
+        out property <int> closed-count: 0;
+        out property <int> changed-count: 0;
+        in-out property <string> host: "target.example.invalid";
+        in-out property <string> user: "demo";
+        in-out property <string> auth: "password";
+        callback save-current();
+        save-current => { editor.submit-current(); }
         init => {
             Theme.ui-font-family = "Microsoft YaHei";
             Palette.color-scheme = ColorScheme.dark;
         }
-        SessionDialog {
+        editor := SessionDialog {
             is-editing: true;
+            test-status <=> root.test-status;
+            submit(draft) => { root.submit-count += 1; }
+            stop-test => { root.stop-count += 1; }
+            closed => { root.closed-count += 1; }
+            connection-draft-changed => { root.changed-count += 1; }
             is-mac: root.mac;
             covered: root.covered;
             cancel => { root.cancel-count += 1; root.open = false; }
             draft-name: "Example multi-hop session";
-            draft-host: "target.example.invalid";
-            draft-user: "demo";
+            draft-host <=> root.host;
+            draft-user <=> root.user;
+            draft-auth <=> root.auth;
             draft-note: "Example route, no real credentials";
             allow-secret-reveal: true;
             jump-choices: ["Select a jump host", "Bastion A (demo@a.example.invalid:22)", "Bastion B (demo@b.example.invalid:22)"];
@@ -385,4 +401,63 @@ fn session_cancel_shortcuts_work_on_open_and_in_focused_inputs() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn saving_valid_dialog_is_independent_of_connection_test_result() {
+    std::thread::spawn(|| {
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Backend { window: window.clone(), clipboard: Rc::default() })).unwrap();
+        let ui = DialogFixture::new().unwrap();
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(700, 1100));
+        for (i, status) in ["Testing...", "Connection failed: fixture failure", "Connection timed out", "Connection OK"].iter().enumerate() {
+            ui.set_test_status((*status).into());
+            slint::platform::update_timers_and_animations();
+            let mut pixels = vec![Rgb8Pixel::default(); 700 * 1100];
+            window.request_redraw();
+            window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 700); });
+            // The Linux fixture's rendered footer; other platforms have different font metrics.
+            #[cfg(target_os = "linux")]
+            {
+                press(&window, 510., 1000.);
+                release(&window, 510., 1000.);
+            }
+            #[cfg(not(target_os = "linux"))]
+            ui.invoke_save_current();
+            assert_eq!(ui.get_submit_count(), (i + 1) as i32);
+        }
+        // Auth overlays use the same Save entry point, without accepting a key.
+        ui.set_covered(true);
+        ui.set_test_status("Testing...".into());
+        ui.invoke_save_current();
+        assert_eq!(ui.get_submit_count(), 5);
+        assert_eq!(ui.get_stop_count(), 5);
+        ui.set_open(false);
+        slint::platform::update_timers_and_animations();
+        assert_eq!(ui.get_closed_count(), 1);
+    }).join().unwrap();
+}
+
+#[test]
+fn editing_connection_fields_invalidates_the_test_snapshot() {
+    std::thread::spawn(|| {
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Backend { window, clipboard: Rc::default() })).unwrap();
+        let ui = DialogFixture::new().unwrap();
+        slint::platform::update_timers_and_animations();
+        let mut changes = ui.get_changed_count();
+        for change in [0, 1, 2, 3, 4] {
+            match change {
+                0 => ui.set_host("changed.example.invalid".into()),
+                1 => ui.set_user("changed-user".into()),
+                2 => ui.set_auth("key".into()),
+                3 => ui.set_password("fixture-passphrase".into()),
+                _ => ui.set_key("fixture-key".into()),
+            }
+            slint::platform::update_timers_and_animations();
+            assert!(ui.get_changed_count() > changes);
+            changes = ui.get_changed_count();
+        }
+    }).join().unwrap();
 }
