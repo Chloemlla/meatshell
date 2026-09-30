@@ -1,5 +1,8 @@
 """Loopback-only multi-hop regression checks. Requires paramiko.
 Run: python tests/ssh_jump_chain_e2e.py --exe /path/to/meatshell.exe
+Network stalls: add --stage-timeouts (45 seconds for three stage deadlines).
+Before-fix reproduction: add --expect-unbounded-stages (90 seconds).
+All keys are generated per run; no real credentials or external servers are used.
 All fixture configuration and executable copies are deleted after the run.
 """
 import argparse
@@ -18,9 +21,11 @@ import tempfile
 import threading
 import time
 import paramiko
+from cryptography.hazmat.primitives import serialization
 
 logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 PASSWORD = "loopback-fixture-only"
+PASSPHRASE = "loopback-key-passphrase-only"
 
 def background(fn, *args):
     threading.Thread(target=fn, args=args, daemon=True).start()
@@ -51,17 +56,27 @@ class Server(paramiko.ServerInterface):
         self.destinations = {}
 
     def get_allowed_auths(self, username):
-        return "password,keyboard-interactive"
+        return "publickey" if self.node.key_auth else "password,keyboard-interactive"
+
+    def check_auth_publickey(self, username, key):
+        self.node.auth_attempts.append("publickey")
+        if self.node.stall_auth:
+            self.node.release_stalls.wait(40)
+        if self.node.key_auth and username == "fixture" and key == self.node.client_key:
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
 
     def check_auth_password(self, username, password):
-        if self.node.interactive:
+        self.node.auth_attempts.append("password")
+        if self.node.interactive or self.node.key_auth:
             return paramiko.AUTH_FAILED
         return self.check_auth_interactive_response([password])
     def check_auth_interactive(self, username, submethods):
         return paramiko.InteractiveQuery("", "", ("Password: ", False))
 
     def check_auth_interactive_response(self, responses):
-        if responses == [PASSWORD]:
+        self.node.auth_attempts.append("keyboard-interactive")
+        if not self.node.key_auth and responses == [PASSWORD]:
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
@@ -69,6 +84,8 @@ class Server(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_direct_tcpip_request(self, chanid, origin, destination):
+        if self.node.stall_forward:
+            self.node.release_stalls.wait(40)
         if destination not in self.node.routes:
             return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
         self.destinations[chanid] = self.node.routes[destination]
@@ -91,6 +108,13 @@ class Node:
     def __init__(self, name):
         self.name = name
         self.key = paramiko.RSAKey.generate(2048)
+        self.client_key = paramiko.RSAKey.generate(2048)
+        self.key_auth = False
+        self.rsa_sha256_only = False
+        self.stall_auth = False
+        self.stall_forward = False
+        self.release_stalls = threading.Event()
+        self.auth_attempts = []
         self.routes = {}
         self.forwarded = []
         self.interactive = False
@@ -110,7 +134,8 @@ class Node:
             background(self.serve, conn)
 
     def serve(self, conn):
-        transport = paramiko.Transport(conn)
+        disabled = {"pubkeys": ["rsa-sha2-512", "ssh-rsa"]} if self.rsa_sha256_only else None
+        transport = paramiko.Transport(conn, disabled_algorithms=disabled)
         self.transports.append(transport)
         transport.add_server_key(self.key)
         transport.set_subsystem_handler("sftp", paramiko.SFTPServer, Files)
@@ -147,6 +172,7 @@ class Node:
                 pass  # The fixture's outer transport may already be closed.
 
     def close(self):
+        self.release_stalls.set()
         self.listener.close()
         for transport in self.transports:
             transport.close()
@@ -189,6 +215,36 @@ class Fixture:
                 entries.append(f'{item["host"]}:{item["port"]} {node.key.get_name()} {node.key.get_base64()}')
         (self.config / "known_hosts").write_text("\n".join(entries)+"\n", encoding="utf-8")
 
+    def use_key(self, index, inline=True, encrypted=False, encoding="openssh"):
+        node = self.nodes[index]
+        node.key_auth = True
+        encryption = (serialization.BestAvailableEncryption(PASSPHRASE.encode())
+                      if encrypted else serialization.NoEncryption())
+        key_format = (serialization.PrivateFormat.TraditionalOpenSSL if encoding == "pem"
+                      else serialization.PrivateFormat.OpenSSH)
+        key = node.client_key.key.private_bytes(
+            serialization.Encoding.PEM, key_format, encryption
+        ).decode("utf-8")
+        item = self.sessions[index]
+        item.update(auth="key", password=PASSPHRASE if encrypted else "",
+                    private_key_path="", private_key_inline="")
+        if inline:
+            item["private_key_inline"] = key
+        else:
+            path = self.root / f"{node.name}-client-key.pem"
+            path.write_text(key, encoding="utf-8")
+            path.chmod(0o600)
+            item["private_key_path"] = str(path)
+        self.save()
+
+    def reset_auth(self):
+        for item, node in zip(self.sessions, self.nodes):
+            node.key_auth = node.interactive = node.rsa_sha256_only = False
+            node.stall_auth = node.stall_forward = False
+            item.update(auth="password", password=PASSWORD,
+                        private_key_path="", private_key_inline="")
+        self.save()
+
     def mcp(self, name, **arguments):
         requests = [
             dict(jsonrpc="2.0", id=1, method="initialize", params=dict(
@@ -201,7 +257,7 @@ class Fixture:
         profile_args = ["--data-dir", str(self.config)] if self.explicit_profile else []
         run = subprocess.run([str(self.exe), *profile_args, "mcp", "serve"], input="".join(
             json.dumps(r)+"\n" for r in requests), text=True, capture_output=True,
-            encoding="utf-8", timeout=35)
+            encoding="utf-8", timeout=45)
         assert run.returncode == 0, run.stderr
         replies = [json.loads(line) for line in run.stdout.splitlines() if line.strip()]
         return next(reply["result"] for reply in replies if reply["id"] == 2)
@@ -222,6 +278,7 @@ class Fixture:
             assert result.get("isError"), "Old binary unexpectedly supports nested jumps"
             print("PASS: original binary reproduces nested-jump failure")
             return
+        self.check_keys()
         self.command("outer")
         self.command("inner")
         self.command()
@@ -295,6 +352,92 @@ class Fixture:
             self.save()
         print("PASS: timeout covers stalled ancestor SSH handshake")
 
+    def check_keys(self):
+        for index in (0, 1):
+            cases = ((True, False, "pem"), (False, False, "pem"),
+                     (True, False, "openssh"), (False, False, "openssh"),
+                     (True, True, "openssh"), (False, True, "openssh"))
+            for inline, encrypted, encoding in cases:
+                self.reset_auth()
+                self.use_key(index, inline=inline, encrypted=encrypted, encoding=encoding)
+                before = len(self.nodes[index].auth_attempts)
+                self.command()
+                assert "publickey" in self.nodes[index].auth_attempts[before:]
+                if encrypted:
+                    self.sessions[index]["password"] = "wrong-loopback-passphrase"
+                    self.save()
+                    result = self.mcp("run_command", session_id="target", command="fixture", timeout_seconds=8)
+                    assert result.get("isError"), "Incorrect key passphrase was accepted"
+                    assert not result.get("structuredContent", {}).get("timed_out"), result
+                print(f"PASS: {self.nodes[index].name} RSA {encoding} {'inline' if inline else 'file'} "
+                      f"{'encrypted key + wrong-passphrase rejection' if encrypted else 'key'}")
+        self.reset_auth()
+        self.use_key(0)
+        self.use_key(1, inline=False, encrypted=True)
+        self.use_key(2, inline=True, encrypted=True)
+        self.command()
+        result = self.mcp("list_remote_files", session_id="target", path=".", timeout_seconds=8)
+        assert not result.get("isError"), result
+        print("PASS: distinct private keys on outer, inner and target; command + SFTP")
+        for node in self.nodes:
+            node.rsa_sha256_only = True
+        self.command()
+        print("PASS: all private-key hops with servers advertising RSA-SHA256 only")
+        self.nodes[1].key_auth = False
+        self.nodes[1].interactive = True
+        self.sessions[1].update(auth="password", password=PASSWORD)
+        self.save()
+        self.command()
+        print("PASS: private-key outer/target with inner keyboard-interactive fallback")
+        self.reset_auth()
+
+    def check_stage_timeouts(self, expect_unbounded=False):
+        # The operation deadline is deliberately longer than the stage deadline.
+        # A generic command timed_out here would hide a broken stage deadline.
+        def check(expected):
+            started = time.monotonic()
+            result = self.mcp("run_command", session_id="target", command="fixture", timeout_seconds=30)
+            elapsed = time.monotonic() - started
+            timed_out = result.get("structuredContent", {}).get("timed_out")
+            if expect_unbounded:
+                assert timed_out and elapsed >= 28, (elapsed, result)
+                print(f"REPRODUCED: {expected} has no stage deadline ({elapsed:.1f}s operation timeout)")
+            else:
+                message = json.dumps(result)
+                assert result.get("isError") and not timed_out, result
+                assert expected in message and "timed out after 15 seconds" in message, result
+                assert 14 <= elapsed < 25, (elapsed, result)
+                print(f"PASS: {expected} reports stage deadline ({elapsed:.1f}s)")
+
+        self.reset_auth()
+        self.use_key(0)
+        self.nodes[0].stall_auth = True
+        try:
+            check("public-key authentication at 127.0.0.1")
+        finally:
+            self.nodes[0].stall_auth = False
+            self.nodes[0].release_stalls.set()
+        self.use_key(1)
+        self.nodes[1].stall_forward = True
+        try:
+            check("open jump tunnel inner.invalid:22")
+        finally:
+            self.nodes[1].stall_forward = False
+            self.nodes[1].release_stalls.set()
+        # Valid public-key bastions approve forwarding to a peer that accepts
+        # TCP but never writes an SSH identification banner.
+        silent = socket.socket()
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        original = self.nodes[1].routes[("target.invalid", 22)]
+        self.nodes[1].routes[("target.invalid", 22)] = ("127.0.0.1", silent.getsockname()[1])
+        try:
+            check("SSH handshake to target.invalid:22 via jump")
+        finally:
+            silent.close()
+            self.nodes[1].routes[("target.invalid", 22)] = original
+        self.reset_auth()
+
 @contextmanager
 def fixture_directory():
     directory = tempfile.TemporaryDirectory(prefix="meatshell-chain-test-")
@@ -316,6 +459,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True)
     parser.add_argument("--expect-old-failure", action="store_true")
+    parser.add_argument("--stage-timeouts", action="store_true", help="check stalled network-stage deadlines")
+    parser.add_argument("--expect-unbounded-stages", action="store_true", help="reproduce missing deadlines on a pre-fix binary")
     args = parser.parse_args()
     # The fixture is loopback-only; never send its traffic through inherited proxies.
     for name in ("ALL_PROXY", "all_proxy"):
@@ -323,7 +468,10 @@ def main():
     with fixture_directory() as directory:
         fixture = Fixture(args.exe, directory)
         try:
-            fixture.check(args.expect_old_failure)
+            if args.stage_timeouts or args.expect_unbounded_stages:
+                fixture.check_stage_timeouts(args.expect_unbounded_stages)
+            else:
+                fixture.check(args.expect_old_failure)
         finally:
             for node in fixture.nodes: node.close()
 if __name__ == "__main__":

@@ -99,7 +99,7 @@ async fn call_tool(id: Value, params: &Value, allow_config_import: bool) -> Valu
         Err(error) => success_response(
             id,
             json!({
-                "content": [{ "type": "text", "text": error.to_string() }],
+                "content": [{ "type": "text", "text": format!("{error:#}") }],
                 "isError": true
             }),
         ),
