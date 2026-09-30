@@ -39,6 +39,10 @@ use uuid::Uuid;
 
 use super::structs::*;
 
+#[path = "import.rs"]
+mod import;
+pub(crate) use import::ImportSummary;
+
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //
 // All user data — sessions.json, secret.key, known_hosts, error.log — lives in
@@ -433,6 +437,28 @@ impl ConfigStore {
         String::from_utf8(plain).ok()
     }
 
+    /// Decode readable local ciphertext and mark the result as plaintext. Keep
+    /// undecodable existing blobs unchanged so an unrelated save cannot destroy
+    /// them. Imported blobs are handled more strictly by the import validator.
+    fn decrypt_local_secrets(key: &[u8; 32], cfg: &mut ConfigFile) {
+        for session in &mut cfg.sessions {
+            if let Some(plain) = Self::try_decrypt(key, session.password.as_str()) {
+                session.password = Secret::new(plain);
+            }
+            if let Some(plain) = Self::try_decrypt(key, session.private_key_inline.as_str()) {
+                session.private_key_inline = Secret::new(plain);
+            }
+            for trigger in &mut session.triggers {
+                if let Some(plain) = Self::try_decrypt(key, trigger.response.as_str()) {
+                    trigger.response = Secret::new(plain);
+                }
+            }
+        }
+        if let Some(plain) = Self::try_decrypt(key, cfg.webdav_password.as_str()) {
+            cfg.webdav_password = Secret::new(plain);
+        }
+    }
+
     // ── Key file management ───────────────────────────────────────────────
 
     /// Load the 32-byte key from `<config_dir>/secret.key`, or generate and
@@ -504,27 +530,7 @@ impl ConfigStore {
                 .with_context(|| format!("failed to read {}", path.display()))?;
             match serde_json::from_str::<ConfigFile>(&raw) {
                 Ok(mut cfg) => {
-                    // Decrypt any encrypted passwords; leave legacy plaintext
-                    // values untouched (they will be encrypted on next save).
-                    for session in &mut cfg.sessions {
-                        if let Some(plain) = Self::try_decrypt(&key, session.password.as_str()) {
-                            session.password = Secret::new(plain);
-                        }
-                        if let Some(plain) =
-                            Self::try_decrypt(&key, session.private_key_inline.as_str())
-                        {
-                            session.private_key_inline = Secret::new(plain);
-                        }
-                        for trigger in &mut session.triggers {
-                            if let Some(plain) = Self::try_decrypt(&key, trigger.response.as_str())
-                            {
-                                trigger.response = Secret::new(plain);
-                            }
-                        }
-                    }
-                    if let Some(plain) = Self::try_decrypt(&key, cfg.webdav_password.as_str()) {
-                        cfg.webdav_password = Secret::new(plain);
-                    }
+                    Self::decrypt_local_secrets(&key, &mut cfg);
                     // Clean up any duplicate history accumulated before #113,
                     // keeping the last (most recent) occurrence of each command.
                     dedup_keep_last(&mut cfg.command_history);
@@ -1667,23 +1673,20 @@ impl ConfigStore {
         let mut disk = self.cache.clone();
         for session in &mut disk.sessions {
             if !session.password.is_empty()
-                && !session.password.as_str().starts_with(Self::ENC_PREFIX)
+                && !session.password.is_local_ciphertext()
             {
                 let enc = Self::encrypt(&self.key, session.password.as_str())?;
                 session.password = Secret::new(enc);
             }
             if !session.private_key_inline.is_empty()
-                && !session
-                    .private_key_inline
-                    .as_str()
-                    .starts_with(Self::ENC_PREFIX)
+                && !session.private_key_inline.is_local_ciphertext()
             {
                 let enc = Self::encrypt(&self.key, session.private_key_inline.as_str())?;
                 session.private_key_inline = Secret::new(enc);
             }
             for trigger in &mut session.triggers {
                 if !trigger.response.is_empty()
-                    && !trigger.response.as_str().starts_with(Self::ENC_PREFIX)
+                    && !trigger.response.is_local_ciphertext()
                 {
                     let enc = Self::encrypt(&self.key, trigger.response.as_str())?;
                     trigger.response = Secret::new(enc);
@@ -1691,7 +1694,7 @@ impl ConfigStore {
             }
         }
         if !disk.webdav_password.is_empty()
-            && !disk.webdav_password.as_str().starts_with(Self::ENC_PREFIX)
+            && !disk.webdav_password.is_local_ciphertext()
         {
             let enc = Self::encrypt(&self.key, disk.webdav_password.as_str())?;
             disk.webdav_password = Secret::new(enc);
@@ -1835,78 +1838,6 @@ impl ConfigStore {
         let (raw, count) = self.export_json()?;
         fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(count)
-    }
-
-    /// Import sessions from a MeatShell portable export or a FinalShell connection
-    /// export. New sessions get fresh ids; duplicates (same host+user+port+kind)
-    /// are skipped.
-    /// Returns `(added, skipped)`. The store is saved if anything was added.
-    pub fn import_json(&mut self, raw: &str) -> Result<(usize, usize)> {
-        let (sessions, decrypt_meatshell_secrets) =
-            match serde_json::from_str::<ExportFile>(raw) {
-                Ok(file) => (file.sessions, true),
-                Err(meatshell_error) => (
-                    super::finalshell::parse_export(raw).with_context(|| {
-                        format!(
-                            "not a valid MeatShell or FinalShell export file; MeatShell parser: {meatshell_error}"
-                        )
-                    })?,
-                    false,
-                ),
-            };
-
-        let mut added = 0usize;
-        let mut skipped = 0usize;
-        for mut s in sessions {
-            // Recover the plaintext password (cache stores plaintext). Accept an
-            // export blob, our local enc:v1 blob, or a legacy plaintext value.
-            // FinalShell's parser has already decrypted its DES password, so avoid
-            // interpreting a coincidental `enc:*` plaintext prefix as ours.
-            if decrypt_meatshell_secrets {
-                if let Some(plain) = Self::decrypt_export(s.password.as_str()) {
-                    s.password = Secret::new(plain);
-                } else if let Some(plain) = Self::try_decrypt(&self.key, s.password.as_str()) {
-                    s.password = Secret::new(plain);
-                }
-                if let Some(plain) = Self::decrypt_export(s.private_key_inline.as_str()) {
-                    s.private_key_inline = Secret::new(plain);
-                } else if let Some(plain) =
-                    Self::try_decrypt(&self.key, s.private_key_inline.as_str())
-                {
-                    s.private_key_inline = Secret::new(plain);
-                }
-                for trigger in &mut s.triggers {
-                    if let Some(plain) = Self::decrypt_export(trigger.response.as_str()) {
-                        trigger.response = Secret::new(plain);
-                    } else if let Some(plain) =
-                        Self::try_decrypt(&self.key, trigger.response.as_str())
-                    {
-                        trigger.response = Secret::new(plain);
-                    }
-                }
-            }
-            let dup = self.cache.sessions.iter().any(|x| {
-                x.host == s.host && x.user == s.user && x.port == s.port && x.kind == s.kind
-            });
-            if dup {
-                skipped += 1;
-                continue;
-            }
-            s.id = Uuid::new_v4().to_string();
-            self.upsert(s);
-            added += 1;
-        }
-        if added > 0 {
-            self.save()?;
-        }
-        Ok((added, skipped))
-    }
-
-    /// Import sessions from a MeatShell or FinalShell JSON export file.
-    pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        self.import_json(&raw)
     }
 }
 

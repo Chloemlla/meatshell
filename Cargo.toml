@@ -28,6 +28,10 @@ assets = [
     ["THIRD_PARTY_NOTICES.md", "usr/share/doc/meatshell/", "644"],
 ]
 
+[features]
+# Cloud/server CLI and MCP build without compiling the desktop UI.
+headless = []
+
 [dependencies]
 # Keep all desktop platforms on the native text layout patched below.
 slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }

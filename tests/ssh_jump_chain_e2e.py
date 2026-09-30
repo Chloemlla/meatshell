@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import io
 import json
 import logging
+import os
 import pathlib
 import select
 import shutil
@@ -77,9 +78,12 @@ class Server(paramiko.ServerInterface):
     def check_channel_exec_request(self, channel, command):
         def reply():
             time.sleep(0.05)
-            channel.sendall(("multi-hop-command:" + self.node.name + "\n").encode())
-            channel.send_exit_status(0)
-            channel.close()
+            try:
+                channel.sendall(("multi-hop-command:" + self.node.name + "\n").encode())
+                channel.send_exit_status(0)
+                channel.close()
+            except (EOFError, OSError, paramiko.SSHException):
+                pass  # Negative-path tests deliberately close active channels.
         background(reply)
         return True
 
@@ -313,6 +317,9 @@ def main():
     parser.add_argument("--exe", required=True)
     parser.add_argument("--expect-old-failure", action="store_true")
     args = parser.parse_args()
+    # The fixture is loopback-only; never send its traffic through inherited proxies.
+    for name in ("ALL_PROXY", "all_proxy"):
+        os.environ.pop(name, None)
     with fixture_directory() as directory:
         fixture = Fixture(args.exe, directory)
         try:
