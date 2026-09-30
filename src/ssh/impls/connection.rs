@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -14,6 +14,39 @@ use futures::task::AtomicWaker;
 use russh::client::{self, Handle, Handler};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::watch;
+
+// An automation call owns all of its target/jump transports, including those
+// opened by a spawned SFTP worker. Unlike the handshake guard this remains
+// armed after authentication, so cancellation interrupts stalled writes/rekeys.
+#[derive(Default)]
+struct TransportGroup { cancelled: bool, streams: Vec<Weak<CancelState>> }
+tokio::task_local! { static AUTOMATION_TRANSPORTS: Arc<Mutex<TransportGroup>>; }
+struct CancelGroupOnDrop(Arc<Mutex<TransportGroup>>);
+impl Drop for CancelGroupOnDrop {
+    fn drop(&mut self) {
+        let mut group = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        group.cancelled = true;
+        for state in group.streams.iter().filter_map(Weak::upgrade) { state.cancel(); }
+    }
+}
+
+pub(crate) async fn with_automation_cancellation<F: Future>(future: F) -> F::Output {
+    let group = Arc::new(Mutex::new(TransportGroup::default()));
+    let _guard = CancelGroupOnDrop(group.clone());
+    AUTOMATION_TRANSPORTS.scope(group, future).await
+}
+
+// Capture the task-local context before spawning; task locals do not inherit
+// automatically. A late-starting child still observes an already-cancelled group.
+pub(crate) fn inherit_automation_cancellation<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    let group = AUTOMATION_TRANSPORTS.try_with(Clone::clone).ok();
+    async move {
+        match group {
+            Some(group) => AUTOMATION_TRANSPORTS.scope(group, future).await,
+            None => future.await,
+        }
+    }
+}
 
 pub(crate) const SSH_NETWORK_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -143,14 +176,20 @@ struct CancelState {
     writer: AtomicWaker,
 }
 
+impl CancelState {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.reader.wake();
+        self.writer.wake();
+    }
+}
+
 struct CancelOnDrop(Option<Arc<CancelState>>);
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         if let Some(state) = self.0.take() {
-            state.cancelled.store(true, Ordering::Release);
-            state.reader.wake();
-            state.writer.wake();
+            state.cancel();
         }
     }
 }
@@ -163,6 +202,11 @@ struct CancelStream<S> {
 impl<S> CancelStream<S> {
     fn new(inner: S) -> (Self, CancelOnDrop) {
         let state = Arc::new(CancelState::default());
+        let _ = AUTOMATION_TRANSPORTS.try_with(|group| {
+            let mut group = group.lock().unwrap_or_else(|e| e.into_inner());
+            if group.cancelled { state.cancel(); }
+            group.streams.push(Arc::downgrade(&state));
+        });
         (
             Self {
                 inner,
@@ -324,5 +368,48 @@ mod tests {
         })
         .await
         .expect("cancelled KEX transport was orphaned");
+    }
+}
+
+#[cfg(test)]
+mod automation_cancellation_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn automation_end_cancels_established_transport_after_handshake_guard_disarms() {
+        let (mut stream, _peer) = with_automation_cancellation(async {
+            let (transport, peer) = tokio::io::duplex(8);
+            let (stream, mut handshake_guard) = CancelStream::new(transport);
+            handshake_guard.0 = None;
+            (stream, peer)
+        }).await;
+        assert!(stream.read_u8().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_stalled_background_writer() {
+        let (writer, _peer) = with_automation_cancellation(async {
+            let (transport, peer) = tokio::io::duplex(1);
+            let (mut stream, mut handshake_guard) = CancelStream::new(transport);
+            handshake_guard.0 = None;
+            let writer = tokio::spawn(async move { stream.write_all(&[1; 1024]).await });
+            tokio::task::yield_now().await;
+            (writer, peer)
+        }).await;
+        assert!(tokio::time::timeout(Duration::from_secs(1), writer).await.unwrap().unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn late_spawn_inherits_already_cancelled_group() {
+        let child = with_automation_cancellation(async {
+            inherit_automation_cancellation(async {
+                let (transport, _peer) = tokio::io::duplex(8);
+                let (mut stream, mut handshake_guard) = CancelStream::new(transport);
+                handshake_guard.0 = None;
+                stream.write_all(b"no").await
+            })
+        }).await;
+        assert!(child.await.is_err());
     }
 }

@@ -167,11 +167,11 @@ pub fn spawn_sftp(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let self_tx = cmd_tx.clone();
     let events_err = events.clone();
-    let join = runtime.spawn(async move {
+    let join = runtime.spawn(crate::ssh::inherit_automation_cancellation(async move {
         if let Err(err) = run_sftp(session, jump, cmd_rx, self_tx, events).await {
             let _ = events_err.send(SessionEvent::SftpStatus(friendly_sftp_error(&err)));
         }
-    });
+    }));
     SftpHandle {
         commands: cmd_tx,
         join,
@@ -516,8 +516,16 @@ async fn run_sftp(
         let _ = events.send(SessionEvent::SftpTreeUpdate(nodes));
     }
 
+    // Own every transfer task. Dropping/aborting the worker cancels transfers
+    // too, rather than leaving detached writes alive after an MCP cancellation.
+    let mut transfers = tokio::task::JoinSet::new();
+
     // --- Command loop -------------------------------------------------------
-    while let Some(cmd) = commands.recv().await {
+    loop {
+        let cmd = tokio::select! {
+            command = commands.recv() => match command { Some(command) => command, None => break },
+            _ = transfers.join_next(), if !transfers.is_empty() => continue,
+        };
         match cmd {
             SftpCommand::Close => break,
 
@@ -630,7 +638,7 @@ async fn run_sftp(
                     .unwrap()
                     .insert(file_id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     // A directory target → recursively mirror the whole tree (#50).
                     let is_dir = sftp
                         .metadata(&remote)
@@ -755,7 +763,7 @@ async fn run_sftp(
                 let cancel = Arc::new(AtomicBool::new(false));
                 cancels.lock().unwrap().insert(id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     let n = names.len();
                     let tmp = format!("/tmp/meatshell-{}.tar", Uuid::new_v4());
                     // Name the archive after the first item's stem, per the user:
@@ -856,7 +864,7 @@ async fn run_sftp(
                     .unwrap()
                     .insert(up_id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     // A directory source → recursively upload the whole tree (#50).
                     let is_dir = tokio::fs::metadata(&local)
                         .await
@@ -994,7 +1002,7 @@ async fn run_sftp(
                 let sftp = sftp.clone();
                 let handle = handle.clone();
                 let events = events.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     let filename = base_name(&remote);
                     let remote_dir = parent_dir(&remote);
                     let id = Uuid::new_v4().to_string();
@@ -1036,7 +1044,7 @@ async fn run_sftp(
                 let sftp = sftp.clone();
                 let handle = handle.clone();
                 let events = events.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     let label = format!("{} {}", remotes.len(), t("项", "items"));
                     let _ = events.send(SessionEvent::SftpStatus(format!(
                         "{} {}...",
@@ -1337,9 +1345,9 @@ async fn run_sftp(
         }
     }
 
-    let _ = handle
-        .disconnect(Disconnect::ByApplication, "bye", "")
-        .await;
+    transfers.abort_all();
+    while transfers.join_next().await.is_some() {}
+    crate::ssh::disconnect_ssh(&handle, "bye").await;
     Ok(())
 }
 

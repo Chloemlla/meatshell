@@ -103,7 +103,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Verify binary version
         if: runner.os != 'Windows'
@@ -211,6 +211,8 @@ jobs:
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+            mkdir -p "$STAGE/docs"
+            cp docs/REMOTE_MCP.md "$STAGE/docs/"
             7z a "${STAGE}.zip" "$STAGE" >/dev/null
             echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
 
@@ -219,6 +221,8 @@ jobs:
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+            mkdir -p "$STAGE/docs"
+            cp docs/REMOTE_MCP.md "$STAGE/docs/"
             # Ship the desktop entry + installer + icon so the dock shows the icon.
             cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
             tar -czf "${STAGE}.tar.gz" "$STAGE"
@@ -392,7 +396,7 @@ jobs:
           set -eu
           . "$HOME/.cargo/env"
           rustc --version
-          cargo build --release --target aarch64-unknown-linux-gnu
+          cargo build --locked --release --target aarch64-unknown-linux-gnu
 
       - name: Verify glibc baseline
         shell: bash
@@ -415,6 +419,8 @@ jobs:
           mkdir "$STAGE"
           cp "target/aarch64-unknown-linux-gnu/release/meatshell" "$STAGE/"
           cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+          mkdir -p "$STAGE/docs"
+          cp docs/REMOTE_MCP.md "$STAGE/docs/"
           cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
@@ -481,7 +487,7 @@ jobs:
           set -eu
           . "$HOME/.cargo/env"
           rustc --version
-          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo build --locked --release --target x86_64-unknown-linux-gnu
 
       - name: Verify glibc baseline
         shell: bash
@@ -504,6 +510,8 @@ jobs:
           mkdir "$STAGE"
           cp "target/x86_64-unknown-linux-gnu/release/meatshell" "$STAGE/"
           cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+          mkdir -p "$STAGE/docs"
+          cp docs/REMOTE_MCP.md "$STAGE/docs/"
           cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
