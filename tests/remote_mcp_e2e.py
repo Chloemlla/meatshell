@@ -1,11 +1,13 @@
 """Authenticated MCP regression tests. Only ephemeral keys and loopback fixtures.
 
 Requires Python cryptography and paramiko; run with --exe <headless-or-desktop-meatshell>.
+Add --caddy <caddy-executable> to repeat the suite through verified loopback HTTPS.
 No production OAuth server, SSH server, profile or credential is contacted.
 """
 import argparse
 import base64
 import concurrent.futures
+import contextlib
 import http.client
 import json
 import os
@@ -26,7 +28,10 @@ def b64(value):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', required=True, type=Path)
-    exe = parser.parse_args().exe.resolve()
+    parser.add_argument('--caddy', type=Path, help='test through a loopback-only TLS reverse proxy')
+    parser.add_argument('--protocol-version', choices=['2025-06-18', '2025-11-25'], default='2025-06-18')
+    args = parser.parse_args()
+    exe = args.exe.resolve()
     # Synthetic loopback fixtures must not use the caller's outbound proxy.
     child_env = {k:v for k,v in os.environ.items() if k.lower() not in ('all_proxy', 'http_proxy', 'https_proxy')}
 
@@ -44,7 +49,7 @@ def main():
         payload = b64(json.dumps(dict(alg='RS256', kid='fixture')).encode()) + '.' + b64(json.dumps(claims).encode())
         return payload + '.' + b64(key.sign(payload.encode(), padding.PKCS1v15(), hashes.SHA256()))
 
-    with tempfile.TemporaryDirectory(prefix='meatshell-http-fixture-') as temp:
+    with tempfile.TemporaryDirectory(prefix='meatshell-http-fixture-') as temp, contextlib.ExitStack() as stack:
         root = Path(temp)
         profile = root / 'profile'
         profile.mkdir(mode=0o700)
@@ -61,6 +66,14 @@ def main():
         with socket.socket() as reserve:
             reserve.bind(('127.0.0.1', 0))
             port = reserve.getsockname()[1]
+        def connection(timeout):
+            return http.client.HTTPConnection('127.0.0.1', port, timeout=timeout)
+        if args.caddy:
+            from tls_proxy_fixture import CaddyTlsFixture
+            proxy = stack.enter_context(CaddyTlsFixture(args.caddy.resolve(), root, port, child_env))
+            resource = proxy.resource
+            connection = proxy.connection
+            proxy.check_certificate_validation()
         http_config = root / 'http.json'
         http_settings = dict(bind=f'127.0.0.1:{port}', allowed_origins=['https://client.example.invalid'],
             oauth=dict(issuer=issuer, resource=resource, jwks_file=str(jwks),
@@ -103,20 +116,20 @@ def main():
                 raise AssertionError('server not ready')
 
             def request(payload=None, auth=None, session=None, method='POST', path='/mcp', headers=None, raw=None):
-                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=15)
+                client = connection(timeout=15)
                 hdr = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
-                       'MCP-Protocol-Version': '2025-06-18'}
+                       'MCP-Protocol-Version': args.protocol_version}
                 if auth is not None:
                     hdr['Authorization'] = 'Bearer ' + auth
                 if session is not None:
                     hdr['Mcp-Session-Id'] = session
                 hdr.update(headers or {})
                 body = raw if raw is not None else (json.dumps(payload) if payload is not None else None)
-                connection.request(method, path, body=body, headers=hdr)
-                response = connection.getresponse()
+                client.request(method, path, body=body, headers=hdr)
+                response = client.getresponse()
                 content = response.read().decode()
                 status, response_headers = response.status, dict(response.getheaders())
-                connection.close()
+                client.close()
                 value = None
                 if content.strip():
                     if content.lstrip().startswith('{'):
@@ -129,11 +142,13 @@ def main():
                                     value = candidate
                 return status, {k.lower(): v for k, v in response_headers.items()}, value
 
-            init = dict(jsonrpc='2.0', id=1, method='initialize', params=dict(protocolVersion='2025-06-18',
+            init = dict(jsonrpc='2.0', id=1, method='initialize', params=dict(protocolVersion=args.protocol_version,
                 capabilities={}, clientInfo=dict(name='synthetic-regression', version='1')))
             alice, bob = token(), token(sub='bob')
             status, headers, _ = request(init)
             assert status == 401 and 'resource_metadata=' in headers['www-authenticate']
+            metadata_url = resource.rsplit('/', 1)[0] + '/.well-known/oauth-protected-resource/mcp'
+            assert f'resource_metadata="{metadata_url}"' in headers['www-authenticate']
             for path in ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp']:
                 status, _, value = request(method='GET', path=path)
                 assert status == 200 and value['resource'] == resource
@@ -151,6 +166,7 @@ def main():
             def initialize(auth):
                 status, hdr, value = request(init, auth)
                 assert status == 200 and value['result']['serverInfo']['name'] == 'meatshell', (status, value)
+                assert value['result']['protocolVersion'] == args.protocol_version
                 session = hdr['mcp-session-id']
                 assert request(dict(jsonrpc='2.0', method='notifications/initialized'), auth, session)[0] == 202
                 return session
@@ -196,7 +212,7 @@ def main():
             assert request(auth=alice, session=a, raw='x'*(1024*1024+1))[0] == 413
             assert request(auth=alice, session=a, raw='{bad')[0] == 400
             assert request(listing, alice)[0] == 400
-            slow = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            slow = connection(timeout=10)
             slow.putrequest('POST', '/mcp')
             for k,v in {'Authorization': 'Bearer '+alice, 'Content-Type': 'application/json',
                         'Accept': 'application/json, text/event-stream', 'Mcp-Session-Id': a,
@@ -258,12 +274,12 @@ def main():
             closed.clear()
             threading.Thread(target=silent_peer, daemon=True).start()
             disposable = initialize(alice)
-            disconnected = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            disconnected = connection(timeout=10)
             disconnected.request('POST', '/mcp', body=json.dumps(dict(jsonrpc='2.0', id=80, method='tools/call',
                 params=dict(name='run_command', arguments=dict(session_id='fixture', command='true', timeout_seconds=60)))),
                 headers={'Authorization': 'Bearer '+alice, 'Content-Type': 'application/json',
                          'Accept': 'application/json, text/event-stream', 'Mcp-Session-Id': disposable,
-                         'MCP-Protocol-Version': '2025-06-18'})
+                         'MCP-Protocol-Version': args.protocol_version})
             pending_response = disconnected.getresponse()
             assert accepted.wait(5)
             pending_response.close()
@@ -338,9 +354,11 @@ def main():
                 process.wait()
                 raise AssertionError('service shutdown exceeded 12 seconds')
             output = log.read_text()
+            if args.caddy:
+                output += proxy.log.read_text()
             assert locals().get('alice', 'not-a-log-value') not in output and locals().get('bob', 'not-a-log-value') not in output
             assert 'synthetic-not-a-real-secret' not in output
-        print('PASS: clean shutdown; no token/credential logging')
+        print(f'PASS: clean shutdown; no token/credential logging; negotiated MCP {args.protocol_version}')
 
 
 if __name__ == '__main__':

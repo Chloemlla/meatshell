@@ -201,13 +201,46 @@ send access tokens solely using the HTTP `Authorization: Bearer ...` header.
 ## 4. Terminate HTTPS in a reverse proxy
 
 Example Caddy configuration (install/manage Caddy separately from its official
-source; DNS/TLS setup is the operator's responsibility):
+source; DNS/TLS setup is the operator's responsibility). This proxy configuration
+was tested with Caddy 2.11.4 and the published `0.7.4-remote.1` Linux headless
+executable, using ephemeral loopback TLS fixtures:
 
 ```caddyfile
+{
+    servers {
+        # Allow an early 401/408/413 response without draining a stalled
+        # HTTP/1 request body first. Test your clients with this option.
+        enable_full_duplex
+        timeouts {
+            read_header 5s
+            read_body 10s
+            idle 2m
+        }
+    }
+}
 shell.example.com {
-    reverse_proxy 127.0.0.1:8765
+    reverse_proxy 127.0.0.1:8765 {
+        flush_interval -1
+    }
 }
 ```
+
+The `servers` options are global; use a dedicated proxy instance or review their
+effect on other sites. Caddy labels `enable_full_duplex` experimental, and older
+HTTP/1 clients may not support it. Without it, Caddy's Go HTTP server can wait to
+drain an incomplete request body before forwarding MeatShell's early error.
+In the loopback test, the application returned a 408 after five seconds, but the
+unconfigured proxy did not deliver it within the client's ten-second timeout.
+Full duplex preserves that early response; the proxy's own read-header/read-body
+deadlines also bound requests which have not reached the application. Adjust
+timeouts for your environment and test slow requests, not only successful calls.
+
+Caddy preserves Host and Authorization by default for this HTTP upstream.
+`flush_interval -1` flushes streaming responses immediately; it also leaves
+backend requests alive if the client disconnects. Use explicit MCP cancellation
+or session DELETE to terminate abandoned work, with application deadlines as the
+backstop. See Caddy's [server options](https://caddyserver.com/docs/caddyfile/options#enable-full-duplex)
+and [reverse-proxy streaming guidance](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
 
 Proxy both `/mcp` and `/.well-known/oauth-protected-resource*`. Preserve
 Authorization and Host headers, disable buffering of SSE, set suitable request
@@ -215,6 +248,12 @@ and idle timeouts, and do not log Authorization or request bodies. Restrict the
 upstream HTTP port at the firewall. Configure proxy-level connection/rate limits
 and TLS, including protection against slow HTTP headers before requests reach
 application middleware.
+
+TLS ends at the proxy in this deployment. The application does not itself accept
+HTTPS or gRPC. Keep the cleartext hop on loopback; if the proxy and application
+are on different machines, separately protect that hop rather than exposing the
+HTTP port. HTTPS already encrypts standard MCP traffic and does not require a
+custom gRPC transport.
 
 Optional systemd unit (adjust all paths/user names; this does not install itself):
 
@@ -256,6 +295,41 @@ The external provider, redirect URI, scopes, audience, HTTPS certificate and
 public reachability must work together. This release has no preconfigured dot
 plugin or production deployment. Do not claim it is connected until that end-to-end
 flow succeeds in the target environment.
+
+### Reproduce local HTTP and HTTPS verification
+
+Install Python `cryptography` and `paramiko`, and obtain Caddy from its official
+distribution. Point `--exe` at a built binary or an independently downloaded,
+checksum-verified release executable:
+
+```sh
+python tests/remote_mcp_e2e.py --exe /path/to/meatshell
+python tests/remote_mcp_e2e.py --exe /path/to/meatshell --caddy /path/to/caddy
+python tests/remote_mcp_e2e.py --exe /path/to/meatshell --caddy /path/to/caddy --protocol-version 2025-11-25
+```
+
+The default protocol revision is `2025-06-18`; the optional revision is asserted
+against the negotiated initialization result. These tests do not claim support
+for the changed `2026-07-28` lifecycle.
+
+HTTPS mode repeats the complete HTTP authentication/session/cancellation suite
+through a real Caddy reverse proxy. It generates a one-hour test CA and localhost
+certificate at runtime, trusts the CA only in that Python client's SSL context,
+and verifies TLS 1.2/1.3 plus rejection of an untrusted CA and wrong hostname.
+The external HTTPS resource audience and discovery URL must survive proxying;
+wrong issuer/audience/signature/expiry/scope/subject, disallowed Host/Origin,
+oversized and stalled bodies, permission gates, explicit cancellation, token
+expiry, session deletion and active SFTP-upload cancellation are exercised.
+Both listeners are loopback-only. Caddy's admin API, automatic certificate
+issuance and HTTP/3 listener are disabled in the fixture. No system CA store,
+real profile, public tunnel or production account is touched. Certificates,
+private keys and fixture state are generated under temporary storage and are
+never committed or packaged.
+
+This proves the released executable works behind locally verified HTTPS. It
+does **not** prove public DNS/ingress, a publicly trusted certificate, external
+OAuth authorization-code/PKCE login, or a ChatGPT/dot connection. Verify those
+separately in the intended deployment before calling the service connected.
 
 ## Runtime limits and cancellation
 
