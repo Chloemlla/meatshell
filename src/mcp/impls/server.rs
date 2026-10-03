@@ -357,7 +357,11 @@ async fn call_tool(id: Value, params: &Value) -> Value {
         Err(error) => success_response(
             id,
             json!({
-                "content": [{ "type": "text", "text": error.to_string() }],
+                // `{error:#}` is anyhow's alternate form, which keeps the cause
+                // chain: "connect 1.2.3.4:22 failed: channel closed" instead of
+                // only the outermost context. The one-line version is what made
+                // a failed SSH connect look identical to an unreachable host.
+                "content": [{ "type": "text", "text": format!("{error:#}") }],
                 "isError": true
             }),
         ),

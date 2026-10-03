@@ -12,7 +12,8 @@
 //!   them to plaintext would leak the `Proxy-Authorization` credentials.
 //!
 //! The proxy is taken from the per-session setting, falling back to the standard
-//! `ALL_PROXY` / `all_proxy` environment variable.
+//! `ALL_PROXY` / `all_proxy` environment variable — with `NO_PROXY` / `no_proxy`
+//! as the escape hatch for hosts that must be reached directly.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
@@ -23,10 +24,15 @@ use zeroize::Zeroizing;
 use crate::config::Secret;
 use super::structs::{ProxyConfig, ProxyKind};
 
-/// Resolve the proxy for a session: the explicit `session_proxy` string if set,
-/// otherwise the `ALL_PROXY` / `all_proxy` environment variable.  Returns `None`
-/// for a direct connection.
-pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
+/// Resolve the proxy for a session: the explicit `session_proxy` string if set;
+/// otherwise the `ALL_PROXY` / `all_proxy` environment variable, unless the
+/// target is listed in `NO_PROXY` / `no_proxy`.  Returns `None` for a direct
+/// connection.
+///
+/// An explicit per-session proxy is an order and wins over `NO_PROXY`; the
+/// environment variable is only a default, so the target's own exemption applies
+/// to it.
+pub fn resolve(session_proxy: &str, host: &str, port: u16) -> Option<ProxyConfig> {
     let s = session_proxy.trim();
     if !s.is_empty() {
         return match parse(s) {
@@ -36,6 +42,9 @@ pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
                 None
             }
         };
+    }
+    if bypasses_proxy(host, port) {
+        return None;
     }
     for var in ["ALL_PROXY", "all_proxy"] {
         if let Ok(v) = std::env::var(var) {
@@ -51,6 +60,77 @@ pub fn resolve(session_proxy: &str) -> Option<ProxyConfig> {
         }
     }
     None
+}
+
+/// `NO_PROXY` / `no_proxy`: the standard companion to `ALL_PROXY`, a
+/// comma-separated list of hosts that must be reached without the proxy.
+///
+/// Inheriting `ALL_PROXY` is convenient right up to the moment the proxy is a
+/// local VPN whose exit *is* the target host: tunnelling an SSH connection to
+/// that host back through its own node cannot work (the node will not dial
+/// itself, so the handshake dies as soon as the tunnel is established).
+/// `NO_PROXY=<that host>` is how every other tool says "not this one".
+fn bypasses_proxy(host: &str, port: u16) -> bool {
+    for var in ["NO_PROXY", "no_proxy"] {
+        if let Ok(list) = std::env::var(var) {
+            if entry_matches(&list, host, port) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// One `NO_PROXY` list against one target.  Entries may be `*`, a host, a
+/// `.suffix` (also written `*.suffix`), or a `host:port` pair; a bare IPv6
+/// literal keeps its own colons and is compared as written.
+fn entry_matches(list: &str, host: &str, port: u16) -> bool {
+    // A bracketed IPv6 literal and its bare form are the same host.
+    let host = host
+        .trim()
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    for raw in list.split(',') {
+        let entry = raw.trim().to_ascii_lowercase();
+        if entry.is_empty() {
+            continue;
+        }
+        if entry == "*" {
+            return true;
+        }
+        let (pattern, want_port) = match entry.rsplit_once(':') {
+            Some((head, tail))
+                if !tail.is_empty()
+                    && tail.bytes().all(|b| b.is_ascii_digit())
+                    && !head.is_empty()
+                    && (!head.contains(':') || (head.starts_with('[') && head.ends_with(']'))) =>
+            {
+                (head.to_string(), tail.parse::<u16>().ok())
+            }
+            _ => (entry.clone(), None),
+        };
+        if let Some(want) = want_port {
+            if want != port {
+                continue;
+            }
+        }
+        let suffix = pattern
+            .trim_matches(|c| c == '[' || c == ']')
+            .trim_start_matches("*.")
+            .trim_start_matches('.')
+            .trim_end_matches('.');
+        if suffix.is_empty() {
+            continue;
+        }
+        if host == suffix || host.ends_with(&format!(".{suffix}")) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse a proxy URL: `scheme://[user:pass@]host:port`.
@@ -180,4 +260,48 @@ async fn connect_http(cfg: &ProxyConfig, host: &str, port: u16) -> Result<TcpStr
         return Err(anyhow!("proxy CONNECT rejected: {}", status_line.trim()));
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::entry_matches;
+
+    #[test]
+    fn wildcard_matches_everything() {
+        assert!(entry_matches("*", "198.2.251.212", 5214));
+        assert!(entry_matches("127.0.0.1,*", "example.com", 22));
+    }
+
+    #[test]
+    fn exact_host_and_port() {
+        assert!(entry_matches("198.2.251.212", "198.2.251.212", 5214));
+        assert!(!entry_matches("198.2.251.213", "198.2.251.212", 5214));
+        assert!(entry_matches("198.2.251.212:5214", "198.2.251.212", 5214));
+        assert!(!entry_matches("198.2.251.212:22", "198.2.251.212", 5214));
+    }
+
+    #[test]
+    fn suffix_entries_match_subdomains_and_the_bare_name() {
+        assert!(entry_matches(".example.com", "a.example.com", 22));
+        assert!(entry_matches("*.example.com", "a.example.com", 22));
+        assert!(entry_matches(".example.com", "example.com", 22));
+        // A suffix must not swallow a look-alike domain.
+        assert!(!entry_matches(".example.com", "notexample.com", 22));
+    }
+
+    #[test]
+    fn ipv6_literals_are_compared_as_written() {
+        assert!(entry_matches("::1", "::1", 22));
+        assert!(entry_matches("[::1]:22", "[::1]", 22));
+        assert!(!entry_matches("[::1]:2222", "[::1]", 22));
+    }
+
+    #[test]
+    fn blank_and_spaced_lists_behave() {
+        assert!(!entry_matches("", "198.2.251.212", 5214));
+        assert!(!entry_matches(" , ,", "198.2.251.212", 5214));
+        assert!(entry_matches(" 127.0.0.1 , 198.2.251.212 ", "198.2.251.212", 5214));
+        // A trailing dot on the target is the same name.
+        assert!(entry_matches("example.com", "example.com.", 22));
+    }
 }

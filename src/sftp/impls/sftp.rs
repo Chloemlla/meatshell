@@ -315,7 +315,7 @@ async fn run_sftp(
         }
         None => {
             _jump_keepalive = None;
-            match crate::ssh::proxy::resolve(&session.proxy) {
+            match crate::ssh::proxy::resolve(&session.proxy, &session.host, session.port) {
                 Some(p) => {
                     let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
                         .await
@@ -371,7 +371,11 @@ async fn run_sftp(
                     }
                     None => {
                         _jump_keepalive = None;
-                        match crate::ssh::proxy::resolve(&session.proxy) {
+                        match crate::ssh::proxy::resolve(
+                            &session.proxy,
+                            &session.host,
+                            session.port,
+                        ) {
                             Some(p) => {
                                 let stream =
                                     crate::ssh::proxy::connect(&p, &session.host, session.port)
