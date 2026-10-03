@@ -1206,11 +1206,10 @@ async fn run_sftp(
 
             SftpCommand::Chmod { path, mode } => {
                 let refresh = parent_dir(&path);
-                let attrs = FileAttributes {
-                    permissions: Some(mode),
-                    ..Default::default()
-                };
-                match sftp.set_metadata(&path, attrs).await {
+                // `mode_only`, never `FileAttributes::default()`: the dummy
+                // default also carries size/uid/times, so SETSTAT would truncate
+                // the file while chmod-ing it (see `mode_only`).
+                match sftp.set_metadata(&path, mode_only(mode)).await {
                     Ok(_) => {
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{}: {} → {:o}",
@@ -1547,11 +1546,7 @@ impl ReplaceTarget for SftpSession {
         self.remove_file(path).await.map(|_| ())
     }
     async fn set_mode(&self, path: &str, mode: u32) {
-        let attrs = FileAttributes {
-            permissions: Some(mode),
-            ..Default::default()
-        };
-        let _ = self.set_metadata(path, attrs).await;
+        let _ = self.set_metadata(path, mode_only(mode)).await;
     }
 }
 
@@ -1567,12 +1562,30 @@ impl ReplaceTarget for RawSftpSession {
         self.remove(path).await.map(|_| ())
     }
     async fn set_mode(&self, path: &str, mode: u32) {
-        let attrs = FileAttributes {
-            permissions: Some(mode),
-            ..Default::default()
-        };
-        let _ = self.setstat(path, attrs).await;
+        let _ = self.setstat(path, mode_only(mode)).await;
     }
+}
+
+/// `FileAttributes` carrying a mode and nothing else.
+///
+/// Every field of russh-sftp's `FileAttributes` is an `Option`, but its `Default`
+/// is *not* "unset": the crate documents it as dummy attributes and fills in
+/// `size: Some(0)`, `uid`/`gid: Some(0)` and `atime`/`mtime: Some(0)`. Serde sets a
+/// flag for every `Some`, and the server acts on all of them — OpenSSH's
+/// `process_setstat` runs `truncate()` for SIZE, `chown()` for UIDGID and
+/// `utimes()` for ACMODTIME. So sending `..Default::default()` to SETSTAT asked
+/// for `truncate(path, 0)` plus `utimes(0, 0)`: replacing a file that already
+/// existed (MCP upload over an existing name, editor save, chmod) left it 0 bytes
+/// and stamped 1970. `empty()` is the constructor that really means "no
+/// attributes", so keep the SETSTAT paths on this helper.
+///
+/// The rule for the single file we create — the upload temp — is the same one the
+/// crate's own `create()` follows: `empty()`, so the target lands on the server's
+/// 0666 & ~umask instead of the dummy default's 0777 & ~umask. OPEN is the one
+/// place where the dummy attributes did no harm (it reads `permissions` and
+/// ignores size/uid/times), but there is no reason to keep two idioms.
+fn mode_only(mode: u32) -> FileAttributes {
+    FileAttributes { permissions: Some(mode), ..FileAttributes::empty() }
 }
 
 /// Rename `tmp` onto `remote`, replacing an existing destination.
@@ -2201,7 +2214,7 @@ async fn download_impl(
         .and_then(|a| a.attrs.size)
         .unwrap_or(0);
     let fhandle = raw
-        .open(remote, OpenFlags::READ, FileAttributes::default())
+        .open(remote, OpenFlags::READ, FileAttributes::empty())
         .await
         .with_context(|| format!("open remote {remote}"))?
         .handle;
@@ -2503,11 +2516,16 @@ async fn upload_pipelined(
     // target on success. A mid-transfer failure/cancel therefore never truncates
     // or deletes the previous remote file — only the temp is cleaned up.
     let tmp_remote = format!("{remote}.tmp-{}", Uuid::new_v4());
+    // `empty()` for the same reason the crate's `create()` uses it: OPEN reads
+    // nothing but `permissions`, and the dummy `default()` carries `0777 | S_IFDIR`
+    // there, which made every brand-new target 0777 & ~umask (usually 0755) while
+    // the editor's save path produced 0666 & ~umask. Replacing an existing target
+    // goes through `rename_replacing`, which keeps that file's own mode.
     let fhandle = raw
         .open(
             tmp_remote.as_str(),
             OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE,
-            FileAttributes::default(),
+            FileAttributes::empty(),
         )
         .await
         .with_context(|| format!("create remote {tmp_remote}"))?
@@ -2779,5 +2797,26 @@ mod sanitize_tests {
             validate_editor_text("第一行\nsecond line\n".as_bytes().to_vec()),
             Ok("第一行\nsecond line\n".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod setstat_tests {
+    use super::mode_only;
+
+    /// SETSTAT truncates on SIZE and backdates on ACMODTIME, so a replace/upload
+    /// must hand the server a mode and nothing else (#35 follow-up: the rejected
+    /// temp file used to come back as a 0-byte, epoch-dated target).
+    #[test]
+    fn mode_only_carries_no_size_and_no_times() {
+        let attrs = mode_only(0o640);
+        assert_eq!(attrs.permissions, Some(0o640));
+        assert_eq!(attrs.size, None);
+        assert_eq!(attrs.uid, None);
+        assert_eq!(attrs.gid, None);
+        assert_eq!(attrs.atime, None);
+        assert_eq!(attrs.mtime, None);
+        assert_eq!(attrs.user, None);
+        assert_eq!(attrs.group, None);
     }
 }
