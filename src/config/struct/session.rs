@@ -165,9 +165,17 @@ pub struct Session {
     pub proxy: String,
     /// Optional SSH jump host (bastion): the id of another saved SSH session to
     /// tunnel this connection through, like OpenSSH's ProxyJump. Empty = direct.
-    /// Single hop only; the jump session supplies its own host/user/auth (#211).
+    /// The jump session may reference another jump. The full chain is validated
+    /// before connecting; each hop supplies its own host/user/auth (#211).
     #[serde(default)]
     pub jump_session_id: String,
+    /// Explicit connection order (first hop first). When non-empty, this list
+    /// replaces inherited jump references without modifying the saved hops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jump_session_ids: Vec<String>,
+    /// Opt in to revealing saved credentials in the editor; always masked on open.
+    #[serde(default)]
+    pub allow_secret_reveal: bool,
     #[serde(default)]
     pub last_used: Option<String>,
     /// Optional folder/group name to organize sessions in the list (#41).
@@ -246,10 +254,9 @@ pub struct Session {
     #[serde(default)]
     pub triggers: Vec<SessionTrigger>,
 
-    /// Skip the shell-integration setup (the cwd-follow PROMPT_COMMAND hook + the
-    /// remote resource monitor). Those assume a POSIX shell; on a Windows server
-    /// whose shell is pwsh/cmd the injected hook breaks the shell. Turn this on
-    /// for such servers (#140).
+    /// Skip shell-integration setup (the cwd-follow hook + remote resource
+    /// monitor). Those assume a POSIX shell and can interfere with Windows
+    /// shells or interactive auto-login scripts. SFTP remains available.
     #[serde(default)]
     pub disable_shell_integration: bool,
     /// Free-form note for this session — somewhere to stash extra info (jump-host
@@ -352,6 +359,8 @@ impl Session {
             private_key_inline: Secret::default(),
             proxy: String::new(),
             jump_session_id: String::new(),
+            jump_session_ids: Vec::new(),
+            allow_secret_reveal: false,
             last_used: None,
             group: String::new(),
             kind: SessionKind::Ssh,

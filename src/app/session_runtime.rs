@@ -13,21 +13,14 @@ pub(super) fn take_closed_event(events: &mut Vec<SessionEvent>) -> Option<Sessio
     Some(closed)
 }
 
-pub(super) fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Option<Session> {
-    if session.kind != SessionKind::Ssh || session.jump_session_id.trim().is_empty() {
-        return None;
-    }
-    if session.jump_session_id == session.id {
-        return None;
-    }
-    store.borrow().get(&session.jump_session_id).cloned()
+pub(super) fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Result<Vec<Session>> {
+    store.borrow().resolve_jump_chain(session)
 }
 
 pub(super) fn should_start_sftp(session: &Session) -> bool {
-    // Compatibility mode must keep the connection to a single, plain PTY.
-    // Bastions such as JumpServer/Koko can terminate an active proxied shell
-    // when the client immediately opens a second SSH connection for SFTP.
-    session.kind == SessionKind::Ssh && !session.disable_shell_integration
+    // Shell-integration compatibility must not hide SFTP. Auto-login scripts
+    // can require the shell hooks to be disabled while still using SFTP.
+    session.kind == SessionKind::Ssh
 }
 
 /// Spawn the shell (+ SFTP) workers and their event-pump threads for an
@@ -36,9 +29,22 @@ pub(super) fn should_start_sftp(session: &Session) -> bool {
 pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
     let has_sftp = should_start_sftp(&session);
     let (initial_cols, initial_rows) = *ctx.last_term_size.lock().unwrap();
-    // Resolve the optional SSH jump host now (on the UI thread, where the store
-    // lives) so the owned Session can be handed to the worker threads (#211).
-    let jump = resolve_jump(&ctx.store, &session);
+    // Resolve every ancestor on the UI thread before starting any worker.
+    // Invalid chains must never silently fall back to a direct connection.
+    let jump = match resolve_jump(&ctx.store, &session) {
+        Ok(jump) => jump,
+        Err(error) => {
+            if let (Some(win), Some(editor)) = (ctx.weak.upgrade(), ctx.editor.upgrade()) {
+                apply_session_event_to_window(
+                    &win, &editor, ctx.window_id, tab_id,
+                    SessionEvent::Closed(error.to_string()),
+                    &ctx.bufs, &ctx.render_gates, &ctx.tab_statuses,
+                    &ctx.local_snap, &ctx.local_net_hist,
+                );
+            }
+            return;
+        }
+    };
     let (handle, rx) = match session.kind {
         SessionKind::Ssh => spawn_session(
             ctx.runtime.handle(),
@@ -430,13 +436,13 @@ mod tests {
     use crate::config::{Session, SessionKind};
 
     #[test]
-    fn compatibility_mode_keeps_ssh_to_one_connection() {
+    fn shell_compatibility_keeps_sftp_available() {
         let mut session = Session::new_empty();
         session.kind = SessionKind::Ssh;
         assert!(should_start_sftp(&session));
 
         session.disable_shell_integration = true;
-        assert!(!should_start_sftp(&session));
+        assert!(should_start_sftp(&session));
     }
 
     #[test]
