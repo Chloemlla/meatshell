@@ -335,3 +335,10 @@ meatshell/
 ## License
 
 MIT OR Apache-2.0（双许可）。
+
+
+## Authenticated remote MCP / 带认证的远程 MCP
+
+Run the new opt-in Streamable HTTP service with an external OAuth 2.1 provider,
+HTTPS reverse proxy and an explicitly selected private profile. Existing GUI, CLI
+and stdio MCP remain unchanged. See [deployment, authentication and security limits](docs/REMOTE_MCP.md).

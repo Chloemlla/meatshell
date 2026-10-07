@@ -4075,7 +4075,41 @@ fn wire_session_callbacks(
         });
     }
 
-    session_editor::register(&window, store.clone());
+    let editor_test = Rc::new(RefCell::new(crate::session_test::EditorTest::default()));
+    session_editor::register(&window, store.clone(), window_id, editor_test.clone());
+    {
+        let weak = window.as_weak();
+        let active_test = editor_test.clone();
+        window.on_session_dialog_closed(move || {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let active_test = editor_test.clone();
+        window.on_session_dialog_stop_test(move || {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        let active_test = editor_test.clone();
+        window.on_session_dialog_changed(move || {
+            if let Some(w) = weak.upgrade() {
+                let snapshot = session_editor::connection_snapshot(&w);
+                let same_snapshot = active_test.borrow().matches_snapshot(snapshot);
+                if !same_snapshot && session_editor::stop_test(&w, window_id, &active_test) {
+                    w.set_dialog_test_status("".into());
+                }
+            }
+        });
+    }
 
     // New session -> open dialog with blank draft.
     let weak = window.as_weak();
@@ -4083,7 +4117,11 @@ fn wire_session_callbacks(
     let et_new = edit_triggers.clone();
     let ets_new = edit_trigger_secrets.clone();
     let store_ng = store.clone();
+    let active_test = editor_test.clone();
     window.on_new_session_clicked(move || {
+        if let Some(w) = weak.upgrade() {
+            session_editor::stop_test(&w, window_id, &active_test);
+        }
         if let Some(w) = weak.upgrade() {
             *ef_new.borrow_mut() = vec![blank_forward_draft()];
             *et_new.borrow_mut() = vec![blank_trigger_draft()];
@@ -4311,7 +4349,11 @@ fn wire_session_callbacks(
         let ef_edit = edit_forwards.clone();
         let et_edit = edit_triggers.clone();
         let ets_edit = edit_trigger_secrets.clone();
+        let active_test = editor_test.clone();
         window.on_edit_session(move |id: SharedString| {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
             let id = id.to_string();
             let store = store.borrow();
             let Some(session) = store.get(&id) else {
@@ -4694,7 +4736,11 @@ fn wire_session_callbacks(
         let edit_triggers = edit_triggers.clone();
         let edit_trigger_secrets = edit_trigger_secrets.clone();
         let registry = registry.clone();
+        let active_test = editor_test.clone();
         window.on_session_dialog_submit(move |draft: SessionDraft| {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
             let id = draft.id.to_string();
             let forwards = match validated_port_forwards(&edit_forwards.borrow()) {
                 Ok(forwards) => forwards,
@@ -4753,7 +4799,13 @@ fn wire_session_callbacks(
         let edit_forwards = edit_forwards.clone();
         let edit_triggers = edit_triggers.clone();
         let edit_trigger_secrets = edit_trigger_secrets.clone();
+        let active_test = editor_test.clone();
         window.on_session_dialog_test(move |draft: SessionDraft| {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
+            let snapshot = weak.upgrade().map(|w| session_editor::connection_snapshot(&w)).unwrap_or_default();
+            let ticket = active_test.borrow_mut().begin(snapshot);
             let kind = draft.kind.to_string();
             if kind == "serial" {
                 let port_name = draft.serial_port.to_string();
@@ -4763,7 +4815,7 @@ fn wire_session_callbacks(
                     draft.baud_rate as u32
                 };
                 let weak_done = weak.clone();
-                runtime.spawn(async move {
+                let task = runtime.spawn(async move {
                     let message = match tokio::task::spawn_blocking(move || {
                         serialport::new(&port_name, baud)
                             .timeout(std::time::Duration::from_millis(800))
@@ -4775,12 +4827,9 @@ fn wire_session_callbacks(
                         Ok(Err(e)) => format!("{}: {e}", t("连接失败", "Connection failed")),
                         Err(e) => format!("{}: {e}", t("连接失败", "Connection failed")),
                     };
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = weak_done.upgrade() {
-                            w.set_dialog_test_status(message.into());
-                        }
-                    });
+                    session_editor::finish_test(weak_done, window_id, ticket, message);
                 });
+                active_test.borrow_mut().attach(task.abort_handle());
                 return;
             }
 
@@ -4818,13 +4867,29 @@ fn wire_session_callbacks(
                     }
                 };
                 let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-                runtime.spawn(async move {
+                let task = runtime.spawn(async move {
                     let mut test = Box::pin(test_session_auth(session, jump, events_tx));
+                    let mut events_open = true;
                     let result = loop {
                         tokio::select! {
                             result = &mut test => break result,
-                            event = events_rx.recv() => {
-                                let Some(event) = event else { continue };
+                            event = events_rx.recv(), if events_open => {
+                                let Some(event) = event else { events_open = false; continue };
+                                if let SessionEvent::Status(ref status) = event {
+                                    let weak_status = weak_done.clone();
+                                    let status_ticket = ticket.clone();
+                                    let status = status.clone();
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if !status_ticket.is_active() { return; }
+                                        if let Some(w) = weak_status.upgrade() {
+                                            if w.get_dialog_open()
+                                                && status_ticket.matches_snapshot(session_editor::connection_snapshot(&w))
+                                            {
+                                                w.set_dialog_test_status(status.into());
+                                            }
+                                        }
+                                    });
+                                }
                                 if matches!(
                                     event,
                                     SessionEvent::HostKeyPrompt { .. }
@@ -4832,8 +4897,13 @@ fn wire_session_callbacks(
                                         | SessionEvent::MfaPrompt { .. }
                                 ) {
                                     let weak_prompt = weak_done.clone();
+                                    let prompt_ticket = ticket.clone();
                                     let _ = slint::invoke_from_event_loop(move || {
+                                        if !prompt_ticket.is_active() { return; }
                                         let Some(w) = weak_prompt.upgrade() else { return };
+                                        if !w.get_dialog_open()
+                                            || !prompt_ticket.matches_snapshot(session_editor::connection_snapshot(&w))
+                                        { return; }
                                         match event {
                                             SessionEvent::HostKeyPrompt {
                                                 host,
@@ -4842,9 +4912,10 @@ fn wire_session_callbacks(
                                                 fingerprint,
                                                 changed,
                                                 responder,
-                                            } => enqueue_hostkey_prompt(
+                                            } => enqueue_hostkey_prompt_scoped(
                                                 &w,
                                                 window_id,
+                                                Some(prompt_ticket.id),
                                                 host,
                                                 port,
                                                 key_type,
@@ -4859,9 +4930,10 @@ fn wire_session_callbacks(
                                                 need_user,
                                                 need_password,
                                                 responder,
-                                            } => enqueue_cred_prompt(
+                                            } => enqueue_cred_prompt_scoped(
                                                 &w,
                                                 window_id,
+                                                Some(prompt_ticket.id),
                                                 session_id,
                                                 host,
                                                 user,
@@ -4875,9 +4947,10 @@ fn wire_session_callbacks(
                                                 prompt,
                                                 echo,
                                                 responder,
-                                            } => enqueue_mfa_prompt(
+                                            } => enqueue_mfa_prompt_scoped(
                                                 &w,
                                                 window_id,
+                                                Some(prompt_ticket.id),
                                                 session_id,
                                                 host,
                                                 prompt,
@@ -4895,18 +4968,15 @@ fn wire_session_callbacks(
                         Ok(()) => t("连接正常", "Connection OK").to_string(),
                         Err(e) => format!("{}: {e:#}", t("连接失败", "Connection failed")),
                     };
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(w) = weak_done.upgrade() {
-                            w.set_dialog_test_status(message.into());
-                        }
-                    });
+                    session_editor::finish_test(weak_done, window_id, ticket, message);
                 });
+                active_test.borrow_mut().attach(task.abort_handle());
                 return;
             }
 
             let host = session.host;
             let port = session.port;
-            runtime.spawn(async move {
+            let task = runtime.spawn(async move {
                 let target = format!("{host}:{port}");
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(3),
@@ -4918,19 +4988,20 @@ fn wire_session_callbacks(
                     Ok(Err(e)) => format!("{}: {e}", t("连接失败", "Connection failed")),
                     Err(_) => format!("{}: {target}", t("连接超时", "Connection timed out")),
                 };
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = weak_done.upgrade() {
-                        w.set_dialog_test_status(message.into());
-                    }
-                });
+                session_editor::finish_test(weak_done, window_id, ticket, message);
             });
+            active_test.borrow_mut().attach(task.abort_handle());
         });
     }
 
     // Cancel dialog.
     {
         let weak = window.as_weak();
+        let active_test = editor_test.clone();
         window.on_session_dialog_cancel(move || {
+            if let Some(w) = weak.upgrade() {
+                session_editor::stop_test(&w, window_id, &active_test);
+            }
             if let Some(w) = weak.upgrade() {
                 w.set_dialog_open(false);
             }

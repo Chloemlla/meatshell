@@ -675,3 +675,9 @@ msgstr "输入私钥口令"
 
 msgid "Credentials start hidden. Click the eye to view. Save to remember this option."
 msgstr "凭据默认隐藏，点击眼睛查看。保存后会记住此选项。"
+
+msgid "Save session"
+msgstr "保存会话"
+
+msgid "Create session"
+msgstr "创建会话"

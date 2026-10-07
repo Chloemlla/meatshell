@@ -1850,15 +1850,6 @@ pub(crate) fn fixture_store(path: PathBuf, sessions: Vec<Session>) -> ConfigStor
     store
 }
 
-/// Isolated fixture for controller tests; never resolves the user's profile.
-#[cfg(test)]
-pub(crate) fn fixture_store(path: PathBuf, sessions: Vec<Session>) -> ConfigStore {
-    let mut store = tests::temp_store();
-    store.path = path;
-    store.cache.sessions = sessions;
-    store
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

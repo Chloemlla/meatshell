@@ -16,6 +16,8 @@ mod i18n;
 #[cfg(not(feature = "headless"))]
 mod layout;
 mod logging;
+#[cfg(any(test, not(feature = "headless")))]
+mod session_test;
 mod mcp;
 #[cfg(not(feature = "headless"))]
 mod rdp;
@@ -58,6 +60,10 @@ impl StartMode {
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--http-config") {
+        anyhow::ensure!(args.iter().any(|arg| arg == "--data-dir") || std::env::var_os("MEATSHELL_DATA_DIR").is_some(),
+            "HTTP service requires an explicitly selected --data-dir or MEATSHELL_DATA_DIR profile");
+    }
     config::configure_profile(&mut args)?;
     if args.iter().any(|arg| arg == "--config-info") {
         let store = config::ConfigStore::load()?;
@@ -82,7 +88,7 @@ fn main() -> anyhow::Result<()> {
     init_tracing();
 
     match mode {
-        StartMode::Mcp => mcp::run_stdio(),
+        StartMode::Mcp => mcp::run(&args),
         StartMode::Cli => cli::run(&args),
         #[cfg(feature = "headless")]
         StartMode::App => {

@@ -10,6 +10,22 @@ use crate::config::Session;
 use crate::sftp::SftpCommand;
 use crate::ssh::SessionEvent;
 
+// Dropping a cancelled HTTP/CLI operation must stop its detached SFTP worker.
+// Sending Close alone can wait behind a stalled transfer; abort also drops the
+// SSH connection's existing cancellation guard.
+struct AutomationSftp(crate::sftp::SftpHandle);
+impl std::ops::Deref for AutomationSftp {
+    type Target = crate::sftp::SftpHandle;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+impl Drop for AutomationSftp {
+    fn drop(&mut self) {
+        let _ = self.0.commands.send(SftpCommand::Close);
+        self.0.join.abort();
+    }
+}
+
+
 pub(super) async fn list(
     session: Session,
     jump: Vec<Session>,
@@ -17,7 +33,7 @@ pub(super) async fn list(
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events));
     handle
         .commands
         .send(SftpCommand::ListDir(path.clone()))
@@ -90,7 +106,7 @@ pub(super) async fn read_text(
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events));
     handle
         .commands
         .send(SftpCommand::ReadText {
@@ -153,7 +169,7 @@ pub(super) async fn transfer(
     timeout: Duration,
 ) -> Result<Value> {
     let (events, mut event_rx) = mpsc::unbounded_channel();
-    let handle = crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events);
+    let handle = AutomationSftp(crate::sftp::spawn_sftp(&tokio::runtime::Handle::current(), session, jump, events));
     handle
         .commands
         .send(command)

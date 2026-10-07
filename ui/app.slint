@@ -725,6 +725,7 @@ export component AppWindow inherits Window {
     // unknown / changed host key; the user's answer flows back via the callbacks
     // and Rust closes the dialog.
     in-out property <bool> hostkey-prompt-open: false;
+    in-out property <bool> hostkey-prompt-is-test: false;
     in-out property <bool> hostkey-changed: false; // true = key differs from stored
     in-out property <string> hostkey-title;
     in-out property <string> hostkey-message;
@@ -735,6 +736,7 @@ export component AppWindow inherits Window {
     // Connect-time credential prompt (#110). Rust opens this when a session is
     // missing its username and/or password; the answer flows back via accept.
     in-out property <bool> cred-prompt-open: false;
+    in-out property <bool> cred-prompt-is-test: false;
     in-out property <string> cred-host;            // host shown in the dialog title
     in-out property <bool> cred-need-user: false;
     in-out property <bool> cred-need-password: false;
@@ -746,6 +748,7 @@ export component AppWindow inherits Window {
     // MFA / keyboard-interactive prompt (#86-MFA). Rust opens this when a bastion
     // (e.g. JumpServer with MFA) sends a verification-code challenge mid-login.
     in-out property <bool> mfa-prompt-open: false;
+    in-out property <bool> mfa-prompt-is-test: false;
     in-out property <string> mfa-host;             // host shown in the dialog title
     in-out property <string> mfa-prompt;           // the server's prompt text
     in-out property <bool> mfa-echo: false;        // false = hide typed input
@@ -1002,6 +1005,9 @@ export component AppWindow inherits Window {
     callback session-dialog-submit(SessionDraft);
     callback session-dialog-test(SessionDraft);
     callback session-dialog-cancel();
+    callback session-dialog-closed();
+    callback session-dialog-stop-test();
+    callback session-dialog-changed();
     callback session-dialog-pick-key();
     // Port forwards for the session being edited (#56).
     in-out property <[PortFwd]> dialog-forwards;
@@ -4668,7 +4674,7 @@ export component AppWindow inherits Window {
     }
 
     // --- Modal dialog -----------------------------------------------------
-    SessionDialog {
+    session-editor := SessionDialog {
         width: parent.width;
         height: parent.height;
         is-open <=> root.dialog-open;
@@ -4719,6 +4725,9 @@ export component AppWindow inherits Window {
         submit(draft) => { root.session-dialog-submit(draft); }
         test-connection(draft) => { root.session-dialog-test(draft); }
         cancel => { root.session-dialog-cancel(); }
+        closed => { root.session-dialog-closed(); }
+        stop-test => { root.session-dialog-stop-test(); }
+        connection-draft-changed => { root.session-dialog-changed(); }
         pick-key-file => { root.session-dialog-pick-key(); }
         add-forward => { root.add-forward(); }
         update-forward(i, f) => { root.update-forward(i, f); }
@@ -4799,6 +4808,8 @@ export component AppWindow inherits Window {
         message: root.hostkey-message;
         detail: root.hostkey-detail;
         confirm-label: root.hostkey-confirm-label;
+        secondary-label: root.dialog-open && root.hostkey-prompt-is-test ? (root.dialog-editing ? @tr("Save session") : @tr("Create session")) : "";
+        secondary => { session-editor.submit-current(); }
         confirm => { root.hostkey-accept(); }
         cancel => { root.hostkey-reject(); }
     }
@@ -4952,6 +4963,10 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
+                    if root.dialog-open && root.cred-prompt-is-test : GhostButton {
+                        text: root.dialog-editing ? @tr("Save session") : @tr("Create session");
+                        clicked => { session-editor.submit-current(); }
+                    }
                     GhostButton {
                         text: @tr("Cancel");
                         clicked => { root.cred-reject(); }
@@ -5024,6 +5039,10 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
+                    if root.dialog-open && root.mfa-prompt-is-test : GhostButton {
+                        text: root.dialog-editing ? @tr("Save session") : @tr("Create session");
+                        clicked => { session-editor.submit-current(); }
+                    }
                     GhostButton {
                         text: @tr("Cancel");
                         clicked => { root.mfa-cancel(); }
