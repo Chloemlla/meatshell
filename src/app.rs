@@ -496,7 +496,7 @@ thread_local! {
 ///
 /// Windows gets its icon from the `.ico` embedded by winresource at link
 /// time; macOS from the app bundle — neither path needs runtime decoding.
-pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
+pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // Load the renderer preference before creating any Slint window. Reuse the
     // same store for the rest of the app so startup does not read the config
     // twice merely to select a backend (#280).
@@ -516,24 +516,19 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     setup_macos_platform(config.renderer_mode());
 
     // --- Single-instance coordination -------------------------------------
-    // A second `meatshell --new-window` forwards to us and exits; we never
-    // run two GUI instances for that entry point (Chrome-style). Plain
-    // launches pass forward=false and never forward: if the endpoint is
-    // taken they run as an independent second instance. IPC failures fall
-    // through to a normal launch rather than blocking the app.
+    // All launches for one profile share the same GUI store. Independent
+    // process snapshots could otherwise overwrite each other's saved sessions.
+    // IPC failure may still fall through; ConfigStore rejects stale writes.
     let si_path = crate::app::single_instance::socket_path();
-    let instance = match crate::app::single_instance::acquire(&si_path, intent.new_window) {
+    let instance = match crate::app::single_instance::acquire(&si_path, true) {
         Ok(i) => Some(i),
         Err(e) => {
             tracing::warn!("single-instance acquire failed: {e}");
             None
         }
     };
-    if intent.new_window {
-        if let Some(crate::app::single_instance::Instance::Forwarded) = instance {
-            return Ok(());
-        }
-        // We are the primary (or IPC failed): fall through and open a window.
+    if let Some(crate::app::single_instance::Instance::Forwarded) = instance {
+        return Ok(());
     }
 
     // --- Runtime + store -------------------------------------------------
@@ -4734,6 +4729,10 @@ fn wire_session_callbacks(
                 s.upsert(new_session);
                 if let Err(err) = s.save() {
                     tracing::warn!("failed to save config: {err:#}");
+                    if let Some(w) = weak.upgrade() {
+                        w.set_dialog_test_status(err.to_string().into());
+                    }
+                    return;
                 }
             }
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);

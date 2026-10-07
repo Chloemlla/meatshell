@@ -13,7 +13,7 @@ impl ConfigStore {
     }
 }
 
-fn resolve_jump_chain(sessions: &[Session], target: &Session) -> Result<Vec<Session>> {
+pub(super) fn resolve_jump_chain(sessions: &[Session], target: &Session) -> Result<Vec<Session>> {
     if target.kind != SessionKind::Ssh {
         return Ok(Vec::new());
     }
