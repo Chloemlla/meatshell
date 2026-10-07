@@ -1,3 +1,59 @@
+# Changelog / 更新日志
+
+All notable changes are documented here. 本文件记录所有重要变更。
+中英对照（中文在前，English after）.
+
+v0.7.5
+
+新功能 / Features
+
+- 会话日志：可按标签页将终端输出记录为带时间戳的纯文本日志（去除 ANSI 控制序列，不记录按键，不回显提示处输入的密码不会进入日志）。在“设置 → 会话日志”全局开启（默认关闭，可自定义目录），会话可单独选择“跟随全局 / 始终记录 / 从不记录”；开关对已打开的标签页立即生效。(#265)
+  Session logging: optionally record each tab's terminal output as timestamped plain-text logs (ANSI stripped, keystrokes never recorded, so passwords typed at no-echo prompts stay out). Enabled globally under Settings → Session log (off by default, custom folder supported), with a per-session Follow global / Always / Never override; toggling applies to already-open tabs immediately. (#265)
+- 多级 SSH 跳板：终端、SFTP 与自动化共用同一跳板链路；会话编辑器支持展示、添加、删除和拖拽排序跳板；跳板连接各阶段可取消并带超时。(#470)
+  Multi-hop SSH jump hosts, shared by the terminal, SFTP and automation. The session editor can show, add, remove and drag-reorder hops; each jump-connection stage is cancellable and has a timeout. (#470)
+- 隧道面板：连接后可新建、停止、重新启动和删除端口转发，可保存到当前会话并选择下次连接时是否自动启用；同时修复隧道生命周期问题。(#474)
+  Tunnel panel: create, stop, restart and delete port forwards on a live connection, save them to the session and choose whether they start automatically next time; also fixes the tunnel lifecycle. (#474)
+- 系统托盘：关闭主窗口后会话继续运行，可从托盘恢复或新建窗口，选择“退出”才结束程序。(#474)
+  System tray: sessions keep running after the main window is closed; restore or open a window from the tray, and choose Quit to exit. (#474)
+- 支持通过 CLI / MCP 安全导入会话配置，并支持无界面（headless）构建。(#477)
+  Securely import session configs via the CLI / MCP, and support headless (no-GUI) builds. (#477)
+- 新增可选的认证 Streamable HTTP MCP 端点 `/mcp`（外部签发的 RS256 OAuth 访问令牌）；客户端断开时取消相关会话任务。(#481)
+  Add an opt-in authenticated Streamable HTTP MCP endpoint `/mcp` (externally issued RS256 OAuth access tokens); session work is cancelled when the client disconnects. (#481)
+- 会话编辑器可查看已保存的凭据（默认隐藏，需授权）。
+  The session editor can reveal saved credentials (hidden by default, requires authorization).
+
+修复 / Fixes
+
+- 终端：滚回历史后保持并恢复键盘焦点，按键继续发送到远端，Vim 中的 Ctrl+V 可正常转发。(#458)
+  Terminal: keep and restore keyboard focus after scrolling back, so keys still reach the remote, and forward Ctrl+V correctly in Vim. (#458)
+- 终端：Shift+Tab 现在发送 CSI Z（ESC [ Z），远端 TUI 能收到反向 Tab。
+  Terminal: Shift+Tab now sends CSI Z (ESC [ Z) so remote TUIs receive back-tab.
+- 历史：含换行的历史记录以单行预览显示，不再与相邻条目重叠。(#419)
+  History: multi-line entries render as a one-line preview instead of overlapping neighbouring rows. (#419)
+- SFTP：修改权限后文件不再变成 0 B，时间戳也不再被重置。(#468)
+  SFTP: changing permissions no longer truncates the file to 0 B or resets its timestamps. (#468)
+- SFTP：Shell 兼容模式（自动登录脚本）下不再隐藏 SFTP 面板。(#467)
+  SFTP: the panel is no longer hidden in shell compatibility mode (auto-login scripts). (#467)
+- SFTP：属主 / 属组优先显示账号名，不再闪现 UID / GID 数字。(#460)
+  SFTP: Owner / Group show account names and no longer flash numeric UID / GID. (#460)
+- SFTP：面板变窄时优先保证文件名列，其余列按优先级依次隐藏；右键列菜单反映用户实际的开关设置。(#459)
+  SFTP: on narrow panels the Name column is kept and other columns hide by priority; the column context menu reflects the user's own toggles. (#459)
+- 配置：固定配置目录，防止过期快照覆盖连接配置。
+  Config: pin the config directory and stop stale snapshots from overwriting connections.
+- 会话编辑器：保存会话不再依赖连接测试结果；支持键盘快捷键取消；恢复已授权凭据的遮罩回显；修复备注长文本拖选越界和横向滚动。
+  Session editor: saving no longer depends on the connection test result; keyboard shortcut to cancel; restore masked echo for authorized credentials; fix drag-select overflow and horizontal scrolling in long notes.
+- 界面：统一各弹窗的取消快捷键与焦点管理。
+  UI: unify cancel shortcuts and focus handling across dialogs.
+
+其他 / Other
+
+- 设置：“欢迎页设为侧栏”选项移至“侧栏”页面，行为不变。
+  Settings: the "Show the welcome page as a sidebar" option moved to the Sidebars page; behaviour unchanged.
+- 发布：tag 名含 `-remote.` 的构建标记为预发布；AUR 只发布上游正式版本。
+  Release: builds from tags containing `-remote.` are marked as prereleases; AUR publishing is limited to upstream stable releases.
+- 文档与测试：补充 MCP 无界面 / TLS 部署说明和回归测试；README 新增友情链接（XenTerm）。
+  Docs & tests: MCP headless / TLS deployment guidance and regression tests; README gains a Friendly Links section (XenTerm).
+
 ## 0.7.4-remote.1 (fork prerelease)
 
 - Add opt-in authenticated Streamable HTTP MCP `/mcp`, using the official Rust
@@ -10,12 +66,6 @@
 - Include the existing fork history: multi-hop SSH, safe profile/config storage,
   CLI/MCP imports/headless mode, session editor fixes and bounded connection stages
 - Add synthetic loopback tests and external IdP/HTTPS deployment documentation
-
-# Changelog / 更新日志
-
-All notable changes are documented here. 本文件记录所有重要变更。
-中英对照（中文在前，English after）.
-
 ## [0.7.4] - 2026-09-21
 
 - **修复会话断开（`exit` 或网络中断）后终端内容被清空的问题（#451）。** 断开连接时，释放缓存曾会新建一个空白的 vt100 解析器，导致"连接已断开，按 Enter 重新连接"提示打印在一块空屏幕上，而不是追加在断开前的原有内容后面。现在断开时只释放体积较大且无上限的原始重放缓冲区与历史滚动记录，当前可见屏幕内容保持不变；重新连接和手动"清空缓存"两个场景仍会像之前一样得到全新空白屏幕。
