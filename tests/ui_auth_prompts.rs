@@ -1,6 +1,5 @@
 //! Small fixture compiling the production prompt queues without the full desktop.
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::ComponentHandle;
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
