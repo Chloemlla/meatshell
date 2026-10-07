@@ -289,12 +289,14 @@ where
 }
 
 async fn open_auxiliary_channel(
-    handle: &Handle<ClientHandler>,
+    handle: &Arc<tokio::sync::Mutex<Handle<ClientHandler>>>,
     command: &'static [u8],
     label: &'static str,
 ) -> Option<Channel<Msg>> {
     let operation = async {
         let channel = handle
+            .lock()
+            .await
             .channel_open_session()
             .await
             .with_context(|| format!("{label} channel open"))?;
@@ -635,7 +637,7 @@ fn url_decode(s: &str) -> String {
 }
 
 async fn kill_remote_process(
-    handle: Arc<Handle<ClientHandler>>,
+    handle: Arc<tokio::sync::Mutex<Handle<ClientHandler>>>,
     pid: u32,
     root_password: Option<crate::config::Secret>,
 ) -> ProcessKillResult {
@@ -648,6 +650,8 @@ async fn kill_remote_process(
         let started = std::time::Instant::now();
         tracing::warn!("[PROC_KILL] pid={pid} privileged={privileged} stage=open-channel begin");
         let mut channel = handle
+            .lock()
+            .await
             .channel_open_session()
             .await
             .context("open process-control channel")?;
@@ -935,7 +939,10 @@ pub fn spawn_session(
 struct RuntimeForward {
     info: RuntimeTunnelInfo,
     task: Option<JoinHandle<()>>,
+    forward: PortForward,
 }
+
+type RemoteForwardMap = Arc<std::sync::Mutex<std::collections::HashMap<u32, (String, u16)>>>;
 
 fn normalized_bind_addr(f: &PortForward) -> String {
     let bind = f.bind_addr.trim();
@@ -982,7 +989,7 @@ fn emit_tunnel_update(
 }
 
 fn start_runtime_forward(
-    handle: Arc<Handle<ClientHandler>>,
+    handle: Arc<tokio::sync::Mutex<Handle<ClientHandler>>>,
     id: String,
     forward: PortForward,
     events: &UnboundedSender<SessionEvent>,
@@ -1005,7 +1012,94 @@ fn start_runtime_forward(
         )),
         _ => None,
     };
-    RuntimeForward { info, task }
+    RuntimeForward {
+        info,
+        task,
+        forward,
+    }
+}
+
+async fn start_remote_forward(
+    handle: &Arc<tokio::sync::Mutex<Handle<ClientHandler>>>,
+    targets: &RemoteForwardMap,
+    id: String,
+    forward: PortForward,
+    events: &UnboundedSender<SessionEvent>,
+) -> RuntimeForward {
+    let mut info = tunnel_info(id, &forward, false, t("启动失败", "failed"));
+    let port = forward.bind_port as u32;
+    let bind = info.bind_addr.clone();
+    let duplicate = targets.lock().unwrap().contains_key(&port);
+    if duplicate {
+        let _ = events.send(SessionEvent::Output(format!(
+            "\r\n[meatshell] -R {bind}:{port} {}\r\n",
+            t(
+                "远程监听端口已被另一个转发使用",
+                "remote listen port is already in use"
+            )
+        )));
+    } else {
+        // Register before requesting the listener: a fast incoming connection
+        // can arrive as soon as the server accepts the request.
+        targets
+            .lock()
+            .unwrap()
+            .insert(port, (forward.host.clone(), forward.host_port));
+        match handle.lock().await.tcpip_forward(bind.clone(), port).await {
+            Ok(_) => {
+                info.active = true;
+                info.status = t("运行中", "running").to_string();
+                let _ = events.send(SessionEvent::Output(format!(
+                    "\r\n[meatshell] -R {bind}:{port} → {}:{}\r\n",
+                    forward.host, forward.host_port
+                )));
+            }
+            Err(error) => {
+                targets.lock().unwrap().remove(&port);
+                let _ = events.send(SessionEvent::Output(format!(
+                    "\r\n[meatshell] -R {bind}:{port} 请求失败 / request failed: {error}\r\n"
+                )));
+            }
+        }
+    }
+    RuntimeForward {
+        info,
+        task: None,
+        forward,
+    }
+}
+
+async fn stop_runtime_forward(
+    entry: &mut RuntimeForward,
+    handle: &Arc<tokio::sync::Mutex<Handle<ClientHandler>>>,
+    targets: &RemoteForwardMap,
+    events: &UnboundedSender<SessionEvent>,
+) -> bool {
+    if !entry.info.active {
+        return true;
+    }
+    if entry.forward.kind == "remote" {
+        let bind = entry.info.bind_addr.clone();
+        let port = entry.info.bind_port as u32;
+        if let Err(error) = handle
+            .lock()
+            .await
+            .cancel_tcpip_forward(bind.clone(), port)
+            .await
+        {
+            let _ = events.send(SessionEvent::Output(format!(
+                "\r\n[meatshell] -R {bind}:{port} 取消失败 / cancel failed: {error}\r\n"
+            )));
+            return false;
+        }
+        targets.lock().unwrap().remove(&port);
+    }
+    if let Some(task) = entry.task.take() {
+        task.abort();
+    }
+    entry.info.active = false;
+    entry.info.status = t("已停止", "stopped").to_string();
+    true
 }
 
 /// Open an SSH transport to the session's host (directly or via a SOCKS5 / HTTP
@@ -1018,20 +1112,17 @@ async fn connect_ssh(
     jump: &[Session],
     config: Arc<client::Config>,
     events: &UnboundedSender<SessionEvent>,
-) -> Result<(Handle<ClientHandler>, Vec<Handle<ClientHandler>>)> {
-    // Remote (-R) forwards are serviced inside the handler when the server opens
-    // channels back, so it needs the bind-port → local-target map up front (the
-    // handler is moved into `connect`) (#56).
-    let remote_forwards: std::collections::HashMap<u32, (String, u16)> = session
-        .forwards
-        .iter()
-        .filter(|f| f.kind == "remote")
-        .map(|f| (f.bind_port as u32, (f.host.clone(), f.host_port)))
-        .collect();
+) -> Result<(
+    Handle<ClientHandler>,
+    Vec<Handle<ClientHandler>>,
+    RemoteForwardMap,
+)> {
+    let remote_forwards: RemoteForwardMap =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let handler = ClientHandler {
         host: session.host.clone(),
         port: session.port,
-        remote_forwards,
+        remote_forwards: remote_forwards.clone(),
         events: events.clone(),
         host_key_wait: HostKeyWait::default(),
     };
@@ -1053,11 +1144,11 @@ async fn connect_ssh(
             connect_target_via_jump(jump, &session.host, session.port, config, handler, events)
                 .await
                 .with_context(|| format!("connect {} via jump failed", addr))?;
-        return Ok((handle, jump_handle));
+        return Ok((handle, jump_handle, remote_forwards));
     }
 
     let handle = connect_direct_ssh(session, config, handler, events).await?;
-    Ok((handle, Vec::new()))
+    Ok((handle, Vec::new(), remote_forwards))
 }
 
 /// The shell and SFTP use identical network deadlines and host-key handling.
@@ -1113,6 +1204,7 @@ pub(crate) enum AuthResult {
 pub(crate) async fn authenticate_session(
     handle: &mut Handle<ClientHandler>,
     jump_handle: &mut Vec<Handle<ClientHandler>>,
+    remote_forwards: &mut RemoteForwardMap,
     session: &Session,
     jump: &[Session],
     config: Arc<client::Config>,
@@ -1143,9 +1235,11 @@ pub(crate) async fn authenticate_session(
                 // already failed (it hangs), so reconnect on a fresh handle before
                 // trying keyboard-interactive (#86).
                 disconnect_ssh(handle, "authentication fallback").await;
-                let (h, jh) = Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
+                let (h, jh, targets) =
+                    Box::pin(connect_ssh(session, jump, config.clone(), events)).await?;
                 *handle = h;
                 *jump_handle = jh;
+                *remote_forwards = targets;
                 ok = keyboard_interactive_auth(
                     handle,
                     &user,
@@ -1214,12 +1308,14 @@ where
     // Connect to this hop through its ancestors. Keep every transport alive,
     // including replacement transports created by keyboard-interactive fallback.
     // `Box::pin` breaks the async recursion (connect_ssh → jump → connect_ssh).
-    let (mut jhandle, mut ancestors_alive) = Box::pin(connect_ssh(jump, ancestors, config.clone(), events))
-        .await
-        .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
+    let (mut jhandle, mut ancestors_alive, mut jump_forwards) =
+        Box::pin(connect_ssh(jump, ancestors, config.clone(), events))
+            .await
+            .with_context(|| format!("connect jump host {}:{} failed", jump.host, jump.port))?;
     match authenticate_session(
         &mut jhandle,
         &mut ancestors_alive,
+        &mut jump_forwards,
         jump,
         ancestors,
         config.clone(),
@@ -1329,12 +1425,13 @@ pub async fn test_session_auth(
     events: UnboundedSender<SessionEvent>,
 ) -> Result<()> {
     let config = ssh_client_config();
-    let (mut handle, mut jump_handle) =
+    let (mut handle, mut jump_handle, mut remote_forwards) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
 
     let auth = authenticate_session(
         &mut handle,
         &mut jump_handle,
+        &mut remote_forwards,
         &session,
         &jump,
         config,
@@ -1410,12 +1507,13 @@ async fn execute_command_inner(
     let (events, event_rx) = mpsc::unbounded_channel();
     drop(event_rx);
     let config = ssh_client_config();
-    let (mut handle, mut jump_handle) =
+    let (mut handle, mut jump_handle, mut remote_forwards) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
 
     match authenticate_session(
         &mut handle,
         &mut jump_handle,
+        &mut remote_forwards,
         &session,
         &jump,
         config,
@@ -1513,7 +1611,7 @@ async fn run_session(
 
     let config = ssh_client_config();
 
-    let (mut handle, mut jump_handle) =
+    let (mut handle, mut jump_handle, mut remote_forwards) =
         connect_ssh(&session, &jump, config.clone(), &events).await?;
     tracing::info!(
         "[SESSION_START] id={} stage=transport-ready elapsed_ms={}",
@@ -1528,6 +1626,7 @@ async fn run_session(
     match authenticate_session(
         &mut handle,
         &mut jump_handle,
+        &mut remote_forwards,
         &session,
         &jump,
         config.clone(),
@@ -1705,54 +1804,11 @@ async fn run_session(
     let mut proc_buf = String::new();
 
     // --- Port forwarding / tunnels (#56) --------------------------------
-    // Remote (-R) first, while we still hold `handle` mutably (tcpip_forward
-    // takes &mut self); the server then opens channels back, serviced in the
-    // handler. Then wrap the handle in an Arc so the local/dynamic listener
-    // tasks can share it (russh's Handle isn't Clone, but its methods are &self).
+    // The handle is shared between the shell and listener tasks. A short async
+    // lock also permits runtime -R requests, whose russh API requires &mut self.
     let mut runtime_forwards: std::collections::HashMap<String, RuntimeForward> =
         std::collections::HashMap::new();
-    for (idx, f) in session
-        .forwards
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| f.kind == "remote")
-    {
-        let bind = if f.bind_addr.trim().is_empty() {
-            "127.0.0.1".to_string()
-        } else {
-            f.bind_addr.trim().to_string()
-        };
-        let id = format!("config-{idx}");
-        match handle.tcpip_forward(bind.clone(), f.bind_port as u32).await {
-            Ok(_) => {
-                let _ = events.send(SessionEvent::Output(format!(
-                    "\r\n[meatshell] -R {bind}:{} → {}:{}\r\n",
-                    f.bind_port, f.host, f.host_port
-                )));
-                runtime_forwards.insert(
-                    id.clone(),
-                    RuntimeForward {
-                        info: tunnel_info(id, f, true, t("运行中", "running")),
-                        task: None,
-                    },
-                );
-            }
-            Err(e) => {
-                let _ = events.send(SessionEvent::Output(format!(
-                    "\r\n[meatshell] -R {bind}:{} 请求失败 / request failed: {e}\r\n",
-                    f.bind_port
-                )));
-                runtime_forwards.insert(
-                    id.clone(),
-                    RuntimeForward {
-                        info: tunnel_info(id, f, false, t("启动失败", "failed")),
-                        task: None,
-                    },
-                );
-            }
-        }
-    }
-    let handle = Arc::new(handle);
+    let handle = Arc::new(tokio::sync::Mutex::new(handle));
 
     // Delay auxiliary channels until after the terminal is usable, but open them
     // from this task. Opening them in detached tasks while `channel.wait()` was
@@ -1765,19 +1821,24 @@ async fn run_session(
         .map(|kind| auxiliary_started_at + kind.delay());
     let mut resource_monitoring = true;
     let mut first_terminal_output = true;
-    // Local (-L) and dynamic (-D) listen client-side; their tasks are aborted
-    // on session exit.
     for (idx, f) in session.forwards.iter().enumerate() {
-        match f.kind.as_str() {
-            "local" | "dynamic" => {
-                let id = format!("config-{idx}");
-                runtime_forwards.insert(
-                    id.clone(),
-                    start_runtime_forward(handle.clone(), id, f.clone(), &events),
-                );
+        let id = if f.id.is_empty() {
+            format!("config-{idx}")
+        } else {
+            format!("saved-{}", f.id)
+        };
+        let entry = if !f.auto_start {
+            RuntimeForward {
+                info: tunnel_info(id.clone(), f, false, t("已停止", "stopped")),
+                task: None,
+                forward: f.clone(),
             }
-            _ => {}
-        }
+        } else if f.kind == "remote" {
+            start_remote_forward(&handle, &remote_forwards, id.clone(), f.clone(), &events).await
+        } else {
+            start_runtime_forward(handle.clone(), id.clone(), f.clone(), &events)
+        };
+        runtime_forwards.insert(id, entry);
     }
     emit_tunnel_update(&runtime_forwards, &events);
 
@@ -1859,7 +1920,7 @@ async fn run_session(
                             mon_buf.clear();
                             proc_buf.clear();
                         } else {
-                            match handle.channel_open_session().await {
+                            match handle.lock().await.channel_open_session().await {
                                 Ok(monitor) => {
                                     if monitor.exec(true, MON_CMD).await.is_ok() {
                                         mon_channel = Some(monitor);
@@ -1867,7 +1928,7 @@ async fn run_session(
                                 }
                                 Err(error) => tracing::warn!("monitor resume failed: {error}"),
                             }
-                            match handle.channel_open_session().await {
+                            match handle.lock().await.channel_open_session().await {
                                 Ok(processes) => {
                                     if processes.exec(true, PROC_CMD).await.is_ok() {
                                         proc_channel = Some(processes);
@@ -1881,26 +1942,38 @@ async fn run_session(
                         }
                     }
                     Some(SessionCommand::AddTunnel { id, forward }) => {
-                        if forward.kind == "local" || forward.kind == "dynamic" {
-                            runtime_forwards.insert(
-                                id.clone(),
-                                start_runtime_forward(handle.clone(), id, forward, &events),
-                            );
-                            emit_tunnel_update(&runtime_forwards, &events);
+                        let entry = if forward.kind == "remote" {
+                            start_remote_forward(&handle, &remote_forwards, id.clone(), forward, &events).await
                         } else {
-                            let _ = events.send(SessionEvent::Output(format!(
-                                "\r\n[meatshell] {}\r\n",
-                                t("运行时暂不支持新增远程转发 -R", "runtime remote forwarding (-R) is not supported yet")
-                            )));
-                        }
+                            start_runtime_forward(handle.clone(), id.clone(), forward, &events)
+                        };
+                        runtime_forwards.insert(id, entry);
+                        emit_tunnel_update(&runtime_forwards, &events);
                     }
                     Some(SessionCommand::StopTunnel(id)) => {
                         if let Some(f) = runtime_forwards.get_mut(&id) {
-                            if let Some(task) = f.task.take() {
-                                task.abort();
+                            stop_runtime_forward(f, &handle, &remote_forwards, &events).await;
+                            emit_tunnel_update(&runtime_forwards, &events);
+                        }
+                    }
+                    Some(SessionCommand::StartTunnel(id)) => {
+                        if let Some(f) = runtime_forwards.get(&id) {
+                            if f.info.active { continue; }
+                            let forward = f.forward.clone();
+                            let entry = if forward.kind == "remote" {
+                                start_remote_forward(&handle, &remote_forwards, id.clone(), forward, &events).await
+                            } else {
+                                start_runtime_forward(handle.clone(), id.clone(), forward, &events)
+                            };
+                            runtime_forwards.insert(id, entry);
+                            emit_tunnel_update(&runtime_forwards, &events);
+                        }
+                    }
+                    Some(SessionCommand::DeleteTunnel(id)) => {
+                        if let Some(f) = runtime_forwards.get_mut(&id) {
+                            if stop_runtime_forward(f, &handle, &remote_forwards, &events).await {
+                                runtime_forwards.remove(&id);
                             }
-                            f.info.active = false;
-                            f.info.status = t("已停止", "stopped").to_string();
                             emit_tunnel_update(&runtime_forwards, &events);
                         }
                     }
@@ -2278,7 +2351,7 @@ async fn run_session(
         }
     }
 
-    disconnect_ssh(&handle, "bye").await;
+    disconnect_ssh(&*handle.lock().await, "bye").await;
     // The shell pump loop only exits when the channel closes / EOFs (incl. a
     // peer/bastion-initiated disconnect), so record it for #86 diagnostics.
     tracing::warn!("ssh connection closed ({}@{})", session.user, session.host);
@@ -2874,7 +2947,7 @@ async fn ask_mfa_prompt(
 pub(crate) struct ClientHandler {
     pub(crate) host: String,
     pub(crate) port: u16,
-    pub(crate) remote_forwards: std::collections::HashMap<u32, (String, u16)>,
+    pub(crate) remote_forwards: RemoteForwardMap,
     pub(crate) events: UnboundedSender<SessionEvent>,
     host_key_wait: HostKeyWait,
 }
@@ -3039,7 +3112,12 @@ impl Handler for ClientHandler {
         _originator_port: u32,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        let target = self.remote_forwards.get(&connected_port).cloned();
+        let target = self
+            .remote_forwards
+            .lock()
+            .unwrap()
+            .get(&connected_port)
+            .cloned();
         let events = self.events.clone();
         let bind = connected_address.to_string();
         tokio::spawn(async move {
