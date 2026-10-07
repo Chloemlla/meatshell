@@ -19,7 +19,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "list_sessions",
-            "description": "List saved MeatShell sessions without exposing passwords, private keys, or other secrets.",
+            "description": "List saved MeatShell sessions without exposing passwords, private keys, or other secrets. Sessions the user has not allowed for MCP access are omitted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

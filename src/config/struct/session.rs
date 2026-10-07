@@ -176,6 +176,11 @@ pub struct Session {
     /// Opt in to revealing saved credentials in the editor; always masked on open.
     #[serde(default)]
     pub allow_secret_reveal: bool,
+    /// Expose this session to MCP clients (#432). When false, MCP tools treat
+    /// it as nonexistent and refuse routes that use it as a jump host. The CLI
+    /// is unaffected. Absent in older configs → true, preserving behaviour.
+    #[serde(default = "default_true")]
+    pub mcp_access: bool,
     #[serde(default)]
     pub last_used: Option<String>,
     /// Optional folder/group name to organize sessions in the list (#41).
@@ -361,6 +366,7 @@ impl Session {
             jump_session_id: String::new(),
             jump_session_ids: Vec::new(),
             allow_secret_reveal: false,
+            mcp_access: true,
             last_used: None,
             group: String::new(),
             kind: SessionKind::Ssh,

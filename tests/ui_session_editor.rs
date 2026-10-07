@@ -262,11 +262,12 @@ fn closing_dialog_clears_ui_secret_buffers() {
             let m = moved.clone();
             ui.on_move_hop(move |from, to| *m.borrow_mut() = (from, to));
             // Real dialog coordinates in the fixed-size fixture, including its Flickable.
-            press(&window, 162., 795.);
+            // Rows below the MCP-access checkbox (#432) sit 15px lower.
+            press(&window, 162., 810.);
             window.dispatch_event(WindowEvent::PointerMoved {
-                position: slint::LogicalPosition::new(162., 859.),
+                position: slint::LogicalPosition::new(162., 874.),
             });
-            release(&window, 162., 859.);
+            release(&window, 162., 874.);
             assert_eq!(*moved.borrow(), (0, 1), "dialog scrolling stole the drag");
         }
         ui.set_password("fixture-password".into());
@@ -333,8 +334,8 @@ fn session_cancel_shortcuts_work_on_open_and_in_focused_inputs() {
         // The note input is within the real dialog's keyboard scope.
         #[cfg(windows)]
         {
-            press(&window, 250., 385.);
-            release(&window, 250., 385.);
+            press(&window, 250., 357.);
+            release(&window, 250., 357.);
         }
         key(Key::Escape.into());
         settle();
@@ -382,8 +383,8 @@ fn session_cancel_shortcuts_work_on_open_and_in_focused_inputs() {
         assert!(ui.get_open(), "Command-period is macOS-only");
         #[cfg(windows)]
         {
-            press(&window, 490., 808.);
-            release(&window, 490., 808.);
+            press(&window, 490., 835.);
+            release(&window, 490., 835.);
             settle();
             key(Key::Escape.into());
             settle();
@@ -420,8 +421,8 @@ fn saving_valid_dialog_is_independent_of_connection_test_result() {
             // The Linux fixture's rendered footer; other platforms have different font metrics.
             #[cfg(target_os = "linux")]
             {
-                press(&window, 510., 1000.);
-                release(&window, 510., 1000.);
+                press(&window, 510., 1015.);
+                release(&window, 510., 1015.);
             }
             #[cfg(not(target_os = "linux"))]
             ui.invoke_save_current();

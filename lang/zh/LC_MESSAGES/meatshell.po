@@ -640,6 +640,12 @@ msgstr "跳板"
 msgid "Allow viewing saved credentials in this session"
 msgstr "允许在此会话中查看已保存的凭据"
 
+msgid "Allow MCP access to this session"
+msgstr "允许 MCP 访问此会话"
+
+msgid "Hidden from MCP clients: they cannot list, connect to, or route through this session. The CLI is unaffected."
+msgstr "对 MCP 客户端隐藏：无法列出、连接此会话，也无法将其作为跳板。CLI 不受影响。"
+
 msgid "Unavailable"
 msgstr "不可用"
 

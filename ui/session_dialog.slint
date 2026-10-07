@@ -70,6 +70,8 @@ export struct SessionDraft {
     // Explicit first-hop-first route, owned by this session (#211).
     jumps: [JumpHop],
     allow-secret-reveal: bool,
+    // Expose this session to MCP clients (#432).
+    allow-mcp-access: bool,
 }
 
 // A single segment in a segmented selector (auth toggle, baud presets, …).
@@ -573,6 +575,7 @@ export component SessionDialog inherits ModalLayer {
     in property <[string]> jump-choices;
     in property <[JumpHop]> jumps;
     in-out property <bool> allow-secret-reveal: false;
+    in-out property <bool> allow-mcp-access: true;
     property <bool> password-revealed: false;
     property <bool> key-revealed: false;
     callback reveal-secret(bool /* private key */) -> string;
@@ -679,6 +682,7 @@ export component SessionDialog inherits ModalLayer {
             note: root.draft-note,
             jumps: root.jumps,
             allow-secret-reveal: root.allow-secret-reveal,
+            allow-mcp-access: root.allow-mcp-access,
         });
     }
 
@@ -1119,6 +1123,19 @@ export component SessionDialog inherits ModalLayer {
 
             if root.allow-secret-reveal && (root.draft-kind == "ssh" || root.draft-kind == "rdp") : Text {
                 text: @tr("Credentials start hidden. Click the eye to view. Save to remember this option.");
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                wrap: word-wrap;
+            }
+
+            // MCP scope (#432): keep manual-only servers out of reach of agents.
+            CheckBox {
+                text: @tr("Allow MCP access to this session");
+                checked <=> root.allow-mcp-access;
+            }
+
+            if !root.allow-mcp-access : Text {
+                text: @tr("Hidden from MCP clients: they cannot list, connect to, or route through this session. The CLI is unaffected.");
                 color: Theme.text-muted;
                 font-size: Theme.fs-xs;
                 wrap: word-wrap;
@@ -1568,6 +1585,7 @@ export component SessionDialog inherits ModalLayer {
                             note: root.draft-note,
                             jumps: root.jumps,
                             allow-secret-reveal: root.allow-secret-reveal,
+                            allow-mcp-access: root.allow-mcp-access,
                         });
                     }
                 }

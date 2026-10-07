@@ -503,6 +503,7 @@ pub(super) fn session_from_draft(
             Vec::new()
         },
         allow_secret_reveal: draft.allow_secret_reveal,
+        mcp_access: draft.allow_mcp_access,
         rdp_domain: draft.rdp_domain.to_string(),
         rdp_fullscreen,
         rdp_width,

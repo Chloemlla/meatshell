@@ -160,14 +160,11 @@ fn sftp_context(
         ));
     }
     let id = required_string(arguments, "session_id")?;
-    let session = store
-        .get(id)
-        .cloned()
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
+    let session = visible_session(&store, id, frontend)?.clone();
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("SFTP tools only support SSH sessions"));
     }
-    let jump = store.resolve_jump_chain(&session)?;
+    let jump = visible_jump_chain(&store, &session, frontend)?;
     let timeout = optional_u64(arguments, "timeout_seconds")?
         .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
         .clamp(1, MAX_TIMEOUT_SECONDS);
@@ -182,12 +179,53 @@ fn load_store(frontend: Frontend) -> Result<ConfigStore> {
     Ok(store)
 }
 
+/// Per-session MCP scope (#432). The CLI is an explicit local user action and
+/// always sees every session.
+fn exposed_to(session: &Session, frontend: Frontend) -> bool {
+    !frontend.is_mcp() || session.mcp_access
+}
+
+/// Look up a session the caller may use. Sessions hidden from MCP report the
+/// same error as missing ones so their existence is not disclosed.
+fn visible_session<'a>(
+    store: &'a ConfigStore,
+    id: &str,
+    frontend: Frontend,
+) -> Result<&'a Session> {
+    store
+        .get(id)
+        .filter(|session| exposed_to(session, frontend))
+        .ok_or_else(|| anyhow!("session not found: {id}"))
+}
+
+/// Resolve the jump route, refusing it when any hop is hidden from MCP:
+/// routing through a hop authenticates with that hop's saved credentials.
+fn visible_jump_chain(
+    store: &ConfigStore,
+    session: &Session,
+    frontend: Frontend,
+) -> Result<Vec<Session>> {
+    let jump = store.resolve_jump_chain(session)?;
+    ensure_hops_exposed(&jump, frontend)?;
+    Ok(jump)
+}
+
+fn ensure_hops_exposed(jump: &[Session], frontend: Frontend) -> Result<()> {
+    if jump.iter().any(|hop| !exposed_to(hop, frontend)) {
+        return Err(anyhow!(
+            "this session routes through a jump host that does not allow MCP access"
+        ));
+    }
+    Ok(())
+}
+
 fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     let group = optional_string(arguments, "group")?;
     let sessions: Vec<Value> = store
         .sessions()
         .iter()
+        .filter(|session| exposed_to(session, frontend))
         .filter(|session| group.map_or(true, |group| session.group == group))
         .map(safe_session)
         .collect();
@@ -197,10 +235,7 @@ fn list_sessions(arguments: &Value, frontend: Frontend) -> Result<Value> {
 fn get_session(arguments: &Value, frontend: Frontend) -> Result<Value> {
     let store = load_store(frontend)?;
     let id = required_string(arguments, "session_id")?;
-    let session = store
-        .get(id)
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
-    Ok(safe_session(session))
+    Ok(safe_session(visible_session(&store, id, frontend)?))
 }
 
 async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
@@ -228,14 +263,11 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
         .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES as u64)
         .clamp(1024, MAX_OUTPUT_BYTES as u64) as usize;
 
-    let session = store
-        .get(id)
-        .cloned()
-        .ok_or_else(|| anyhow!("session not found: {id}"))?;
+    let session = visible_session(&store, id, frontend)?.clone();
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("run_command only supports SSH sessions"));
     }
-    let jump = store.resolve_jump_chain(&session)?;
+    let jump = visible_jump_chain(&store, &session, frontend)?;
 
     let result = crate::ssh::execute_command(
         session,
@@ -334,6 +366,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("--allow-config-import"));
+    }
+
+    #[test]
+    fn mcp_scope_hides_opted_out_sessions_from_mcp_only() {
+        let mcp = Frontend::Mcp {
+            allow_config_import: false,
+        };
+        let mut hidden = Session::new_empty();
+        hidden.mcp_access = false;
+        let shown = Session::new_empty();
+        assert!(!exposed_to(&hidden, mcp));
+        assert!(exposed_to(&shown, mcp));
+        assert!(exposed_to(&hidden, Frontend::Cli));
+
+        assert!(ensure_hops_exposed(&[shown.clone()], mcp).is_ok());
+        let err = ensure_hops_exposed(&[shown.clone(), hidden.clone()], mcp).unwrap_err();
+        assert!(err.to_string().contains("jump host"));
+        assert!(ensure_hops_exposed(&[hidden], Frontend::Cli).is_ok());
+    }
+
+    #[test]
+    fn mcp_access_defaults_on_for_new_and_legacy_sessions() {
+        let session = Session::new_empty();
+        assert!(session.mcp_access);
+        let mut legacy = serde_json::to_value(&session).unwrap();
+        legacy.as_object_mut().unwrap().remove("mcp_access");
+        let restored: Session = serde_json::from_value(legacy).unwrap();
+        assert!(restored.mcp_access);
+        let mut opted_out = session;
+        opted_out.mcp_access = false;
+        let json = serde_json::to_value(&opted_out).unwrap();
+        assert!(!serde_json::from_value::<Session>(json).unwrap().mcp_access);
     }
 
     #[test]

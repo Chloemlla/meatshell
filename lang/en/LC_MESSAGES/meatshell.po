@@ -643,6 +643,12 @@ msgstr "Hop"
 msgid "Allow viewing saved credentials in this session"
 msgstr "Allow viewing saved credentials in this session"
 
+msgid "Allow MCP access to this session"
+msgstr "Allow MCP access to this session"
+
+msgid "Hidden from MCP clients: they cannot list, connect to, or route through this session. The CLI is unaffected."
+msgstr "Hidden from MCP clients: they cannot list, connect to, or route through this session. The CLI is unaffected."
+
 msgid "Unavailable"
 msgstr "Unavailable"
 

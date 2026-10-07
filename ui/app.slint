@@ -913,6 +913,7 @@ export component AppWindow inherits Window {
     in property <[string]> jump-ids;
     in-out property <[JumpHop]> dialog-jumps;
     in-out property <bool> dialog-allow-secret-reveal: false;
+    in-out property <bool> dialog-allow-mcp-access: true;
     callback reveal-session-secret(bool) -> string;
     callback add-jump();
     callback update-jump(int, int);
@@ -4702,6 +4703,7 @@ export component AppWindow inherits Window {
         jump-choices: root.jump-choices;
         jumps: root.dialog-jumps;
         allow-secret-reveal <=> root.dialog-allow-secret-reveal;
+        allow-mcp-access <=> root.dialog-allow-mcp-access;
         reveal-secret(key) => { root.reveal-session-secret(key) }
         add-jump => { root.add-jump(); }
         update-jump(row, choice) => { root.update-jump(row, choice); }

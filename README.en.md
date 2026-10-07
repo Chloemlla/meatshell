@@ -232,6 +232,10 @@ First open **Settings → Interface → MCP** in MeatShell:
 3. Allow arbitrary SSH commands for remote diagnostics.
 4. Allow file transfers when uploads or downloads are required.
 
+To keep a server manual-only, untick **Allow MCP access to this session** in its
+session editor: MCP can then neither list nor connect to it, nor route through it
+as a jump host. The CLI is unaffected.
+
 Then register a stdio MCP server named `meatshell` in your MCP-capable client:
 
 ```json
