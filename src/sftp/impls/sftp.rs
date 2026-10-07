@@ -168,7 +168,7 @@ fn friendly_sftp_error(err: &anyhow::Error) -> String {
 pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     events: UnboundedSender<SessionEvent>,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -258,7 +258,7 @@ async fn sync_tree_dir(
 
 async fn run_sftp(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     mut commands: UnboundedReceiver<SftpCommand>,
     self_tx: UnboundedSender<SftpCommand>,
     events: UnboundedSender<SessionEvent>,
@@ -304,8 +304,8 @@ async fn run_sftp(
     let mut _jump_keepalive;
     // Tunnel through an SSH jump host (#211), the same proxy as the shell (#7),
     // or connect directly.
-    let mut handle = match &jump {
-        Some(j) => {
+    let mut handle = match jump.as_slice() {
+        j if !j.is_empty() => {
             let (h, jh) = crate::ssh::connect_target_via_jump(
                 j,
                 &session.host,
@@ -316,11 +316,11 @@ async fn run_sftp(
             )
             .await
             .with_context(|| format!("sftp connect {} via jump failed", addr))?;
-            _jump_keepalive = Some(jh);
+            _jump_keepalive = jh;
             h
         }
-        None => {
-            _jump_keepalive = None;
+        _ => {
+            _jump_keepalive = Vec::new();
             match crate::ssh::proxy::resolve(&session.proxy) {
                 Some(p) => {
                     let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
@@ -360,8 +360,8 @@ async fn run_sftp(
                 // auth method is attempted on the same failed handle, so reconnect
                 // before trying keyboard-interactive (#86, #186).
                 let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
-                handle = match &jump {
-                    Some(j) => {
+                handle = match jump.as_slice() {
+                    j if !j.is_empty() => {
                         let (h, jh) = crate::ssh::connect_target_via_jump(
                             j,
                             &session.host,
@@ -372,11 +372,11 @@ async fn run_sftp(
                         )
                         .await
                         .with_context(|| format!("sftp reconnect {} via jump failed", addr))?;
-                        _jump_keepalive = Some(jh);
+                        _jump_keepalive = jh;
                         h
                     }
-                    None => {
-                        _jump_keepalive = None;
+                    _ => {
+                        _jump_keepalive = Vec::new();
                         match crate::ssh::proxy::resolve(&session.proxy) {
                             Some(p) => {
                                 let stream =
