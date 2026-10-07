@@ -328,6 +328,10 @@ meatshell/
   <em>扫描二维码加入 QQ 群，与其他用户交流使用经验、反馈问题或获取最新动态</em>
 </p>
 
+## 友情链接
+
+- [XenTerm](https://github.com/ixbaicn/XenTerm) (新衍生分支，共同进步)
+
 ## License
 
 MIT OR Apache-2.0（双许可）。
