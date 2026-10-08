@@ -500,7 +500,11 @@ pub(super) fn wire_key_input(
                 let mut b = h.lock().unwrap();
                 // Typing snaps the view back to the live bottom so the
                 // user always sees what they're entering.
-                b.view_offset = 0;
+                let cursor_row = b.parser.screen().cursor_position().0 as usize + b.view_offset;
+                let rows = b.parser.screen().size().0 as usize;
+                if cursor_row >= rows {
+                    b.view_offset = 0;
+                }
                 b.parser.screen().application_cursor()
             } else {
                 false
