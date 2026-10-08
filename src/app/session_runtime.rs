@@ -190,11 +190,8 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
 
                 // A close marker can sit behind a large burst of Output events
                 // in the unbounded channel. Handle it before ingesting anything
-                // from this batch so stale scrollback is released immediately.
+                // from this batch.
                 if let Some(closed) = take_closed_event(&mut drained) {
-                    if let Some(h) = crate::app::term_buf(&rt.bufs, &tab_id_pump) {
-                        h.lock().unwrap().release_history_keep_screen();
-                    }
                     let rt_evt = rt.clone();
                     let tid = tab_id_pump.clone();
                     let _ = slint::invoke_from_event_loop(move || {
