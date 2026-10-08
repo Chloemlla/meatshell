@@ -90,6 +90,29 @@ pub(super) fn session_groups_model(store: &ConfigStore) -> ModelRc<SharedString>
     )))
 }
 
+/// Serial ports
+/// de-duplicated and sorted alphabetically — feeds the new/edit dialog's serial port
+/// dropdown.
+pub(super) fn session_serial_ports_model() -> ModelRc<SharedString> {
+    let mut named : Vec<String> = Vec::new();
+
+    let ports = serialport::available_ports()
+        .unwrap_or_else(|e| {
+            tracing::error!("No available serial ports found: {e}");
+            Vec::new()
+        });
+    for p in ports {
+        named.push(p.port_name);
+    }
+
+    ModelRc::from(Rc::new(VecModel::from(
+        named
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    )))
+}
+
 /// Build the jump-host picker's parallel label/id lists for the session dialog
 /// (#211). Index 0 is the unselected placeholder (empty id); the rest are
 /// the saved SSH sessions except `exclude_id` (a session can't jump through
