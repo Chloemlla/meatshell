@@ -808,8 +808,10 @@ impl TermBuffer {
         self.displayed_text = displayed;
         BuiltScreen {
             spans,
-            cursor_row: -1, // hide the live cursor while viewing history
-            cursor_col: 0,
+            cursor_row: (self.parser.screen().cursor_position().0 as i32
+                + self.view_offset as i32)
+                .min(self.parser.screen().size().0 as i32),
+            cursor_col: self.parser.screen().cursor_position().1 as i32,
             rows_used: win as i32,
             is_alt: false,
             mouse_tracked: self.mouse_tracked,
