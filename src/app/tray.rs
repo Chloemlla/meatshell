@@ -1,5 +1,16 @@
+//! System tray: keeps sessions running while main windows are hidden.
+//!
+//! Disabled on macOS (#486). `tray-icon` uses muda 0.20 while Slint's winit
+//! backend uses muda 0.18 for the default app menu bar; both register an
+//! Objective-C class named `MudaMenuItem` with different layouts, and building
+//! the tray menu crashed at launch. Without a tray, `available()` stays false
+//! and closing a window behaves as before the tray existed. Re-enable once both
+//! sides share one muda version.
+
 use super::*;
+#[cfg(not(target_os = "macos"))]
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+#[cfg(not(target_os = "macos"))]
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 thread_local! {
@@ -14,6 +25,7 @@ pub(super) fn clear() {
     AVAILABLE.with(|state| state.set(false));
 }
 
+#[cfg(not(target_os = "macos"))]
 struct TrayController {
     _icon: TrayIcon,
     open: MenuId,
@@ -21,6 +33,7 @@ struct TrayController {
     quit: MenuId,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn create() -> anyhow::Result<TrayController> {
     let image = image::load_from_memory(include_bytes!("../../assets/icon@512.png"))?.into_rgba8();
     let small = image::imageops::resize(&image, 32, 32, image::imageops::FilterType::Lanczos3);
@@ -48,6 +61,7 @@ fn create() -> anyhow::Result<TrayController> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn restore_window(core: &Rc<AppCore>) {
     let windows: Vec<_> = core
         .window_states
@@ -73,6 +87,7 @@ fn restore_window(core: &Rc<AppCore>) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn quit(core: &Rc<AppCore>) {
     let windows: Vec<_> = core
         .window_states
@@ -101,8 +116,15 @@ pub(super) fn hide_window(core: &Rc<AppCore>, window_id: u64, window: &AppWindow
     let _ = window.hide();
 }
 
-/// Poll on Slint's thread, where the Windows/macOS tray implementation and
+/// macOS has no tray (see the module docs); the returned timer never runs.
+#[cfg(target_os = "macos")]
+pub(super) fn install(_core: Rc<AppCore>) -> slint::Timer {
+    slint::Timer::default()
+}
+
+/// Poll on Slint's thread, where the Windows tray implementation and
 /// application windows are both owned. The first tick runs inside the event loop.
+#[cfg(not(target_os = "macos"))]
 pub(super) fn install(core: Rc<AppCore>) -> slint::Timer {
     let timer = slint::Timer::default();
     let mut tray: Option<TrayController> = None;
