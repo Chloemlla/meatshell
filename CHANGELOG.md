@@ -3,7 +3,36 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-v0.7.5
+## [0.7.6] - 2026-10-10
+
+- **修复 macOS 0.7.5 启动即闪退的问题（#486）。** 0.7.5 新增的系统托盘依赖 muda 0.20，而 Slint 的 macOS 菜单栏使用 muda 0.18，两者注册了同名但内存布局不同的 Objective-C 类 `MudaMenuItem`，创建托盘菜单时程序崩溃。macOS 上暂时停用系统托盘，关闭窗口的行为恢复为 0.7.5 之前；Windows 与 Linux 托盘不受影响。
+- **Fix the macOS launch crash in 0.7.5 (#486).** The system tray added in 0.7.5 uses muda 0.20 while Slint's macOS menu bar uses muda 0.18; both register an Objective-C class named `MudaMenuItem` with different layouts, so building the tray menu crashed the app. The tray is disabled on macOS for now and closing a window behaves as it did before 0.7.5; the Windows and Linux tray are unchanged.
+
+- **修复带 Touch Bar 的 Mac 上关闭窗口或退出时弹出“意外退出”的问题（#488）。** AccessKit 释放时会恢复窗口视图的原始类，破坏了 AppKit Touch Bar 在该视图上的 KVO 观察，导致 AppKit 抛出未捕获异常。现在 macOS 上不再释放 AccessKit 适配器，旁白（VoiceOver）等辅助功能保持可用。
+- **Fix the "quit unexpectedly" crash when closing a window or quitting on Touch Bar Macs (#488).** Releasing AccessKit restored the window view's original class, corrupting the KVO observations AppKit's Touch Bar support keeps on that view, and AppKit threw an uncaught exception. The AccessKit adapter is no longer released on macOS; VoiceOver and other accessibility features keep working.
+
+- **修复在 nano / vim 等全屏程序中调整窗口大小后退出时可能崩溃的问题（#490）。** vt100 0.15 调整尺寸时没有修正备用屏幕保存的光标位置，缩小窗口后退出全屏程序，光标会落在屏幕之外并触发崩溃。终端解析库升级到 vt100 0.16.2 修复此问题，并同步升级 unicode-width 0.2，保持中日韩宽字符的列宽计算与解析库一致（#132）。
+- **Fix a possible crash when leaving nano / vim and other full-screen programs after resizing the window (#490).** vt100 0.15 did not clamp the cursor saved by the alternate screen when resizing, so shrinking the window and then leaving a full-screen program put the cursor outside the screen and crashed. The terminal parser is upgraded to vt100 0.16.2, together with unicode-width 0.2 so CJK wide-character column math stays in step with the parser (#132).
+
+- **新增窗口置顶（#450）。** 右上角工具栏新增📌按钮，可让窗口保持在其他应用之上，再次点击取消；置顶状态按窗口区分，不会保存。该窗口的编辑器、进程和系统信息窗口会一同置顶；在 Windows 上，文件选择框和提示框以主窗口为父窗口，置顶时不会被遮挡。
+- **Add an always-on-top pin (#450).** A new 📌 button in the top-right toolbar keeps the window above other applications; click again to unpin. The pin is per window and not saved. The window's editor, process and system-information windows follow it, and on Windows file pickers and message boxes are owned by the main window so they are not hidden behind a pinned window.
+
+- **命令历史打开时默认显示最新命令（#447）。** 历史弹窗现在自动滚动到底部最新的命令（紧邻搜索框），修改搜索条件后回到最新结果，↑/↓ 键盘选择时列表会跟随滚动，选中项始终可见。
+- **Open the command history at the newest entry (#447).** The history popup now opens scrolled to the newest commands at the bottom, next to the search box, returns there when the search changes, and follows the ↑/↓ keyboard selection so the selected entry stays visible.
+
+- **按会话设置 MCP 访问范围（#432）。** 会话编辑器新增“允许 MCP 访问此会话”选项（默认开启）。关闭后 MCP 无法列出、连接该会话，也无法经由它作为跳板；CLI 不受影响。
+- **Per-session MCP access scope (#432).** The session editor gains an "Allow MCP access to this session" option (on by default). When it is off, MCP clients cannot list or connect to the session, or route through it as a jump host; the CLI is unaffected.
+
+- **断开或重新连接 SSH 会话时保留终端历史。** 会话断开后不再清空滚动历史，按回车重新连接时，之前的屏幕内容会并入历史记录，只有关闭标签页时才清除；在查看历史时输入不会再强制跳回底部，除非光标已不在可见区域。（感谢 @nilxbit）
+- **Keep terminal history across SSH disconnects and reconnects.** Scrollback is no longer cleared when a session disconnects; reconnecting with Enter moves the previous screen into history, and history is only cleared when the tab is closed. Typing while scrolled back no longer jumps to the bottom unless the cursor is out of view. (Thanks @nilxbit)
+
+- **串口会话可从本机已检测到的串口中选择。** 新建 / 编辑串口会话时，端口输入框旁新增下拉列表，列出本机可用的串口，仍可手动输入。（感谢 @nilxbit）
+- **Pick serial ports from those detected on this machine.** When creating or editing a serial session, the port field gains a dropdown of the available local serial ports; typing a port by hand still works. (Thanks @nilxbit)
+
+- **代码维护。** 将超过 7600 行的 `src/app.rs` 拆分为按职责划分的模块，行为不变；清理编译警告中的死代码与无用导入（感谢 @lyj404）。
+- **Maintenance.** Split the 7,600-line `src/app.rs` into focused modules with no behaviour change, and removed dead code and unused imports flagged by compiler warnings (thanks @lyj404).
+
+## [0.7.5] - 2026-10-07
 
 新功能 / Features
 
@@ -66,6 +95,7 @@ v0.7.5
 - Include the existing fork history: multi-hop SSH, safe profile/config storage,
   CLI/MCP imports/headless mode, session editor fixes and bounded connection stages
 - Add synthetic loopback tests and external IdP/HTTPS deployment documentation
+
 ## [0.7.4] - 2026-09-21
 
 - **修复会话断开（`exit` 或网络中断）后终端内容被清空的问题（#451）。** 断开连接时，释放缓存曾会新建一个空白的 vt100 解析器，导致"连接已断开，按 Enter 重新连接"提示打印在一块空屏幕上，而不是追加在断开前的原有内容后面。现在断开时只释放体积较大且无上限的原始重放缓冲区与历史滚动记录，当前可见屏幕内容保持不变；重新连接和手动"清空缓存"两个场景仍会像之前一样得到全新空白屏幕。
