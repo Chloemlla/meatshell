@@ -168,6 +168,7 @@ pub(super) fn wire_session_callbacks(
             w.set_dialog_group("".into());
             w.set_dialog_kind("ssh".into());
             w.set_dialog_serial_port("".into());
+            w.set_session_serial_ports(session_serial_ports_model());
             w.set_dialog_baud("115200".into());
             w.set_dialog_data_bits("8".into());
             w.set_dialog_stop_bits("1".into());
@@ -433,6 +434,7 @@ pub(super) fn wire_session_callbacks(
                 w.set_dialog_group(session.group.clone().into());
                 w.set_dialog_kind(session.kind.as_str().into());
                 w.set_dialog_serial_port(session.serial_port.clone().into());
+                w.set_session_serial_ports(session_serial_ports_model());
                 w.set_dialog_baud(session.baud_rate.to_string().into());
                 w.set_dialog_data_bits(session.data_bits.to_string().into());
                 w.set_dialog_stop_bits(session.stop_bits.to_string().into());

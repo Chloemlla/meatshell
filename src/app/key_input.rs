@@ -444,7 +444,33 @@ pub(super) fn wire_key_input(
                     {
                         if let Some(h) = term_buf(&ctx.bufs, tab_id.as_str()) {
                             let mut b = h.lock().unwrap();
-                            b.release_scrollback();
+
+                            let (is_alt, rows, cols, cursor_row) = {
+                                let s = b.parser.screen();
+                                let (r, c) = s.size();
+                                let cursor_r = b.parser.screen().cursor_position().0;
+                                (s.alternate_screen(), r, c, cursor_r)
+                            };
+
+                            if !is_alt {
+                                let curr: Vec<crate::terminal::Line> = {
+                                    let s = b.parser.screen();
+                                    (0..rows).map(|r| crate::terminal::build_row(s, r, cols)).collect()
+                                };
+
+                                let k = cursor_row as usize;
+                                for line in curr.iter().take(k) {
+                                    b.history.push_back(line.clone());
+                                }
+                                while b.history.len() > crate::terminal::MAX_HISTORY {
+                                    b.history.pop_front();
+                                }
+                                b.view_offset = 0;
+
+                                b.prev.clear();
+                                b.parser = vt100::Parser::new(rows, cols, 5000);
+                            }
+
                             if let Some(log) = b.session_log.as_mut() {
                                 log.note("reconnecting");
                             }
@@ -474,7 +500,11 @@ pub(super) fn wire_key_input(
                 let mut b = h.lock().unwrap();
                 // Typing snaps the view back to the live bottom so the
                 // user always sees what they're entering.
-                b.view_offset = 0;
+                let cursor_row = b.parser.screen().cursor_position().0 as usize + b.view_offset;
+                let rows = b.parser.screen().size().0 as usize;
+                if cursor_row >= rows {
+                    b.view_offset = 0;
+                }
                 b.parser.screen().application_cursor()
             } else {
                 false

@@ -926,6 +926,8 @@ export component AppWindow inherits Window {
     callback move-jump(int, int);
     in-out property <string> dialog-kind: "ssh";
     in-out property <string> dialog-serial-port;
+    // Existing serial port names (from Rust) for the dialog's serial port dropdown.
+    in property <[string]> session-serial-ports;
     in-out property <string> dialog-baud: "115200";
     in-out property <string> dialog-data-bits: "8";
     in-out property <string> dialog-stop-bits: "1";
@@ -4726,6 +4728,7 @@ export component AppWindow inherits Window {
         move-jump(from, to) => { root.move-jump(from, to); }
         draft-kind <=> root.dialog-kind;
         draft-serial-port <=> root.dialog-serial-port;
+        session-serial-ports: root.session-serial-ports;
         draft-baud <=> root.dialog-baud;
         draft-data-bits <=> root.dialog-data-bits;
         draft-stop-bits <=> root.dialog-stop-bits;
