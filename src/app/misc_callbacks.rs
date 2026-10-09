@@ -45,7 +45,7 @@ pub(super) fn wire_downloads_and_links(
         let weak = window.as_weak();
         let store = store.clone();
         window.on_pick_download_dir(move || {
-            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+            if let Some(folder) = DialogOwner::of_weak(&weak).file().pick_folder() {
                 let dir = folder.to_string_lossy().to_string();
                 {
                     let mut s = store.borrow_mut();

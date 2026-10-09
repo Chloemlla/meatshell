@@ -767,6 +767,11 @@ export component AppWindow inherits Window {
     // online session. Default off (it types into ALL sessions at once).
     in-out property <bool> sync-input: false;
     callback set-sync-input(bool);
+    // Keep this window above other applications (#450). Per window and not
+    // persisted; Rust mirrors it onto this window's editor/monitor windows.
+    in-out property <bool> pinned: false;
+    always-on-top: root.pinned;
+    callback pinned-changed(bool);
     // Mirror SFTP uploads to other sessions while sync-input is on (#sync).
     in-out property <bool> sync-upload-enabled: false;
     callback set-sync-upload-enabled(bool);
@@ -2613,6 +2618,16 @@ export component AppWindow inherits Window {
             ? (root.cmd-bar-hidden ? "Show command bar" : "Hide command bar")
             : (root.cmd-bar-hidden ? "显示命令栏" : "隐藏命令栏");
         clicked => { root.cmd-bar-hidden = !root.cmd-bar-hidden; root.set-cmd-bar-hidden(root.cmd-bar-hidden); }
+    }
+    IconBtn {
+        x: root.width - 184px - root.toolbar-x-off; y: root.toolbar-y;
+        icon: "\u{F10D}";   // Material "push_pin" — always on top (#450)
+        icon-color: root.pinned ? Theme.accent : Theme.text-secondary;
+        active: root.pinned;
+        tooltip: root.lang-en
+            ? (root.pinned ? "Unpin window (stop keeping on top)" : "Pin window (keep on top)")
+            : (root.pinned ? "取消置顶" : "窗口置顶");
+        clicked => { root.pinned = !root.pinned; root.pinned-changed(root.pinned); }
     }
 
     // Frameless resize edges (#119): thin hit-zones that start an OS-level

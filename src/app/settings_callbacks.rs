@@ -193,7 +193,11 @@ pub(super) fn wire_session_log_settings(ctx: &WinCtx) {
         let weak = window.as_weak();
         window.on_pick_session_log_dir(move || {
             let start = store.borrow().session_log_dir();
-            let Some(folder) = rfd::FileDialog::new().set_directory(&start).pick_folder() else {
+            let Some(folder) = DialogOwner::of_weak(&weak)
+                .file()
+                .set_directory(&start)
+                .pick_folder()
+            else {
                 return;
             };
             let effective = {
@@ -807,7 +811,8 @@ pub(super) fn wire_ui_scale_and_wallpaper(ctx: &WinCtx) {
         let bufs_wp = bufs.clone();
         let proc_weak = proc_win.as_weak();
         window.on_pick_wallpaper_file(move || {
-            let picked = rfd::FileDialog::new()
+            let picked = DialogOwner::of_weak(&weak)
+                .file()
                 .set_title("选择壁纸 / Choose wallpaper")
                 .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
                 .pick_file();

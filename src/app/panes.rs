@@ -135,7 +135,8 @@ pub(super) fn refresh_panes(
                 h: p.h,
                 active_id: p.active.clone().into(),
                 focused: p.focused,
-                reserve_right: if top_right { 180.0 } else { 0.0 },
+                // Room for the six top-right toolbar icons (30px each, incl. the pin #450).
+                reserve_right: if top_right { 210.0 } else { 0.0 },
                 tabs: ModelRc::from(Rc::new(VecModel::from(tabs))),
             }
         })

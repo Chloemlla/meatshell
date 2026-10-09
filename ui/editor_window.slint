@@ -12,6 +12,9 @@ export struct EditorFindResult {
 export component EditorWindow inherits Window {
     title: "meatshell — " + root.editor-name;
     icon: @image-url("../assets/icon.png");
+    // Follows the main window's pin so it is not hidden behind it (#450).
+    in property <bool> pinned: false;
+    always-on-top: root.pinned;
 
     in-out property <bool> dark-mode <=> Theme.dark;
     in-out property <float> ui-scale <=> Theme.ui-scale;

@@ -165,6 +165,9 @@ component TableCard inherits InfoCard {
 export component SystemInfoWindow inherits Window {
     title: "meatshell - " + @tr("System information");
     icon: @image-url("../assets/icon.png");
+    // Follows the main window's pin so it is not hidden behind it (#450).
+    in property <bool> pinned: false;
+    always-on-top: root.pinned;
     in-out property <bool> dark-mode <=> Theme.dark;
     in-out property <float> ui-scale <=> Theme.ui-scale;
     in-out property <string> ui-font-family <=> Theme.ui-font-family;

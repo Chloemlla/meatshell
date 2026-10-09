@@ -194,3 +194,29 @@ pub(super) fn wire_editor_window_chrome(ctx: &WinCtx) {
         });
     }
 }
+
+/// Always-on-top pin (#450): a pinned main window would otherwise cover its own
+/// editor and monitor windows, so they follow its pin state.
+pub(super) fn wire_pin_on_top(ctx: &WinCtx) {
+    let WinCtx {
+        window,
+        proc_win,
+        sys_win,
+        editor_win,
+        ..
+    } = ctx;
+    let proc_weak = proc_win.as_weak();
+    let sys_weak = sys_win.as_weak();
+    let editor_weak = editor_win.as_weak();
+    window.on_pinned_changed(move |pinned| {
+        if let Some(w) = proc_weak.upgrade() {
+            w.set_pinned(pinned);
+        }
+        if let Some(w) = sys_weak.upgrade() {
+            w.set_pinned(pinned);
+        }
+        if let Some(w) = editor_weak.upgrade() {
+            w.set_pinned(pinned);
+        }
+    });
+}
