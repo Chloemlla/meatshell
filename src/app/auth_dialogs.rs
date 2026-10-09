@@ -463,6 +463,7 @@ pub(super) fn show_front_mfa(win: &AppWindow, window_id: u64) {
 
 /// Apply the user's answer to this window's oldest MFA prompt (or cancel),
 /// then show that window's next prompt or close its dialog.
+#[allow(dead_code)] // the ui_auth_prompts queue fixture compiles this file without the callback wiring
 pub(super) fn resolve_front_mfa(win: &AppWindow, window_id: u64, accept: bool) {
     let answer: Option<String> = if accept {
         Some(win.get_mfa_answer().to_string())

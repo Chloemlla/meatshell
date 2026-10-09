@@ -35,13 +35,13 @@ use chacha20poly1305::{
 };
 use directories::ProjectDirs;
 use rand::rngs::OsRng;
+#[cfg(test)]
 use uuid::Uuid;
 
 use super::structs::*;
 
 #[path = "import.rs"]
 mod import;
-pub(crate) use import::ImportSummary;
 
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //
