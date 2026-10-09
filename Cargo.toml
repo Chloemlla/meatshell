@@ -216,7 +216,9 @@ opt-level = 1
 
 [patch.crates-io]
 # Avoid Slint/winit's AppKit DisplayLink selector on old macOS. The local
-# patched backend falls back to timer throttling on macOS only.
+# patched backend falls back to timer throttling on macOS only. On macOS it also
+# never drops its AccessKit adapter, which avoids a Touch Bar crash when a
+# window closes (#488; see vendor/i-slint-backend-winit/accesskit.rs).
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 
 # Native color spans, cached editor layout and a virtual gutter; see vendor/EDITOR_PATCH.md.
