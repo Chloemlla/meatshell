@@ -110,6 +110,7 @@ impl DockStacks {
     }
 
     /// The edge a panel currently stacks on (None when it is not in any stack).
+    #[allow(dead_code)] // dock rearrange API; only exercised by tests for now
     pub fn edge_of(&self, kind: &str) -> Option<&'static str> {
         for (e, table) in [
             ("left", self.table("left")),
@@ -126,6 +127,7 @@ impl DockStacks {
 
     /// Move (or add) `kind` onto `edge`, taking it off whatever edge it was on.
     /// Ratios are rebalanced evenly for the edge's new member count.
+    #[allow(dead_code)] // dock rearrange API; only exercised by tests for now
     pub fn dock_to(&mut self, edge: &str, kind: &'static str) {
         if let Some(old_edge) = self.edge_of(kind) {
             if old_edge == edge {
@@ -144,6 +146,7 @@ impl DockStacks {
     }
 
     /// Remove `kind` from `edge` (a fold / close).
+    #[allow(dead_code)] // dock rearrange API; only exercised by tests for now
     pub fn remove(&mut self, edge: &str, kind: &str) {
         if let Some(t) = self.table_mut(edge) {
             t.retain(|s| s.kind != kind);

@@ -115,7 +115,6 @@ pub(super) fn apply_session_event_to_window(
             // reconnect hint below onto what was already on screen (#451).
             if let Some(h) = crate::app::term_buf(bufs, tab_id) {
                 let mut b = h.lock().unwrap();
-                b.release_history_keep_screen();
                 if let Some(log) = b.session_log.as_mut() {
                     log.note(&format!("disconnected: {reason}"));
                 }
@@ -153,6 +152,15 @@ pub(super) fn apply_session_event_to_window(
                 && (sidebar_updates_visible(win) || win.get_system_info_window_open())
             {
                 refresh_sidebar(win, statuses, local, local_net_hist);
+            }
+            else {
+                if let Some(h) = crate::app::term_buf(bufs, tab_id) {
+                    let mut b = h.lock().unwrap();
+                    b.release_history_keep_screen();
+                    if let Some(log) = b.session_log.as_mut() {
+                        log.note(&format!("tab closed: {reason}"));
+                    }
+                }
             }
         }
         SessionEvent::ResourceStats {
@@ -269,18 +277,10 @@ pub(super) fn apply_session_event_to_window(
                     .into(),
                     permissions: crate::ssh::format_permissions(e.permissions_mode).into(),
                     permissions_mode: e.permissions_mode as i32,
-                    owner: e
-                        .owner
-                        .clone()
-                        .or_else(|| e.uid.map(|v| v.to_string()))
-                        .unwrap_or_else(|| "-".to_string())
-                        .into(),
-                    group: e
-                        .group
-                        .clone()
-                        .or_else(|| e.gid.map(|v| v.to_string()))
-                        .unwrap_or_else(|| "-".to_string())
-                        .into(),
+                    // Unresolved owner/group stay blank instead of flashing the
+                    // raw uid/gid numbers — names land on the follow-up paint.
+                    owner: e.owner.clone().unwrap_or_default().into(),
+                    group: e.group.clone().unwrap_or_default().into(),
                     selected: false,
                 })
                 .collect();

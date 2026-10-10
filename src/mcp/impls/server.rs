@@ -22,6 +22,7 @@ pub(crate) fn run_stdio() -> Result<()> {
         .context("create MCP runtime")?;
     let activity = std::sync::Arc::new(ActivityLog::open());
     let stdout = std::sync::Arc::new(std::sync::Mutex::new(std::io::stdout()));
+    let allow_config_import = std::env::args().any(|arg| arg == "--allow-config-import");
     let stdin = std::io::stdin();
     let mut caller = String::from("unknown");
     let mut in_flight: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -59,7 +60,7 @@ pub(crate) fn run_stdio() -> Result<()> {
         let stdout = std::sync::Arc::clone(&stdout);
         let started = std::time::Instant::now();
         in_flight.push(runtime.spawn(async move {
-            let response = handle(request.clone()).await;
+            let response = handle(request.clone(), allow_config_import).await;
             record_usage_end(&activity, &request, &caller_snapshot, started, &response);
             if let Some(response) = response {
                 let mut out = stdout.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -291,7 +292,7 @@ fn redact(input: &str, pattern: &str, replacement: &str) -> String {
     }
 }
 
-async fn handle(request: Value) -> Option<Value> {
+async fn handle(request: Value, allow_config_import: bool) -> Option<Value> {
     let id = request.get("id").cloned();
     let method = request.get("method").and_then(Value::as_str);
     if id.is_none() {
@@ -306,7 +307,7 @@ async fn handle(request: Value) -> Option<Value> {
             id,
             json!({ "tools": super::tools::definitions() }),
         )),
-        Some("tools/call") => Some(call_tool(id, &params).await),
+        Some("tools/call") => Some(call_tool(id, &params, allow_config_import).await),
         Some(_) => Some(error_response(id, -32601, "method not found")),
         None => Some(error_response(id, -32600, "invalid request")),
     }
@@ -337,7 +338,7 @@ Never put a password, token, or private key into a command or a path: every call
     })
 }
 
-async fn call_tool(id: Value, params: &Value) -> Value {
+async fn call_tool(id: Value, params: &Value, allow_config_import: bool) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error_response(id, -32602, "missing tool name");
     };
@@ -345,7 +346,7 @@ async fn call_tool(id: Value, params: &Value) -> Value {
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    match super::tools::call_mcp(name, &arguments).await {
+    match super::tools::call_mcp(name, &arguments, allow_config_import).await {
         Ok(value) => success_response(
             id,
             json!({
@@ -390,12 +391,15 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_negotiates_a_supported_version() {
-        let response = handle(json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": { "protocolVersion": "2025-06-18" }
-        }))
+        let response = handle(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-06-18" }
+            }),
+            false,
+        )
         .await
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
@@ -404,23 +408,29 @@ mod tests {
 
     #[tokio::test]
     async fn notifications_do_not_receive_responses() {
-        assert!(handle(json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized"
-        }))
+        assert!(handle(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+            false
+        )
         .await
         .is_none());
     }
 
     #[tokio::test]
     async fn lists_tools() {
-        let response = handle(json!({
-            "jsonrpc": "2.0",
-            "id": "tools",
-            "method": "tools/list"
-        }))
+        let response = handle(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "tools",
+                "method": "tools/list"
+            }),
+            false,
+        )
         .await
         .unwrap();
-        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 7);
+        assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 8);
     }
 }

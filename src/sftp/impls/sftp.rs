@@ -9,7 +9,7 @@
 //! via the shared `UnboundedSender<SessionEvent>` that already exists for the
 //! terminal tab.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,13 +22,11 @@ use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use russh::client::{self, Handler};
 use russh::keys::key::PrivateKeyWithHashAlg;
-use russh::Disconnect;
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::{RawSftpSession, SftpSession};
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use ssh_key::{HashAlg, PublicKey};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 
 use crate::config::{AuthMethod, Session};
 use crate::i18n::t;
@@ -117,6 +115,13 @@ impl SftpHandle {
 // Entry point
 // ---------------------------------------------------------------------------
 
+fn chmod_attributes(mode: u32) -> FileAttributes {
+    FileAttributes {
+        permissions: Some(mode),
+        ..FileAttributes::empty()
+    }
+}
+
 /// Spawn an SFTP worker on the Tokio runtime.
 ///
 /// The worker opens its own SSH connection to the same server, authenticates,
@@ -162,17 +167,17 @@ fn friendly_sftp_error(err: &anyhow::Error) -> String {
 pub fn spawn_sftp(
     runtime: &tokio::runtime::Handle,
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     events: UnboundedSender<SessionEvent>,
 ) -> SftpHandle {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let self_tx = cmd_tx.clone();
     let events_err = events.clone();
-    let join = runtime.spawn(async move {
+    let join = runtime.spawn(crate::ssh::inherit_automation_cancellation(async move {
         if let Err(err) = run_sftp(session, jump, cmd_rx, self_tx, events).await {
             let _ = events_err.send(SessionEvent::SftpStatus(friendly_sftp_error(&err)));
         }
-    });
+    }));
     SftpHandle {
         commands: cmd_tx,
         join,
@@ -252,7 +257,7 @@ async fn sync_tree_dir(
 
 async fn run_sftp(
     session: Session,
-    jump: Option<Session>,
+    jump: Vec<Session>,
     mut commands: UnboundedReceiver<SftpCommand>,
     self_tx: UnboundedSender<SftpCommand>,
     events: UnboundedSender<SessionEvent>,
@@ -298,8 +303,8 @@ async fn run_sftp(
     let mut _jump_keepalive;
     // Tunnel through an SSH jump host (#211), the same proxy as the shell (#7),
     // or connect directly.
-    let mut handle = match &jump {
-        Some(j) => {
+    let mut handle = match jump.as_slice() {
+        j if !j.is_empty() => {
             let (h, jh) = crate::ssh::connect_target_via_jump(
                 j,
                 &session.host,
@@ -310,28 +315,18 @@ async fn run_sftp(
             )
             .await
             .with_context(|| format!("sftp connect {} via jump failed", addr))?;
-            _jump_keepalive = Some(jh);
+            _jump_keepalive = jh;
             h
         }
-        None => {
-            _jump_keepalive = None;
-            match crate::ssh::proxy::resolve(&session.proxy, &session.host, session.port) {
-                Some(p) => {
-                    let stream = crate::ssh::proxy::connect(&p, &session.host, session.port)
-                        .await
-                        .with_context(|| format!("sftp proxy connect {} failed", addr))?;
-                    client::connect_stream(config.clone(), stream, sftp_handler(&session, &events))
-                        .await
-                        .with_context(|| format!("sftp connect {} failed", addr))?
-                }
-                None => client::connect(
-                    config.clone(),
-                    addr.as_str(),
-                    sftp_handler(&session, &events),
-                )
-                .await
-                .with_context(|| format!("sftp connect {} failed", addr))?,
-            }
+        _ => {
+            _jump_keepalive = Vec::new();
+            crate::ssh::connect_direct_ssh(
+                &session,
+                config.clone(),
+                sftp_handler(&session, &events),
+                &events,
+            )
+            .await?
         }
     };
 
@@ -345,17 +340,21 @@ async fn run_sftp(
     // --- Authenticate (same method as the shell session) -------------------
     let authed = match session.auth {
         AuthMethod::Password => {
-            let mut ok = handle
-                .authenticate_password(&user, password.as_str())
-                .await
-                .context("sftp password auth failed")?;
+            let mut ok = crate::ssh::network_stage(
+                &format!(
+                    "SFTP password authentication at {}:{}",
+                    session.host, session.port
+                ),
+                handle.authenticate_password(&user, password.as_str()),
+            )
+            .await?;
             if !ok {
                 // Match the shell session's fallback: russh can hang if a second
                 // auth method is attempted on the same failed handle, so reconnect
                 // before trying keyboard-interactive (#86, #186).
-                let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
-                handle = match &jump {
-                    Some(j) => {
+                crate::ssh::disconnect_ssh(&handle, "authentication fallback").await;
+                handle = match jump.as_slice() {
+                    j if !j.is_empty() => {
                         let (h, jh) = crate::ssh::connect_target_via_jump(
                             j,
                             &session.host,
@@ -366,39 +365,18 @@ async fn run_sftp(
                         )
                         .await
                         .with_context(|| format!("sftp reconnect {} via jump failed", addr))?;
-                        _jump_keepalive = Some(jh);
+                        _jump_keepalive = jh;
                         h
                     }
-                    None => {
-                        _jump_keepalive = None;
-                        match crate::ssh::proxy::resolve(
-                            &session.proxy,
-                            &session.host,
-                            session.port,
-                        ) {
-                            Some(p) => {
-                                let stream =
-                                    crate::ssh::proxy::connect(&p, &session.host, session.port)
-                                        .await
-                                        .with_context(|| {
-                                            format!("sftp proxy reconnect {} failed", addr)
-                                        })?;
-                                client::connect_stream(
-                                    config.clone(),
-                                    stream,
-                                    sftp_handler(&session, &events),
-                                )
-                                .await
-                                .with_context(|| format!("sftp reconnect {} failed", addr))?
-                            }
-                            None => client::connect(
-                                config.clone(),
-                                addr.as_str(),
-                                sftp_handler(&session, &events),
-                            )
-                            .await
-                            .with_context(|| format!("sftp reconnect {} failed", addr))?,
-                        }
+                    _ => {
+                        _jump_keepalive = Vec::new();
+                        crate::ssh::connect_direct_ssh(
+                            &session,
+                            config.clone(),
+                            sftp_handler(&session, &events),
+                            &events,
+                        )
+                        .await?
                     }
                 };
                 ok = crate::ssh::keyboard_interactive_auth(
@@ -435,10 +413,14 @@ async fn run_sftp(
             let hash = keypair.algorithm().is_rsa().then_some(HashAlg::Sha256);
             let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(keypair), hash)
                 .context("invalid private key")?;
-            handle
-                .authenticate_publickey(&user, key_with_hash)
-                .await
-                .context("sftp publickey auth failed")?
+            crate::ssh::network_stage(
+                &format!(
+                    "SFTP public-key authentication at {}:{}",
+                    session.host, session.port
+                ),
+                handle.authenticate_publickey(&user, key_with_hash),
+            )
+            .await?
         }
     };
 
@@ -447,32 +429,45 @@ async fn run_sftp(
     }
 
     // --- Open the sftp subsystem channel -----------------------------------
-    let channel = handle
-        .channel_open_session()
-        .await
-        .context("open sftp channel")?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .context("request sftp subsystem")?;
-    let sftp = SftpSession::new(channel.into_stream())
-        .await
-        .context("sftp handshake")?;
+    let channel = crate::ssh::network_stage(
+        &format!("open SFTP channel at {}:{}", session.host, session.port),
+        handle.channel_open_session(),
+    )
+    .await?;
+    crate::ssh::network_stage(
+        &format!("request SFTP subsystem at {}:{}", session.host, session.port),
+        channel.request_subsystem(true, "sftp"),
+    )
+    .await?;
+    let sftp = crate::ssh::network_stage(
+        &format!("SFTP handshake at {}:{}", session.host, session.port),
+        SftpSession::new(channel.into_stream()),
+    )
+    .await?;
     // Share the session + connection so transfers can run on their own task,
     // leaving the command loop free to list/switch directories meanwhile (#116-2).
     let sftp = std::sync::Arc::new(sftp);
     let handle = std::sync::Arc::new(handle);
 
+    // Owner/group names live for the whole SFTP connection so every listing
+    // after the first can paint names without another `getent` round-trip.
+    let owner_cache: SharedOwnerCache = Arc::new(Mutex::new(OwnerNameCache::default()));
+    // Kick off a full passwd/group dump immediately — it overlaps the first
+    // read_dir / tree walk so names are usually ready before the first paint.
+    let (names_ready_tx, names_ready_rx) = tokio::sync::watch::channel(false);
+    {
+        let handle = handle.clone();
+        let owner_cache = owner_cache.clone();
+        tokio::spawn(async move {
+            prefetch_all_owner_names(&handle, &owner_cache).await;
+            let _ = names_ready_tx.send(true);
+        });
+    }
+
     // Per-transfer cancel flags, keyed by transfer id. A download task registers
     // its flag here; a CancelTransfer command flips it; the task removes it on
     // exit (#100 cancel download).
     let cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    // JoinHandles of every in-flight transfer, keyed by the same id. On Close we
-    // flip every cancel flag and abort any task that hasn't finished, so no
-    // transfer outlives the session (#36).
-    let tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     // Resolve the home directory and do an initial listing.
@@ -487,14 +482,23 @@ async fn run_sftp(
     )));
     match list_dir_impl(&sftp, &home).await {
         Ok(entries) => {
+            // Prefer painting names with the listing: wait briefly for the
+            // connect-time full getent dump that started above.
+            wait_owner_prefetch(&names_ready_rx, Duration::from_secs(3)).await;
+            let mut entries = entries;
+            let need = owner_cache.lock().unwrap().apply(&mut entries);
             let _ = events.send(SessionEvent::SftpEntries {
                 path: home.clone(),
                 entries: entries.clone(),
             });
-            let _ = self_tx.send(SftpCommand::EnrichEntries {
-                path: home.clone(),
-                entries,
-            });
+            // Defer any remaining remote name lookup so directory-tree init can
+            // run first; the command loop's EnrichEntries repaints with names.
+            if !need.is_complete() {
+                let _ = self_tx.send(SftpCommand::EnrichEntries {
+                    path: home.clone(),
+                    entries,
+                });
+            }
             let _ = events.send(SessionEvent::SftpStatus(home.clone()));
         }
         Err(e) => {
@@ -542,8 +546,16 @@ async fn run_sftp(
         let _ = events.send(SessionEvent::SftpTreeUpdate(nodes));
     }
 
+    // Own every transfer task. Dropping/aborting the worker cancels transfers
+    // too, rather than leaving detached writes alive after an MCP cancellation.
+    let mut transfers = tokio::task::JoinSet::new();
+
     // --- Command loop -------------------------------------------------------
-    while let Some(cmd) = commands.recv().await {
+    loop {
+        let cmd = tokio::select! {
+            command = commands.recv() => match command { Some(command) => command, None => break },
+            _ = transfers.join_next(), if !transfers.is_empty() => continue,
+        };
         match cmd {
             SftpCommand::Close => {
                 // #36: signal every in-flight transfer to cancel. The command
@@ -556,9 +568,11 @@ async fn run_sftp(
             }
 
             SftpCommand::EnrichEntries { path, entries } => {
-                let enriched = enrich_entries_with_owners(&handle, entries).await;
-                if enriched.iter().any(|entry| entry.owner.is_some() || entry.group.is_some()) {
-                    let _ = events.send(SessionEvent::SftpEntries { path, entries: enriched });
+                let (entries, _) = enrich_entries_with_owners(&handle, &owner_cache, entries).await;
+                // Repaint when any name is available — the deferred home listing
+                // already painted with numbers/placeholders.
+                if entries.iter().any(|entry| entry.owner.is_some() || entry.group.is_some()) {
+                    let _ = events.send(SessionEvent::SftpEntries { path, entries });
                 }
             }
 
@@ -570,17 +584,8 @@ async fn run_sftp(
                 )));
                 match list_dir_impl(&sftp, &path).await {
                     Ok(entries) => {
-                        let _ = events.send(SessionEvent::SftpEntries {
-                            path: path.clone(),
-                            entries: entries.clone(),
-                        });
-                        let enriched = enrich_entries_with_owners(&handle, entries).await;
-                        if enriched.iter().any(|entry| entry.owner.is_some() || entry.group.is_some()) {
-                            let _ = events.send(SessionEvent::SftpEntries {
-                                path: path.clone(),
-                                entries: enriched,
-                            });
-                        }
+                        publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, path.clone(), entries)
+                            .await;
                         let _ = events.send(SessionEvent::SftpStatus(path));
                     }
                     Err(e) => {
@@ -598,17 +603,8 @@ async fn run_sftp(
                 )));
                 match list_dir_impl(&sftp, &path).await {
                     Ok(entries) => {
-                        let _ = events.send(SessionEvent::SftpEntries {
-                            path: path.clone(),
-                            entries: entries.clone(),
-                        });
-                        let enriched = enrich_entries_with_owners(&handle, entries).await;
-                        if enriched.iter().any(|entry| entry.owner.is_some() || entry.group.is_some()) {
-                            let _ = events.send(SessionEvent::SftpEntries {
-                                path: path.clone(),
-                                entries: enriched,
-                            });
-                        }
+                        publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, path.clone(), entries)
+                            .await;
                         let _ = events.send(SessionEvent::SftpStatus(path.clone()));
                     }
                     Err(e) => {
@@ -658,15 +654,13 @@ async fn run_sftp(
                 // Register a cancel flag up-front under the file id, so a
                 // CancelTransfer arriving mid-download can flip it (#100).
                 let file_id = Uuid::new_v4().to_string();
-                let task_key = file_id.clone();
                 let cancel = Arc::new(AtomicBool::new(false));
                 cancels
                     .lock()
                     .unwrap()
                     .insert(file_id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                let tasks_done = tasks.clone();
-                let join = tokio::spawn(async move {
+                transfers.spawn(async move {
                     // A directory target → recursively mirror the whole tree (#50).
                     let is_dir = sftp
                         .metadata(&remote)
@@ -691,7 +685,6 @@ async fn run_sftp(
                             // #37: early return must still release the cancel
                             // entry (and the tracked task handle) it registered.
                             cancels_done.lock().unwrap().remove(&file_id);
-                            tasks_done.lock().unwrap().remove(&file_id);
                             return;
                         }
                         let _ = events.send(SessionEvent::SftpStatus(format!(
@@ -776,9 +769,7 @@ async fn run_sftp(
                         }
                     }
                     cancels_done.lock().unwrap().remove(&file_id);
-                    tasks_done.lock().unwrap().remove(&file_id);
                 });
-                tasks.lock().unwrap().insert(task_key, join);
             }
 
             SftpCommand::DownloadArchive {
@@ -794,12 +785,10 @@ async fn run_sftp(
                 let events = events.clone();
                 // Register a cancel flag up-front so CancelTransfer can flip it (#100).
                 let id = Uuid::new_v4().to_string();
-                let task_key = id.clone();
                 let cancel = Arc::new(AtomicBool::new(false));
                 cancels.lock().unwrap().insert(id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                let tasks_done = tasks.clone();
-                let join = tokio::spawn(async move {
+                transfers.spawn(async move {
                     let n = names.len();
                     let tmp = format!("/tmp/meatshell-{}.tar", Uuid::new_v4());
                     // Name the archive after the first item's stem, per the user:
@@ -872,9 +861,7 @@ async fn run_sftp(
                         }
                     }
                     cancels_done.lock().unwrap().remove(&id);
-                    tasks_done.lock().unwrap().remove(&id);
                 });
-                tasks.lock().unwrap().insert(task_key, join);
             }
 
             SftpCommand::CancelTransfer(id) => {
@@ -893,18 +880,18 @@ async fn run_sftp(
                 let sftp = sftp.clone();
                 let handle = handle.clone();
                 let events = events.clone();
+                let owner_cache = owner_cache.clone();
+                let names_ready_rx = names_ready_rx.clone();
                 // Register a cancel flag up-front under the file id so a
                 // CancelTransfer arriving mid-upload can flip it (#100).
                 let up_id = Uuid::new_v4().to_string();
-                let task_key = up_id.clone();
                 let cancel = Arc::new(AtomicBool::new(false));
                 cancels
                     .lock()
                     .unwrap()
                     .insert(up_id.clone(), cancel.clone());
                 let cancels_done = cancels.clone();
-                let tasks_done = tasks.clone();
-                let join = tokio::spawn(async move {
+                transfers.spawn(async move {
                     // A directory source → recursively upload the whole tree (#50).
                     let is_dir = tokio::fs::metadata(&local)
                         .await
@@ -922,7 +909,6 @@ async fn run_sftp(
                                     cleanup_import_path(path).await;
                                 }
                                 cancels_done.lock().unwrap().remove(&up_id);
-                                tasks_done.lock().unwrap().remove(&up_id);
                                 return;
                             }
                         };
@@ -933,10 +919,15 @@ async fn run_sftp(
                         )));
                         let res = upload_dir(&handle, &sftp, &local, &remote_dir, &events).await;
                         if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
-                            let _ = events.send(SessionEvent::SftpEntries {
-                                path: remote_dir.clone(),
+                            publish_dir_entries(
+                                &handle,
+                                &owner_cache,
+                                &names_ready_rx,
+                                &events,
+                                remote_dir.clone(),
                                 entries,
-                            });
+                            )
+                            .await;
                         }
                         match res {
                             Ok(_) => {
@@ -965,7 +956,6 @@ async fn run_sftp(
                                     cleanup_import_path(path).await;
                                 }
                                 cancels_done.lock().unwrap().remove(&up_id);
-                                tasks_done.lock().unwrap().remove(&up_id);
                                 return;
                             }
                         };
@@ -989,10 +979,15 @@ async fn run_sftp(
                         {
                             Ok(true) => {
                                 if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
-                                    let _ = events.send(SessionEvent::SftpEntries {
-                                        path: remote_dir.clone(),
+                                    publish_dir_entries(
+                                        &handle,
+                                        &owner_cache,
+                                        &names_ready_rx,
+                                        &events,
+                                        remote_dir.clone(),
                                         entries,
-                                    });
+                                    )
+                                    .await;
                                 }
                                 let _ = events.send(SessionEvent::SftpStatus(format!(
                                     "{}: {}",
@@ -1003,10 +998,15 @@ async fn run_sftp(
                             Ok(false) => {
                                 // Refresh the listing so the removed partial file disappears.
                                 if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
-                                    let _ = events.send(SessionEvent::SftpEntries {
-                                        path: remote_dir.clone(),
+                                    publish_dir_entries(
+                                        &handle,
+                                        &owner_cache,
+                                        &names_ready_rx,
+                                        &events,
+                                        remote_dir.clone(),
                                         entries,
-                                    });
+                                    )
+                                    .await;
                                 }
                                 let _ = events.send(SessionEvent::SftpStatus(format!(
                                     "{}: {}",
@@ -1036,16 +1036,16 @@ async fn run_sftp(
                         cleanup_import_path(path).await;
                     }
                     cancels_done.lock().unwrap().remove(&up_id);
-                    tasks_done.lock().unwrap().remove(&up_id);
                 });
-                tasks.lock().unwrap().insert(task_key, join);
             }
 
             SftpCommand::UploadEdited { local, remote } => {
                 let sftp = sftp.clone();
                 let handle = handle.clone();
                 let events = events.clone();
-                tokio::spawn(async move {
+                let owner_cache = owner_cache.clone();
+                let names_ready_rx = names_ready_rx.clone();
+                transfers.spawn(async move {
                     let filename = base_name(&remote);
                     let remote_dir = parent_dir(&remote);
                     let id = Uuid::new_v4().to_string();
@@ -1057,10 +1057,15 @@ async fn run_sftp(
                     match result {
                         Ok(true) => {
                             if let Ok(entries) = list_dir_impl(&sftp, &remote_dir).await {
-                                let _ = events.send(SessionEvent::SftpEntries {
-                                    path: remote_dir,
+                                publish_dir_entries(
+                                    &handle,
+                                    &owner_cache,
+                                    &names_ready_rx,
+                                    &events,
+                                    remote_dir,
                                     entries,
-                                });
+                                )
+                                .await;
                             }
                             let _ = events.send(SessionEvent::SftpStatus(format!(
                                 "{}: {}",
@@ -1087,7 +1092,7 @@ async fn run_sftp(
                 let sftp = sftp.clone();
                 let handle = handle.clone();
                 let events = events.clone();
-                tokio::spawn(async move {
+                transfers.spawn(async move {
                     let label = format!("{} {}", remotes.len(), t("项", "items"));
                     let _ = events.send(SessionEvent::SftpStatus(format!(
                         "{} {}...",
@@ -1142,10 +1147,15 @@ async fn run_sftp(
                     Ok(_) => {
                         let parent = parent_dir(&path);
                         if let Ok(entries) = list_dir_impl(&sftp, &parent).await {
-                            let _ = events.send(SessionEvent::SftpEntries {
-                                path: parent.clone(),
+                            publish_dir_entries(
+                                &handle,
+                                &owner_cache,
+                                &names_ready_rx,
+                                &events,
+                                parent.clone(),
                                 entries,
-                            });
+                            )
+                            .await;
                         }
                         // Keep the left directory tree in sync (#189): drop the
                         // deleted folder and any cached descendants, then re-list
@@ -1201,19 +1211,14 @@ async fn run_sftp(
                     }
                 }
                 if let Ok(entries) = list_dir_impl(&sftp, &refresh).await {
-                    let _ = events.send(SessionEvent::SftpEntries {
-                        path: refresh,
-                        entries,
-                    });
+                    publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, refresh, entries).await;
                 }
             }
 
             SftpCommand::Chmod { path, mode } => {
                 let refresh = parent_dir(&path);
-                // `mode_only`, never `FileAttributes::default()`: the dummy
-                // default also carries size/uid/times, so SETSTAT would truncate
-                // the file while chmod-ing it (see `mode_only`).
-                match sftp.set_metadata(&path, mode_only(mode)).await {
+                let attrs = chmod_attributes(mode);
+                match sftp.set_metadata(&path, attrs).await {
                     Ok(_) => {
                         let _ = events.send(SessionEvent::SftpStatus(format!(
                             "{}: {} → {:o}",
@@ -1230,10 +1235,7 @@ async fn run_sftp(
                     }
                 }
                 if let Ok(entries) = list_dir_impl(&sftp, &refresh).await {
-                    let _ = events.send(SessionEvent::SftpEntries {
-                        path: refresh,
-                        entries,
-                    });
+                    publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, refresh, entries).await;
                 }
             }
 
@@ -1258,10 +1260,7 @@ async fn run_sftp(
                     }
                 }
                 if let Ok(entries) = list_dir_impl(&sftp, &refresh).await {
-                    let _ = events.send(SessionEvent::SftpEntries {
-                        path: refresh,
-                        entries,
-                    });
+                    publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, refresh, entries).await;
                 }
             }
 
@@ -1293,10 +1292,7 @@ async fn run_sftp(
                     }
                 }
                 if let Ok(entries) = list_dir_impl(&sftp, &refresh).await {
-                    let _ = events.send(SessionEvent::SftpEntries {
-                        path: refresh,
-                        entries,
-                    });
+                    publish_dir_entries(&handle, &owner_cache, &names_ready_rx, &events, refresh, entries).await;
                 }
             }
 
@@ -1401,17 +1397,9 @@ async fn run_sftp(
         }
     }
 
-    // #36: abort any transfer task still running. Their cancel flags were set in
-    // the Close handler; aborting here is a backstop so a task stuck on a network
-    // request can't delay session teardown.
-    let pending = std::mem::take(&mut *tasks.lock().unwrap());
-    for (_, jh) in pending {
-        jh.abort();
-    }
-
-    let _ = handle
-        .disconnect(Disconnect::ByApplication, "bye", "")
-        .await;
+    transfers.abort_all();
+    while transfers.join_next().await.is_some() {}
+    crate::ssh::disconnect_ssh(&handle, "bye").await;
     Ok(())
 }
 
@@ -1720,7 +1708,7 @@ async fn exec_remote(handle: &client::Handle<SftpClientHandler>, cmd: &str) -> R
 async fn exec_remote_output(
     handle: &client::Handle<SftpClientHandler>,
     cmd: &str,
-) -> Result<String> {
+) -> Result<(u32, String)> {
     let mut ch = handle
         .channel_open_session()
         .await
@@ -1729,15 +1717,17 @@ async fn exec_remote_output(
         .await
         .context("execute owner lookup")?;
     let mut output = Vec::new();
+    let mut status = 0u32;
     while let Some(msg) = ch.wait().await {
         match msg {
             russh::ChannelMsg::Data { data }
             | russh::ChannelMsg::ExtendedData { data, .. } => output.extend_from_slice(&data),
+            russh::ChannelMsg::ExitStatus { exit_status } => status = exit_status,
             russh::ChannelMsg::Close => break,
             _ => {}
         }
     }
-    Ok(String::from_utf8_lossy(&output).into_owned())
+    Ok((status, String::from_utf8_lossy(&output).into_owned()))
 }
 
 /// Parent directory of a remote path ("/a/b" → "/a", "/a" → "/").
@@ -2063,58 +2053,121 @@ async fn list_dir_impl(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteEntry
     Ok(entries)
 }
 
-async fn enrich_entries_with_owners(
-    handle: &client::Handle<SftpClientHandler>,
-    mut entries: Vec<RemoteEntry>,
-) -> Vec<RemoteEntry> {
-    let uids: Vec<u32> = entries.iter().filter_map(|entry| entry.uid).collect();
-    let gids: Vec<u32> = entries.iter().filter_map(|entry| entry.gid).collect();
-    let (owners, groups) = resolve_owner_names(handle, &uids, &gids).await;
-    for entry in &mut entries {
-        entry.owner = entry.uid.and_then(|id| owners.get(&id).cloned());
-        entry.group = entry.gid.and_then(|id| groups.get(&id).cloned());
-    }
-    entries
+/// Per-SFTP-connection cache of `uid`/`gid` → account name.
+///
+/// SFTP listings only carry numeric IDs. Resolving them costs a remote `getent`
+/// round-trip, so the first paint of a directory used to flash raw numbers and
+/// only later flip to names. A full passwd/group dump is prefetched at connect;
+/// this cache is filled from that dump (and later targeted lookups) and
+/// consulted on every listing in the same connection, so warm IDs paint as
+/// names immediately. Unknown IDs stay blank in the UI rather than showing
+/// raw numbers.
+type SharedOwnerCache = Arc<Mutex<OwnerNameCache>>;
+
+#[derive(Debug, Default)]
+struct OwnerNameCache {
+    owners: HashMap<u32, String>,
+    groups: HashMap<u32, String>,
+    /// IDs `getent` answered for with "no such account" (e.g. NFS zombie UIDs).
+    /// Later listings skip the remote lookup for these instead of retrying.
+    owner_miss: HashSet<u32>,
+    group_miss: HashSet<u32>,
+    /// A full `getent passwd` / `getent group` dump has been absorbed. After
+    /// that, any ID not in the maps is a real miss and never needs `getent`.
+    full_lookup_done: bool,
 }
 
-async fn resolve_owner_names(
-    handle: &client::Handle<SftpClientHandler>,
-    uids: &[u32],
-    gids: &[u32],
-) -> (HashMap<u32, String>, HashMap<u32, String>) {
-    let mut uid_args: Vec<String> = uids.iter().map(u32::to_string).collect();
-    uid_args.sort();
-    uid_args.dedup();
-    let mut gid_args: Vec<String> = gids.iter().map(u32::to_string).collect();
-    gid_args.sort();
-    gid_args.dedup();
-    if uid_args.is_empty() && gid_args.is_empty() {
-        return (HashMap::new(), HashMap::new());
+/// IDs still needing a remote lookup after the cache was consulted.
+#[derive(Debug, Default)]
+struct OwnerLookupNeed {
+    uids: Vec<u32>,
+    gids: Vec<u32>,
+}
+
+impl OwnerLookupNeed {
+    fn is_complete(&self) -> bool {
+        self.uids.is_empty() && self.gids.is_empty()
+    }
+}
+
+impl OwnerNameCache {
+    /// Fill `entry.owner` / `entry.group` from the cache. Unknown IDs are
+    /// collected into the returned need-list; misses (and any ID after a full
+    /// passwd dump) count as already resolved — the UI leaves those cells blank
+    /// and does not trigger `getent`.
+    fn apply(&self, entries: &mut [RemoteEntry]) -> OwnerLookupNeed {
+        let mut need_uids = std::collections::BTreeSet::new();
+        let mut need_gids = std::collections::BTreeSet::new();
+        for entry in entries.iter_mut() {
+            if let Some(uid) = entry.uid {
+                if let Some(name) = self.owners.get(&uid) {
+                    entry.owner = Some(name.clone());
+                } else if !self.owner_miss.contains(&uid) && !self.full_lookup_done {
+                    need_uids.insert(uid);
+                }
+            }
+            if let Some(gid) = entry.gid {
+                if let Some(name) = self.groups.get(&gid) {
+                    entry.group = Some(name.clone());
+                } else if !self.group_miss.contains(&gid) && !self.full_lookup_done {
+                    need_gids.insert(gid);
+                }
+            }
+        }
+        OwnerLookupNeed {
+            uids: need_uids.into_iter().collect(),
+            gids: need_gids.into_iter().collect(),
+        }
     }
 
-    // IDs are parsed as u32 above, so interpolating them cannot introduce shell
-    // syntax. A single getent invocation handles all files in the directory.
-    let passwd = if uid_args.is_empty() {
-        "true".to_string()
-    } else {
-        format!("getent passwd {} 2>/dev/null", uid_args.join(" "))
-    };
-    let group = if gid_args.is_empty() {
-        "true".to_string()
-    } else {
-        format!("getent group {} 2>/dev/null", gid_args.join(" "))
-    };
-    let command = format!(
-        "{passwd}; printf '\\n--MEATSHELL-GROUPS--\\n'; {group}"
-    );
-    let Ok(Ok(output)) = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        exec_remote_output(handle, &command),
-    )
-    .await
-    else {
-        return (HashMap::new(), HashMap::new());
-    };
+    /// Store a successful targeted `getent` parse. Requested IDs with no name
+    /// become misses so later listings skip the remote lookup for them. Callers
+    /// must **not** absorb a failed/timeout lookup — that would permanently pin
+    /// blanks for IDs that simply had not been resolved yet.
+    fn absorb_resolved(
+        &mut self,
+        need: &OwnerLookupNeed,
+        owners: HashMap<u32, String>,
+        groups: HashMap<u32, String>,
+    ) {
+        for (id, name) in owners {
+            self.owner_miss.remove(&id);
+            self.owners.insert(id, name);
+        }
+        for (id, name) in groups {
+            self.group_miss.remove(&id);
+            self.groups.insert(id, name);
+        }
+        for &uid in &need.uids {
+            if !self.owners.contains_key(&uid) {
+                self.owner_miss.insert(uid);
+            }
+        }
+        for &gid in &need.gids {
+            if !self.groups.contains_key(&gid) {
+                self.group_miss.insert(gid);
+            }
+        }
+    }
+
+    /// Store a full passwd/group dump from the connect-time prefetch. After
+    /// this, IDs absent from the maps are treated as misses (no more `getent`).
+    fn absorb_full_lookup(&mut self, owners: HashMap<u32, String>, groups: HashMap<u32, String>) {
+        for (id, name) in owners {
+            self.owner_miss.remove(&id);
+            self.owners.insert(id, name);
+        }
+        for (id, name) in groups {
+            self.group_miss.remove(&id);
+            self.groups.insert(id, name);
+        }
+        self.full_lookup_done = true;
+    }
+}
+
+/// Split `getent passwd` / `getent group` output (see `resolve_owner_names`)
+/// into id → name maps.
+fn parse_owner_lookup_output(output: &str) -> (HashMap<u32, String>, HashMap<u32, String>) {
     let mut owners = HashMap::new();
     let mut groups = HashMap::new();
     let mut in_groups = false;
@@ -2141,6 +2194,163 @@ async fn resolve_owner_names(
         }
     }
     (owners, groups)
+}
+
+/// Fill owner/group names on `entries`: cache first, remote `getent` only for
+/// IDs this connection has never seen. Returns the entries and whether the
+/// remote lookup produced any new names (i.e. the caller should repaint).
+async fn enrich_entries_with_owners(
+    handle: &client::Handle<SftpClientHandler>,
+    cache: &SharedOwnerCache,
+    mut entries: Vec<RemoteEntry>,
+) -> (Vec<RemoteEntry>, bool) {
+    let need = cache.lock().unwrap().apply(&mut entries);
+    if need.is_complete() {
+        // Warm cache (or nothing to resolve): names are already in place.
+        return (entries, false);
+    }
+    match resolve_owner_names(handle, &need.uids, &need.gids).await {
+        OwnerLookup::Failed => (entries, false),
+        OwnerLookup::Parsed { owners, groups } => {
+            let gained = !owners.is_empty() || !groups.is_empty();
+            {
+                let mut cache = cache.lock().unwrap();
+                cache.absorb_resolved(&need, owners, groups);
+                cache.apply(&mut entries);
+            }
+            (entries, gained)
+        }
+    }
+}
+
+/// Wait briefly for the connect-time full passwd/group dump so the first
+/// listing can paint names instead of blanks. No-op once the dump has landed
+/// (or after `max` elapsed — the listing then paints blanks and fills in later).
+async fn wait_owner_prefetch(ready: &tokio::sync::watch::Receiver<bool>, max: Duration) {
+    if *ready.borrow() {
+        return;
+    }
+    let mut ready = ready.clone();
+    let _ = tokio::time::timeout(max, ready.wait_for(|done| *done)).await;
+}
+
+/// Dump the entire remote passwd + group tables into `cache` (best-effort).
+/// Runs at SFTP connect, overlapping the first `read_dir`, so names are usually
+/// ready before the first paint. On timeout / missing `getent` the cache is
+/// left untouched and later listings fall back to targeted per-ID lookups.
+async fn prefetch_all_owner_names(
+    handle: &client::Handle<SftpClientHandler>,
+    cache: &SharedOwnerCache,
+) {
+    // No id arguments → getent prints the whole database. `command -v getent
+    // || exit 127` keeps a host without getent from marking the dump done
+    // with an empty map (which would blank every owner until reconnect).
+    let command = "command -v getent >/dev/null 2>&1 || exit 127; \
+getent passwd 2>/dev/null; printf '\\n--MEATSHELL-GROUPS--\\n'; getent group 2>/dev/null";
+    let Ok(Ok((status, output))) = tokio::time::timeout(
+        Duration::from_secs(5),
+        exec_remote_output(handle, command),
+    )
+    .await
+    else {
+        return;
+    };
+    if status == 127 {
+        return;
+    }
+    let (owners, groups) = parse_owner_lookup_output(&output);
+    cache.lock().unwrap().absorb_full_lookup(owners, groups);
+}
+
+/// Publish a directory listing to the UI with owner names filled in.
+///
+/// Prefetch hit / warm cache → a single `SftpEntries` paint already carrying
+/// names. Otherwise the first paint leaves owner/group blank (never raw uid/gid)
+/// and a second paint lands once `getent` returns.
+async fn publish_dir_entries(
+    handle: &client::Handle<SftpClientHandler>,
+    cache: &SharedOwnerCache,
+    names_ready: &tokio::sync::watch::Receiver<bool>,
+    events: &UnboundedSender<SessionEvent>,
+    path: String,
+    entries: Vec<RemoteEntry>,
+) {
+    wait_owner_prefetch(names_ready, Duration::from_millis(1500)).await;
+    let mut entries = entries;
+    let need = cache.lock().unwrap().apply(&mut entries);
+    if need.is_complete() {
+        let _ = events.send(SessionEvent::SftpEntries { path, entries });
+        return;
+    }
+    let _ = events.send(SessionEvent::SftpEntries {
+        path: path.clone(),
+        entries: entries.clone(),
+    });
+    let (entries, gained) = enrich_entries_with_owners(handle, cache, entries).await;
+    if gained {
+        let _ = events.send(SessionEvent::SftpEntries { path, entries });
+    }
+}
+
+enum OwnerLookup {
+    /// `getent` produced parseable output. IDs missing from the maps are real
+    /// "no such account" answers and may be negative-cached.
+    Parsed {
+        owners: HashMap<u32, String>,
+        groups: HashMap<u32, String>,
+    },
+    /// Timeout or transport failure — must not write misses.
+    Failed,
+}
+
+async fn resolve_owner_names(
+    handle: &client::Handle<SftpClientHandler>,
+    uids: &[u32],
+    gids: &[u32],
+) -> OwnerLookup {
+    let mut uid_args: Vec<String> = uids.iter().map(u32::to_string).collect();
+    uid_args.sort();
+    uid_args.dedup();
+    let mut gid_args: Vec<String> = gids.iter().map(u32::to_string).collect();
+    gid_args.sort();
+    gid_args.dedup();
+    if uid_args.is_empty() && gid_args.is_empty() {
+        return OwnerLookup::Parsed {
+            owners: HashMap::new(),
+            groups: HashMap::new(),
+        };
+    }
+
+    // IDs are parsed as u32 above, so interpolating them cannot introduce shell
+    // syntax. A single getent invocation handles all files in the directory.
+    // `command -v getent || exit 127` keeps a host without getent from looking
+    // like "every uid is a zombie" (which would negative-cache the whole map).
+    let passwd = if uid_args.is_empty() {
+        "true".to_string()
+    } else {
+        format!("getent passwd {} 2>/dev/null", uid_args.join(" "))
+    };
+    let group = if gid_args.is_empty() {
+        "true".to_string()
+    } else {
+        format!("getent group {} 2>/dev/null", gid_args.join(" "))
+    };
+    let command = format!(
+        "command -v getent >/dev/null 2>&1 || exit 127; {passwd}; printf '\\n--MEATSHELL-GROUPS--\\n'; {group}"
+    );
+    let Ok(Ok((status, output))) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        exec_remote_output(handle, &command),
+    )
+    .await
+    else {
+        return OwnerLookup::Failed;
+    };
+    if status == 127 {
+        return OwnerLookup::Failed;
+    }
+    let (owners, groups) = parse_owner_lookup_output(&output);
+    OwnerLookup::Parsed { owners, groups }
 }
 
 /// List only the subdirectories of `path` (no files). Used to build the tree.
@@ -2628,6 +2838,13 @@ struct SftpClientHandler {
     host: String,
     port: u16,
     events: UnboundedSender<SessionEvent>,
+    host_key_wait: crate::ssh::HostKeyWait,
+}
+
+impl crate::ssh::HandshakeHandler for SftpClientHandler {
+    fn host_key_wait(&self) -> &crate::ssh::HostKeyWait {
+        &self.host_key_wait
+    }
 }
 
 fn sftp_handler(session: &Session, events: &UnboundedSender<SessionEvent>) -> SftpClientHandler {
@@ -2635,6 +2852,7 @@ fn sftp_handler(session: &Session, events: &UnboundedSender<SessionEvent>) -> Sf
         host: session.host.clone(),
         port: session.port,
         events: events.clone(),
+        host_key_wait: crate::ssh::HostKeyWait::default(),
     }
 }
 
@@ -2647,8 +2865,14 @@ impl Handler for SftpClientHandler {
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(
-            crate::ssh::verify_host_key(&self.host, self.port, server_public_key, &self.events)
-                .await,
+            crate::ssh::verify_host_key(
+                &self.host,
+                self.port,
+                server_public_key,
+                &self.events,
+                &self.host_key_wait,
+            )
+            .await,
         )
     }
 
@@ -2672,7 +2896,7 @@ const _: fn() = || {
 #[cfg(test)]
 mod sanitize_tests {
     use super::{
-        available_download_path, download_target_path, external_edit_local_name,
+        available_download_path, chmod_attributes, download_target_path, external_edit_local_name,
         sanitize_filename, validate_editor_text, EditorTextRejection,
         MAX_BUILTIN_EDITOR_BYTES, MAX_BUILTIN_EDITOR_LINES, MAX_BUILTIN_EDITOR_LINE_BYTES,
     };
@@ -2762,6 +2986,15 @@ mod sanitize_tests {
     }
 
     #[test]
+    fn chmod_attributes_do_not_reset_file_size_or_timestamps() {
+        let attrs = chmod_attributes(0o640);
+        assert_eq!(attrs.permissions, Some(0o640));
+        assert_eq!(attrs.size, None);
+        assert_eq!(attrs.atime, None);
+        assert_eq!(attrs.mtime, None);
+    }
+
+    #[test]
     fn editor_rejects_content_over_the_safe_byte_limit() {
         let bytes = vec![b'a'; MAX_BUILTIN_EDITOR_BYTES + 1];
         assert_eq!(
@@ -2805,22 +3038,193 @@ mod sanitize_tests {
 }
 
 #[cfg(test)]
-mod setstat_tests {
-    use super::mode_only;
+mod owner_cache_tests {
+    use super::*;
 
-    /// SETSTAT truncates on SIZE and backdates on ACMODTIME, so a replace/upload
-    /// must hand the server a mode and nothing else (#35 follow-up: the rejected
-    /// temp file used to come back as a 0-byte, epoch-dated target).
+    fn entry(uid: Option<u32>, gid: Option<u32>) -> RemoteEntry {
+        RemoteEntry {
+            name: "f".into(),
+            full_path: "/f".into(),
+            is_dir: false,
+            size: 0,
+            modified: 0,
+            mode: 0o644,
+            permissions_mode: 0o100644,
+            uid,
+            gid,
+            owner: None,
+            group: None,
+            file_type: "file".into(),
+        }
+    }
+
     #[test]
-    fn mode_only_carries_no_size_and_no_times() {
-        let attrs = mode_only(0o640);
-        assert_eq!(attrs.permissions, Some(0o640));
-        assert_eq!(attrs.size, None);
-        assert_eq!(attrs.uid, None);
-        assert_eq!(attrs.gid, None);
-        assert_eq!(attrs.atime, None);
-        assert_eq!(attrs.mtime, None);
-        assert_eq!(attrs.user, None);
-        assert_eq!(attrs.group, None);
+    fn apply_fills_names_from_cache_and_reports_complete() {
+        let mut cache = OwnerNameCache::default();
+        cache.owners.insert(1000, "www-data".into());
+        cache.groups.insert(1000, "www-data".into());
+
+        let mut entries = vec![entry(Some(1000), Some(1000))];
+        let need = cache.apply(&mut entries);
+
+        assert!(need.is_complete());
+        assert_eq!(entries[0].owner.as_deref(), Some("www-data"));
+        assert_eq!(entries[0].group.as_deref(), Some("www-data"));
+    }
+
+    #[test]
+    fn apply_requests_only_unknown_ids() {
+        let mut cache = OwnerNameCache::default();
+        cache.owners.insert(0, "root".into());
+
+        let mut entries = vec![entry(Some(0), Some(33)), entry(Some(1000), Some(33))];
+        let need = cache.apply(&mut entries);
+
+        assert!(!need.is_complete());
+        assert_eq!(need.uids, vec![1000]);
+        assert_eq!(need.gids, vec![33]);
+        assert_eq!(entries[0].owner.as_deref(), Some("root"));
+        assert_eq!(entries[0].group.as_deref(), None);
+        assert_eq!(entries[1].owner.as_deref(), None);
+    }
+
+    #[test]
+    fn miss_counts_as_resolved_so_getent_is_skipped() {
+        let mut cache = OwnerNameCache::default();
+        cache.owner_miss.insert(4242);
+        cache.group_miss.insert(4242);
+
+        let mut entries = vec![entry(Some(4242), Some(4242))];
+        let need = cache.apply(&mut entries);
+
+        assert!(need.is_complete());
+        assert_eq!(entries[0].owner, None);
+        assert_eq!(entries[0].group, None);
+    }
+
+    #[test]
+    fn full_lookup_treats_unknown_ids_as_blanks_without_remote() {
+        let mut cache = OwnerNameCache::default();
+        cache.absorb_full_lookup(
+            HashMap::from([(0, "root".to_string())]),
+            HashMap::from([(0, "root".to_string())]),
+        );
+
+        let mut entries = vec![entry(Some(0), Some(0)), entry(Some(9999), Some(9999))];
+        let need = cache.apply(&mut entries);
+
+        // 0 resolves from the dump; 9999 is a real miss after a full dump and
+        // must NOT queue another getent (UI stays blank).
+        assert!(need.is_complete());
+        assert_eq!(entries[0].owner.as_deref(), Some("root"));
+        assert_eq!(entries[1].owner, None);
+        assert_eq!(entries[1].group, None);
+    }
+
+    #[test]
+    fn absorb_resolved_stores_names_and_negative_caches_missing_ids() {
+        let mut cache = OwnerNameCache::default();
+        let need = OwnerLookupNeed {
+            uids: vec![0, 9999],
+            gids: vec![0, 9999],
+        };
+        let mut owners = HashMap::new();
+        owners.insert(0, "root".to_string());
+        let mut groups = HashMap::new();
+        groups.insert(0, "root".to_string());
+        cache.absorb_resolved(&need, owners, groups);
+
+        assert_eq!(cache.owners.get(&0).map(String::as_str), Some("root"));
+        assert!(cache.owner_miss.contains(&9999));
+        assert_eq!(cache.groups.get(&0).map(String::as_str), Some("root"));
+        assert!(cache.group_miss.contains(&9999));
+
+        let mut entries = vec![entry(Some(0), Some(0)), entry(Some(9999), Some(9999))];
+        let need = cache.apply(&mut entries);
+        assert!(need.is_complete());
+    }
+
+    #[test]
+    fn absorb_replaces_miss_when_name_appears_later() {
+        let mut cache = OwnerNameCache::default();
+        cache.owner_miss.insert(7);
+        cache.absorb_resolved(
+            &OwnerLookupNeed {
+                uids: vec![7],
+                gids: vec![],
+            },
+            HashMap::from([(7, "alice".to_string())]),
+            HashMap::new(),
+        );
+        assert!(!cache.owner_miss.contains(&7));
+        assert_eq!(cache.owners.get(&7).map(String::as_str), Some("alice"));
+    }
+
+    #[test]
+    fn failed_lookup_shape_does_not_mark_miss_via_empty_absorb() {
+        // Documented contract: callers must not absorb a failed lookup. A
+        // successful parse with zero names for a requested id *does* mark miss.
+        let mut cache = OwnerNameCache::default();
+        cache.absorb_resolved(
+            &OwnerLookupNeed {
+                uids: vec![5],
+                gids: vec![],
+            },
+            HashMap::new(),
+            HashMap::new(),
+        );
+        assert!(cache.owner_miss.contains(&5));
+    }
+
+    #[test]
+    fn parse_owner_lookup_output_splits_passwd_and_group() {
+        let output = "\
+root:x:0:0:root:/root:/bin/bash
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+--MEATSHELL-GROUPS--
+root:x:0:
+www-data:x:33:
+";
+        let (owners, groups) = parse_owner_lookup_output(output);
+        assert_eq!(owners.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(owners.get(&33).map(String::as_str), Some("www-data"));
+        assert_eq!(groups.get(&0).map(String::as_str), Some("root"));
+        assert_eq!(groups.get(&33).map(String::as_str), Some("www-data"));
+    }
+
+    #[test]
+    fn parse_owner_lookup_output_ignores_malformed_lines() {
+        let output = "\
+not-a-passwd-line
+ghost:x:notanumber:0:a:b:c
+--MEATSHELL-GROUPS--
+also-bad
+";
+        let (owners, groups) = parse_owner_lookup_output(output);
+        assert!(owners.is_empty());
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn second_apply_after_absorb_needs_no_remote_lookup() {
+        // Simulates the warm path: first listing discovers 1000, later listings
+        // must return `is_complete` so publish paints names in one shot.
+        let mut cache = OwnerNameCache::default();
+        let mut first = vec![entry(Some(1000), Some(1000))];
+        let need = cache.apply(&mut first);
+        assert!(!need.is_complete());
+        cache.absorb_resolved(
+            &need,
+            HashMap::from([(1000, "alice".to_string())]),
+            HashMap::from([(1000, "staff".to_string())]),
+        );
+        cache.apply(&mut first);
+        assert_eq!(first[0].owner.as_deref(), Some("alice"));
+        assert_eq!(first[0].group.as_deref(), Some("staff"));
+
+        let mut second = vec![entry(Some(1000), Some(1000)), entry(Some(1000), Some(1000))];
+        let need = cache.apply(&mut second);
+        assert!(need.is_complete());
+        assert!(second.iter().all(|e| e.owner.as_deref() == Some("alice")));
     }
 }

@@ -1,6 +1,10 @@
 use super::*;
 
-fn choose_download_conflict(remote: &str, local_dir: &str) -> Option<DownloadConflict> {
+fn choose_download_conflict(
+    owner: DialogOwner,
+    remote: &str,
+    local_dir: &str,
+) -> Option<DownloadConflict> {
     let target = download_target_path(remote, local_dir);
     if !target.is_file() {
         return Some(DownloadConflict::Replace);
@@ -8,7 +12,8 @@ fn choose_download_conflict(remote: &str, local_dir: &str) -> Option<DownloadCon
     let replace = t("替换", "Replace");
     let keep_both = t("共存", "Keep both");
     let cancel = t("取消", "Cancel");
-    let result = rfd::MessageDialog::new()
+    let result = owner
+        .message()
         .set_title(t("文件已存在", "File already exists"))
         .set_description(format!(
             "{}\n{}",
@@ -124,6 +129,10 @@ pub(super) fn wire_sftp_callbacks(
                 })
                 .map(|(d, n)| (Some(d), n))
                 .unwrap_or((None, Vec::new()));
+            let owner = weak
+                .upgrade()
+                .map(|w| DialogOwner::of(w.window()))
+                .unwrap_or_default();
             // "Always ask" (#87) forces the folder picker, ignoring the preset.
             let (preset, always_ask) = weak
                 .upgrade()
@@ -150,7 +159,7 @@ pub(super) fn wire_sftp_callbacks(
                     let conflict = if thread_arc_dir.is_some() {
                         None
                     } else {
-                        choose_download_conflict(&thread_remote, &preset)
+                        choose_download_conflict(owner, &thread_remote, &preset)
                     };
                     if let Ok(handles) = thread_sftp_handles.lock() {
                         if let Some(h) = handles.get(&thread_tab) {
@@ -174,7 +183,7 @@ pub(super) fn wire_sftp_callbacks(
             let sftp_handles = sftp_handles.clone();
             let weak = weak.clone();
             std::thread::spawn(move || {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                if let Some(dir) = owner.file().pick_folder() {
                     let local_dir = dir.to_string_lossy().to_string();
                     // Decide the conflict before taking the shared lock — the
                     // modal dialog must not hold sftp_handles while waiting
@@ -182,7 +191,7 @@ pub(super) fn wire_sftp_callbacks(
                     let conflict = if arc_dir.is_some() {
                         None
                     } else {
-                        choose_download_conflict(&remote_path, &local_dir)
+                        choose_download_conflict(owner, &remote_path, &local_dir)
                     };
                     if let Ok(handles) = sftp_handles.lock() {
                         if let Some(h) = handles.get(&tab_id) {
@@ -229,17 +238,23 @@ pub(super) fn wire_sftp_callbacks(
                             .collect()
                     })
                     .unwrap_or_default();
+                let owner = weak
+                    .upgrade()
+                    .map(|w| DialogOwner::of(w.window()))
+                    .unwrap_or_default();
                 std::thread::spawn(move || {
                     // The remote SFTP upload handles a file or a whole directory;
                     // only the local picker differs (#85). Folder uploads one dir;
                     // file mode allows selecting several at once.
                     let locals: Vec<std::path::PathBuf> = if folder {
-                        rfd::FileDialog::new()
+                        owner
+                            .file()
                             .pick_folder()
                             .map(|p| vec![p])
                             .unwrap_or_default()
                     } else {
-                        rfd::FileDialog::new()
+                        owner
+                            .file()
                             .pick_files()
                             .map(|v| v.into_iter().collect())
                             .unwrap_or_default()
@@ -445,6 +460,7 @@ pub(super) fn wire_sftp_callbacks(
                         .to_string()
                 })
                 .collect();
+            let owner = DialogOwner::of(w.window());
             let preset = w.get_download_dir().to_string();
             let always_ask = w.get_download_always_ask();
             if !always_ask && !preset.is_empty() {
@@ -459,7 +475,7 @@ pub(super) fn wire_sftp_callbacks(
                 let thread_names = names.clone();
                 std::thread::spawn(move || {
                     let conflict = if single {
-                        choose_download_conflict(&thread_paths[0], &preset)
+                        choose_download_conflict(owner, &thread_paths[0], &preset)
                     } else {
                         None
                     };
@@ -489,12 +505,12 @@ pub(super) fn wire_sftp_callbacks(
                 let weak2 = weak.clone();
                 let tab = tab_id.to_string();
                 std::thread::spawn(move || {
-                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(dir) = owner.file().pick_folder() {
                         let dir = dir.to_string_lossy().to_string();
                         // Conflict decision outside the shared lock — a modal
                         // dialog must not hold sftp_handles while waiting (#17).
                         let conflict = if single {
-                            choose_download_conflict(&paths[0], &dir)
+                            choose_download_conflict(owner, &paths[0], &dir)
                         } else {
                             None
                         };

@@ -271,3 +271,234 @@ pub(super) fn webdav_get_json(
         .into_string()
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
+
+/// WebDAV config sync (#185): settings and manual upload.
+pub(super) fn wire_webdav_upload(ctx: &WinCtx) {
+    let WinCtx { store, window, .. } = ctx;
+    // WebDAV config sync (#185): manual upload/download of the portable session
+    // export JSON. It is intentionally not automatic on startup.
+    {
+        let s = store.borrow();
+        window.set_webdav_enabled(s.webdav_enabled());
+        window.set_webdav_url(s.webdav_url().into());
+        window.set_webdav_username(s.webdav_username().into());
+        window.set_webdav_password(s.webdav_password().into());
+        window.set_webdav_remote_path(s.webdav_remote_path().into());
+        window.set_webdav_accept_invalid_certs(s.webdav_accept_invalid_certs());
+        window.set_webdav_status(String::new().into());
+    }
+    {
+        let store = store.clone();
+        window.on_save_webdav_settings(
+            move |enabled: bool,
+                  url: SharedString,
+                  username: SharedString,
+                  password: SharedString,
+                  remote_path: SharedString,
+                  accept_invalid_certs: bool| {
+                let mut s = store.borrow_mut();
+                s.set_webdav_settings(
+                    enabled,
+                    url.to_string(),
+                    username.to_string(),
+                    password.to_string(),
+                    remote_path.to_string(),
+                    accept_invalid_certs,
+                );
+                persist_config(&s);
+            },
+        );
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let webdav_rt = ctx.core.runtime.clone();
+        window.on_webdav_upload(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let enabled = w.get_webdav_enabled();
+            let url = w.get_webdav_url().to_string();
+            let username = w.get_webdav_username().to_string();
+            let password = w.get_webdav_password().to_string();
+            let remote_path = w.get_webdav_remote_path().to_string();
+            let accept_invalid_certs = w.get_webdav_accept_invalid_certs();
+            {
+                let mut s = store.borrow_mut();
+                s.set_webdav_settings(
+                    enabled,
+                    url.clone(),
+                    username.clone(),
+                    password.clone(),
+                    remote_path.clone(),
+                    accept_invalid_certs,
+                );
+                persist_config(&s);
+            }
+            if !enabled {
+                w.set_webdav_status(t("请先启用 WebDAV 同步", "enable WebDAV sync first").into());
+                return;
+            }
+            let (json, count) = match store.borrow().export_json() {
+                Ok(v) => v,
+                Err(e) => {
+                    w.set_webdav_status(
+                        format!("{}: {}", t("上传失败", "upload failed"), e).into(),
+                    );
+                    return;
+                }
+            };
+            let weak = weak.clone();
+            webdav_rt.spawn_blocking(move || {
+                // Blocking HTTP + JSON export run off the UI thread; the status
+                // message is written back through the event loop (#1).
+                let res = webdav_put_json(
+                    &url,
+                    &remote_path,
+                    &username,
+                    &password,
+                    accept_invalid_certs,
+                    json,
+                )
+                .map(|_| count);
+                let msg = match res {
+                    Ok(n) => format!("{} {}", t("已上传连接", "uploaded connections"), n),
+                    Err(e) => format!("{}: {}", t("上传失败", "upload failed"), e),
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                });
+            });
+        });
+    }
+}
+
+/// WebDAV config sync (#185): manual download and import.
+pub(super) fn wire_webdav_download(ctx: &WinCtx, sessions_model: &Rc<VecModel<SessionInfo>>) {
+    let WinCtx {
+        store,
+        registry,
+        window,
+        ..
+    } = ctx;
+    /// UI-thread poller for an in-flight WebDAV download. Called (via a
+    /// self-re-arming single-shot timer) until the background fetch hands back
+    /// the JSON, then imports it into the store and refreshes the session list.
+    /// The HTTP fetch itself runs on the blocking pool so the UI thread is never
+    /// blocked by the round-trip (#1).
+    fn poll_webdav_download(
+        poll: Rc<RefCell<Option<std::sync::mpsc::Receiver<Result<String>>>>>,
+        weak: slint::Weak<AppWindow>,
+        store: Rc<RefCell<ConfigStore>>,
+        sessions_model: Rc<slint::VecModel<SessionInfo>>,
+        registry: Rc<WindowRegistry<slint::Weak<AppWindow>>>,
+    ) {
+        // The borrow on `poll` must end before the Empty branch re-arms the
+        // timer (the closure moves `poll`), so scope the try_recv and only
+        // schedule the retry after the borrow is released.
+        let mut reschedule = false;
+        {
+            let mut slot = poll.borrow_mut();
+            let Some(rx) = slot.as_mut() else { return };
+            match rx.try_recv() {
+                Ok(Ok(json)) => {
+                    *slot = None;
+                    let res = store.borrow_mut().import_json(&json);
+                    let msg = match res {
+                        Ok((added, skipped)) => {
+                            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                            registry.broadcast_config_changed();
+                            format!(
+                                "{} {}, {} {}",
+                                t("已导入", "imported"),
+                                added,
+                                t("跳过", "skipped"),
+                                skipped
+                            )
+                        }
+                        Err(e) => format!("{}: {}", t("下载失败", "download failed"), e),
+                    };
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                }
+                Ok(Err(e)) => {
+                    *slot = None;
+                    let msg = format!("{}: {}", t("下载失败", "download failed"), e);
+                    if let Some(w) = weak.upgrade() {
+                        w.set_webdav_status(msg.into());
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Fetch still in flight: poll again shortly.
+                    reschedule = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    *slot = None;
+                }
+            }
+        }
+        if reschedule {
+            slint::Timer::single_shot(
+                std::time::Duration::from_millis(100),
+                move || poll_webdav_download(poll.clone(), weak, store, sessions_model, registry),
+            );
+        }
+    }
+
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let sessions_model = sessions_model.clone();
+        let registry = registry.clone();
+        let webdav_rt = ctx.core.runtime.clone();
+        window.on_webdav_download(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let enabled = w.get_webdav_enabled();
+            let url = w.get_webdav_url().to_string();
+            let username = w.get_webdav_username().to_string();
+            let password = w.get_webdav_password().to_string();
+            let remote_path = w.get_webdav_remote_path().to_string();
+            let accept_invalid_certs = w.get_webdav_accept_invalid_certs();
+            {
+                let mut s = store.borrow_mut();
+                s.set_webdav_settings(
+                    enabled,
+                    url.clone(),
+                    username.clone(),
+                    password.clone(),
+                    remote_path.clone(),
+                    accept_invalid_certs,
+                );
+                persist_config(&s);
+            }
+            if !enabled {
+                w.set_webdav_status(t("请先启用 WebDAV 同步", "enable WebDAV sync first").into());
+                return;
+            }
+            // Fetch the remote JSON off the UI thread; the store import + model
+            // refresh happen on the event loop via the poller below (#1).
+            let (tx, rx) = std::sync::mpsc::channel::<Result<String>>();
+            let webdav_rt = webdav_rt.clone();
+            webdav_rt.spawn_blocking(move || {
+                let res = webdav_get_json(
+                    &url,
+                    &remote_path,
+                    &username,
+                    &password,
+                    accept_invalid_certs,
+                );
+                let _ = tx.send(res);
+            });
+            let poll: Rc<RefCell<Option<std::sync::mpsc::Receiver<Result<String>>>>> =
+                Rc::new(RefCell::new(Some(rx)));
+            poll_webdav_download(
+                poll,
+                weak.clone(),
+                store.clone(),
+                sessions_model.clone(),
+                registry.clone(),
+            );
+        });
+    }
+}

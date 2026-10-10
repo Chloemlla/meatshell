@@ -107,7 +107,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Verify binary version
         if: runner.os != 'Windows'
@@ -203,7 +203,7 @@ jobs:
             mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
             cp "target/${{ matrix.target }}/release/meatshell" "$CONTENTS/MacOS/"
-            cp THIRD_PARTY_NOTICES.md "$CONTENTS/Resources/"
+            cp THIRD_PARTY_NOTICES.md docs/REMOTE_MCP.md "$CONTENTS/Resources/"
 
             # Generate .icns from the 512×512 PNG using sips + iconutil (both
             # ship with every macOS, no extra tooling needed in CI).
@@ -243,6 +243,8 @@ jobs:
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+            mkdir -p "$STAGE/docs"
+            cp docs/REMOTE_MCP.md "$STAGE/docs/"
             7z a "${STAGE}.zip" "$STAGE" >/dev/null
             echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
 
@@ -251,6 +253,8 @@ jobs:
             mkdir "$STAGE"
             cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$STAGE/"
             cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+            mkdir -p "$STAGE/docs"
+            cp docs/REMOTE_MCP.md "$STAGE/docs/"
             # Ship the desktop entry + installer + icon so the dock shows the icon.
             cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
             tar -czf "${STAGE}.tar.gz" "$STAGE"
@@ -305,6 +309,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 
@@ -312,6 +317,7 @@ jobs:
         if: matrix.name == 'linux-x86_64' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.APPIMAGE }}
           fail_on_unmatched_files: true
 
@@ -319,6 +325,7 @@ jobs:
         if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.DEB }}
           fail_on_unmatched_files: true
 
@@ -326,6 +333,7 @@ jobs:
         if: matrix.name == 'windows-x86_64' && env.MSI != '' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.MSI }}
           fail_on_unmatched_files: false
 
@@ -377,6 +385,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: meatshell-${{ github.ref_name }}-linux-x86_64.flatpak
           fail_on_unmatched_files: true
 
@@ -429,7 +438,7 @@ jobs:
           set -eu
           . "$HOME/.cargo/env"
           rustc --version
-          cargo build --release --target aarch64-unknown-linux-gnu
+          cargo build --locked --release --target aarch64-unknown-linux-gnu
 
       - name: Verify glibc baseline
         shell: bash
@@ -452,6 +461,8 @@ jobs:
           mkdir "$STAGE"
           cp "target/aarch64-unknown-linux-gnu/release/meatshell" "$STAGE/"
           cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+          mkdir -p "$STAGE/docs"
+          cp docs/REMOTE_MCP.md "$STAGE/docs/"
           cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
@@ -466,6 +477,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 
@@ -518,7 +530,7 @@ jobs:
           set -eu
           . "$HOME/.cargo/env"
           rustc --version
-          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo build --locked --release --target x86_64-unknown-linux-gnu
 
       - name: Verify glibc baseline
         shell: bash
@@ -541,6 +553,8 @@ jobs:
           mkdir "$STAGE"
           cp "target/x86_64-unknown-linux-gnu/release/meatshell" "$STAGE/"
           cp README.md README.en.md CHANGELOG.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
+          mkdir -p "$STAGE/docs"
+          cp docs/REMOTE_MCP.md "$STAGE/docs/"
           cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
@@ -555,6 +569,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.ASSET }}
           fail_on_unmatched_files: true
 

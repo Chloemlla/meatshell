@@ -35,9 +35,13 @@ use chacha20poly1305::{
 };
 use directories::ProjectDirs;
 use rand::rngs::OsRng;
+#[cfg(test)]
 use uuid::Uuid;
 
 use super::structs::*;
+
+#[path = "import.rs"]
+mod import;
 
 // ── Data directory resolution (portable-first, #141) ──────────────────────────
 //
@@ -45,6 +49,7 @@ use super::structs::*;
 // ONE directory resolved here, and `errlog` / `known_hosts` route through it too.
 
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+static PINNED_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The single directory holding all user data (sessions, encryption key,
 /// known_hosts, error.log). Resolved once and cached; any one-time migration
@@ -62,6 +67,11 @@ pub fn data_dir() -> PathBuf {
 /// `%APPDATA%/meatshell/meatshell/log/log`, outside the config directory
 /// (#log-dir).
 pub fn log_dir() -> PathBuf {
+    if let Some(dir) = PINNED_DATA_DIR.get() {
+        let log = dir.join("log");
+        let _ = fs::create_dir_all(&log);
+        return log;
+    }
     // Portable: <exe_dir>/log, sibling of the portable config/ folder.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
@@ -78,8 +88,7 @@ pub fn log_dir() -> PathBuf {
 }
 
 fn user_log_dir() -> PathBuf {
-    let config = legacy_data_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("meatshell"));
+    let config = legacy_data_dir().unwrap_or_else(|| std::env::temp_dir().join("meatshell"));
     user_log_dir_from_config(&config, cfg!(target_os = "windows"))
 }
 
@@ -119,6 +128,9 @@ fn dir_is_writable(dir: &Path) -> bool {
 }
 
 fn resolve_data_dir() -> PathBuf {
+    if let Some(dir) = PINNED_DATA_DIR.get() {
+        return dir.clone();
+    }
     let legacy = legacy_data_dir();
 
     if let Some(portable) = portable_data_dir() {
@@ -311,7 +323,7 @@ fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) {
     }
     let primary_sessions = primary_dir.join("sessions.json");
     let backup_sessions = backup_dir.join("sessions.json");
-    if sessions_file_has_connections(&primary_sessions)
+    if primary_sessions.exists()
         || !sessions_file_has_connections(&backup_sessions)
     {
         return;
@@ -540,13 +552,26 @@ impl ConfigStore {
         String::from_utf8(plain).ok()
     }
 
-    /// `true` when `value` is an encrypted blob that decrypts with the current
-    /// key (i.e. it is already stored encrypted and must be left untouched on
-    /// save). Used as the ciphertext test instead of a prefix match so a
-    /// plaintext password that literally begins with `enc:v1:` is still
-    /// encrypted (#49).
-    fn is_encrypted(&self, value: &str) -> bool {
-        !value.is_empty() && Self::try_decrypt(&self.key, value).is_some()
+    /// Decode readable local ciphertext and mark the result as plaintext. Keep
+    /// undecodable existing blobs unchanged so an unrelated save cannot destroy
+    /// them. Imported blobs are handled more strictly by the import validator.
+    fn decrypt_local_secrets(key: &[u8; 32], cfg: &mut ConfigFile) {
+        for session in &mut cfg.sessions {
+            if let Some(plain) = Self::try_decrypt(key, session.password.as_str()) {
+                session.password = Secret::new(plain);
+            }
+            if let Some(plain) = Self::try_decrypt(key, session.private_key_inline.as_str()) {
+                session.private_key_inline = Secret::new(plain);
+            }
+            for trigger in &mut session.triggers {
+                if let Some(plain) = Self::try_decrypt(key, trigger.response.as_str()) {
+                    trigger.response = Secret::new(plain);
+                }
+            }
+        }
+        if let Some(plain) = Self::try_decrypt(key, cfg.webdav_password.as_str()) {
+            cfg.webdav_password = Secret::new(plain);
+        }
     }
 
     /// Count encrypted values in `cfg` that cannot be decrypted with the current
@@ -632,6 +657,10 @@ impl ConfigStore {
             }
         }
 
+        if fs::read_to_string(config_dir.join("sessions.json"))
+            .map(|raw| raw.contains(Self::ENC_PREFIX)).unwrap_or(false) {
+            anyhow::bail!("secret.key is missing for encrypted configuration; restore the matching key");
+        }
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);
         write_key_file(&key_path, &key)?;
@@ -641,9 +670,8 @@ impl ConfigStore {
 
     // ── Public API ────────────────────────────────────────────────────────
 
-    /// Load (or initialise) the config file. On any parse error we back up the
-    /// broken file and start fresh — losing saved sessions is better than
-    /// crashing at launch.
+    /// Load (or initialise) the config file. Malformed existing data is never
+    /// replaced by an empty profile; report the error and preserve the original.
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
         let config_dir = path
@@ -654,7 +682,12 @@ impl ConfigStore {
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("failed to create config dir {}", config_dir.display()))?;
 
-        let backup_dir = legacy_data_dir().filter(|dir| dir != &config_dir);
+        let load_lock = lock_config(&path)?;
+        // An explicitly selected profile must not import or overwrite a different
+        // portable installation's shared legacy backup (including test profiles).
+        let backup_dir = if PINNED_DATA_DIR.get().is_some() { None } else {
+            legacy_data_dir().filter(|dir| dir != &config_dir)
+        };
         if let Some(ref backup) = backup_dir {
             restore_user_backup_if_needed(&config_dir, backup);
         }
@@ -667,27 +700,17 @@ impl ConfigStore {
                 .with_context(|| format!("failed to read {}", path.display()))?;
             match serde_json::from_str::<ConfigFile>(&raw) {
                 Ok(mut cfg) => {
-                    // Decrypt any encrypted passwords; leave legacy plaintext
-                    // values untouched (they will be encrypted on next save).
+                    // Give legacy port forwards a stable id so the runtime can
+                    // start/stop them individually.
                     for session in &mut cfg.sessions {
-                        if let Some(plain) = Self::try_decrypt(&key, session.password.as_str()) {
-                            session.password = Secret::new(plain);
-                        }
-                        if let Some(plain) =
-                            Self::try_decrypt(&key, session.private_key_inline.as_str())
-                        {
-                            session.private_key_inline = Secret::new(plain);
-                        }
-                        for trigger in &mut session.triggers {
-                            if let Some(plain) = Self::try_decrypt(&key, trigger.response.as_str())
-                            {
-                                trigger.response = Secret::new(plain);
+                        for forward in &mut session.forwards {
+                            if forward.id.is_empty() {
+                                forward.id = uuid::Uuid::new_v4().to_string();
+                                migrated = true;
                             }
                         }
                     }
-                    if let Some(plain) = Self::try_decrypt(&key, cfg.webdav_password.as_str()) {
-                        cfg.webdav_password = Secret::new(plain);
-                    }
+                    Self::decrypt_local_secrets(&key, &mut cfg);
                     // Clean up any duplicate history accumulated before #113,
                     // keeping the last (most recent) occurrence of each command.
                     dedup_keep_last(&mut cfg.command_history);
@@ -701,21 +724,17 @@ impl ConfigStore {
                     cfg
                 }
                 Err(err) => {
-                    let backup = path.with_extension("json.broken");
-                    let _ = fs::rename(&path, &backup);
-                    tracing::warn!(
-                        "config file was corrupt ({err}); backed up to {}",
-                        backup.display()
-                    );
-                    fresh_config()
+                    return Err(err).context("configuration is invalid; original sessions.json preserved");
                 }
             }
         } else {
             fresh_config()
         };
 
+        let disk_snapshot = std::cell::RefCell::new(read_config_snapshot(&path)?);
         let store = Self {
             path,
+            disk_snapshot,
             backup_dir,
             cache,
             key,
@@ -729,6 +748,7 @@ impl ConfigStore {
                  cannot be decrypted until they are re-entered"
             );
         }
+        drop(load_lock);
         // Persist the migration so it runs exactly once (and so a later opt-out —
         // e.g. turning the welcome sidebar back off — isn't reverted next launch).
         if migrated {
@@ -866,6 +886,11 @@ impl ConfigStore {
     }
 
     pub fn upsert(&mut self, mut session: Session) {
+        for forward in &mut session.forwards {
+            if forward.id.is_empty() {
+                forward.id = uuid::Uuid::new_v4().to_string();
+            }
+        }
         if is_reserved_session_group(session.group.trim()) {
             session.group.clear();
         }
@@ -1553,7 +1578,15 @@ impl ConfigStore {
         self.cache.sftp_tree_width = width.clamp(120.0, 420.0);
     }
     pub fn sftp_visible_columns(&self) -> Vec<String> {
-        const COLUMNS: &[&str] = &["name", "type", "size", "modified", "permissions", "owner", "group"];
+        const COLUMNS: &[&str] = &[
+            "name",
+            "type",
+            "size",
+            "modified",
+            "permissions",
+            "owner",
+            "group",
+        ];
         if self.cache.sftp_visible_columns.is_empty() {
             return COLUMNS.iter().map(|column| (*column).to_string()).collect();
         }
@@ -1570,7 +1603,15 @@ impl ConfigStore {
         columns
     }
     pub fn set_sftp_visible_columns(&mut self, columns: Vec<String>) {
-        let allowed = ["name", "type", "size", "modified", "permissions", "owner", "group"];
+        let allowed = [
+            "name",
+            "type",
+            "size",
+            "modified",
+            "permissions",
+            "owner",
+            "group",
+        ];
         let mut normalized: Vec<String> = columns
             .into_iter()
             .filter(|column| allowed.contains(&column.as_str()))
@@ -1678,7 +1719,13 @@ impl ConfigStore {
         // wins across the whole store, so a corrupt config with the same panel
         // on two edges cannot hide it from both.
         let mut seen: std::collections::HashSet<String> = Default::default();
-        for e in self.cache.dock_stacks.iter().cloned().filter_map(sanitize_edge) {
+        for e in self
+            .cache
+            .dock_stacks
+            .iter()
+            .cloned()
+            .filter_map(sanitize_edge)
+        {
             let mut edge = e;
             edge.slots.retain(|s| seen.insert(s.kind.clone()));
             if edge.slots.len() >= 2 {
@@ -1689,10 +1736,7 @@ impl ConfigStore {
     }
 
     pub fn set_dock_stacks(&mut self, stacks: Vec<DockEdgeSer>) {
-        self.cache.dock_stacks = stacks
-            .into_iter()
-            .filter_map(sanitize_edge)
-            .collect();
+        self.cache.dock_stacks = stacks.into_iter().filter_map(sanitize_edge).collect();
     }
 
     /// Whether each download prompts for a save location (default false) (#87).
@@ -1834,28 +1878,36 @@ impl ConfigStore {
     }
 
     pub fn save(&self) -> Result<()> {
+        let _lock = lock_config(&self.path)?;
+        if read_config_snapshot(&self.path)? != *self.disk_snapshot.borrow() {
+            anyhow::bail!("Configuration changed in another process; reload before saving. Existing connections were preserved.");
+        }
         // Build a disk copy where every non-empty password is encrypted.
         let mut disk = self.cache.clone();
         for session in &mut disk.sessions {
-            if !session.password.is_empty() && !self.is_encrypted(session.password.as_str()) {
+            if !session.password.is_empty()
+                && !session.password.is_local_ciphertext()
+            {
                 let enc = Self::encrypt(&self.key, session.password.as_str())?;
                 session.password = Secret::new(enc);
             }
             if !session.private_key_inline.is_empty()
-                && !self.is_encrypted(session.private_key_inline.as_str())
+                && !session.private_key_inline.is_local_ciphertext()
             {
                 let enc = Self::encrypt(&self.key, session.private_key_inline.as_str())?;
                 session.private_key_inline = Secret::new(enc);
             }
             for trigger in &mut session.triggers {
-                if !trigger.response.is_empty() && !self.is_encrypted(trigger.response.as_str()) {
+                if !trigger.response.is_empty()
+                    && !trigger.response.is_local_ciphertext()
+                {
                     let enc = Self::encrypt(&self.key, trigger.response.as_str())?;
                     trigger.response = Secret::new(enc);
                 }
             }
         }
         if !disk.webdav_password.is_empty()
-            && !self.is_encrypted(disk.webdav_password.as_str())
+            && !disk.webdav_password.is_local_ciphertext()
         {
             let enc = Self::encrypt(&self.key, disk.webdav_password.as_str())?;
             disk.webdav_password = Secret::new(enc);
@@ -1865,6 +1917,7 @@ impl ConfigStore {
         // concurrent instances/processes never collide on the temp name (#47,
         // #48). On error the temp file is removed by `atomic_write`.
         atomic_write(&self.path, raw.as_bytes())?;
+        *self.disk_snapshot.borrow_mut() = Some(raw.clone());
         self.sync_backup(&raw);
         Ok(())
     }
@@ -1982,89 +2035,27 @@ impl ConfigStore {
         fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(count)
     }
+}
 
-    /// Import sessions from a MeatShell portable export or a FinalShell connection
-    /// export. New sessions get fresh ids; duplicates (same host+user+port+kind)
-    /// are skipped.
-    /// Returns `(added, skipped)`. The store is saved if anything was added.
-    pub fn import_json(&mut self, raw: &str) -> Result<(usize, usize)> {
-        let (sessions, decrypt_meatshell_secrets) =
-            match serde_json::from_str::<ExportFile>(raw) {
-                Ok(file) => (file.sessions, true),
-                Err(meatshell_error) => (
-                    super::finalshell::parse_export(raw).with_context(|| {
-                        format!(
-                            "not a valid MeatShell or FinalShell export file; MeatShell parser: {meatshell_error}"
-                        )
-                    })?,
-                    false,
-                ),
-            };
-
-        let mut added = 0usize;
-        let mut skipped = 0usize;
-        for mut s in sessions {
-            // Recover the plaintext password (cache stores plaintext). Accept an
-            // export blob, our local enc:v1 blob, or a legacy plaintext value.
-            // FinalShell's parser has already decrypted its DES password, so avoid
-            // interpreting a coincidental `enc:*` plaintext prefix as ours.
-            if decrypt_meatshell_secrets {
-                if let Some(plain) = Self::decrypt_export(s.password.as_str()) {
-                    s.password = Secret::new(plain);
-                } else if let Some(plain) = Self::try_decrypt(&self.key, s.password.as_str()) {
-                    s.password = Secret::new(plain);
-                }
-                if let Some(plain) = Self::decrypt_export(s.private_key_inline.as_str()) {
-                    s.private_key_inline = Secret::new(plain);
-                } else if let Some(plain) =
-                    Self::try_decrypt(&self.key, s.private_key_inline.as_str())
-                {
-                    s.private_key_inline = Secret::new(plain);
-                }
-                for trigger in &mut s.triggers {
-                    if let Some(plain) = Self::decrypt_export(trigger.response.as_str()) {
-                        trigger.response = Secret::new(plain);
-                    } else if let Some(plain) =
-                        Self::try_decrypt(&self.key, trigger.response.as_str())
-                    {
-                        trigger.response = Secret::new(plain);
-                    }
-                }
-            }
-            let dup = self.cache.sessions.iter().any(|x| {
-                x.host == s.host && x.user == s.user && x.port == s.port && x.kind == s.kind
-            });
-            if dup {
-                skipped += 1;
-                continue;
-            }
-            s.id = Uuid::new_v4().to_string();
-            self.upsert(s);
-            added += 1;
-        }
-        if added > 0 {
-            self.save()?;
-        }
-        Ok((added, skipped))
-    }
-
-    /// Import sessions from a MeatShell or FinalShell JSON export file.
-    pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        self.import_json(&raw)
-    }
+/// Isolated fixture for controller tests; never resolves the user's profile.
+#[cfg(test)]
+pub(crate) fn fixture_store(path: PathBuf, sessions: Vec<Session>) -> ConfigStore {
+    let mut store = tests::temp_store();
+    store.path = path;
+    store.cache.sessions = sessions;
+    store
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp_store() -> ConfigStore {
+    pub(super) fn temp_store() -> ConfigStore {
         let path = std::env::temp_dir().join(format!("ms-test-{}.json", Uuid::new_v4()));
         ConfigStore {
             path,
             backup_dir: None,
+            disk_snapshot: std::cell::RefCell::new(None),
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
@@ -2452,6 +2443,7 @@ mod tests {
         let store = ConfigStore {
             path: primary.join("sessions.json"),
             backup_dir: Some(backup.clone()),
+            disk_snapshot: std::cell::RefCell::new(read_config_snapshot(&primary.join("sessions.json")).unwrap()),
             cache: ConfigFile {
                 sessions: vec![sample_session("new")],
                 ..ConfigFile::default()
@@ -2713,13 +2705,125 @@ mod log_path_tests {
     #[test]
     fn windows_user_logs_are_outside_config() {
         let base = Path::new("profile").join("meatshell").join("meatshell");
-        assert_eq!(user_log_dir_from_config(&base.join("config"), true),
-            base.join("log").join("log"));
+        assert_eq!(
+            user_log_dir_from_config(&base.join("config"), true),
+            base.join("log").join("log")
+        );
     }
 
     #[test]
     fn unix_user_log_path_is_unchanged() {
         let config = Path::new("home/.config/meatshell");
         assert_eq!(user_log_dir_from_config(config, false), config.join("log"));
+    }
+}
+
+
+/// Explicit profile selection must happen before logging resolves its paths.
+/// CLI overrides the environment, then a managed installation's sidecar.
+pub fn configure_profile(args: &mut Vec<String>) -> Result<()> {
+    let mut selected = None;
+    while let Some(index) = args.iter().position(|arg| arg == "--data-dir") {
+        if selected.is_some() || index + 1 >= args.len() {
+            anyhow::bail!("--data-dir requires exactly one absolute directory");
+        }
+        args.remove(index);
+        selected = Some(PathBuf::from(args.remove(index)));
+    }
+    if selected.is_none() {
+        selected = std::env::var_os("MEATSHELL_DATA_DIR").map(PathBuf::from);
+    }
+    if selected.is_none() {
+        let exe = std::env::current_exe()?;
+        let marker = exe.parent().context("executable has no parent")?.join("data-dir.txt");
+        match fs::read_to_string(&marker) {
+            Ok(path) => selected = Some(PathBuf::from(path.trim())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context("cannot read profile sidecar"),
+        }
+    }
+    if let Some(path) = selected {
+        if !path.is_absolute() {
+            anyhow::bail!("profile directory must be absolute");
+        }
+        fs::create_dir_all(&path).context("cannot create selected profile directory")?;
+        let path = path.canonicalize().context("cannot resolve selected profile")?;
+        PINNED_DATA_DIR.set(path).map_err(|_| anyhow::anyhow!("profile already selected"))?;
+    }
+    Ok(())
+}
+
+/// The OS releases this lock even after a crash. Keep the file on disk so
+/// concurrent processes always lock the same inode/file object.
+fn lock_config(path: &Path) -> Result<fs::File> {
+    let file = fs::OpenOptions::new().read(true).write(true).create(true)
+        .open(path.with_extension("json.lock"))?;
+    fs2::FileExt::lock_exclusive(&file).context("cannot lock configuration")?;
+    Ok(file)
+}
+
+fn read_config_snapshot(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).context("cannot read configuration revision"),
+    }
+}
+
+#[cfg(test)]
+mod profile_safety_tests {
+    use super::*;
+
+    #[test]
+    fn stale_writer_cannot_erase_new_connections() {
+        let dir = std::env::temp_dir().join(format!("ms-stale-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut current = ConfigStore {
+            path: dir.join("sessions.json"), backup_dir: None,
+            cache: ConfigFile::default(), key: [1; 32],
+            disk_snapshot: std::cell::RefCell::new(None),
+        };
+        current.cache.sessions.push(Session::new_empty());
+        current.save().unwrap();
+        let stale = ConfigStore {
+            path: current.path.clone(), backup_dir: None,
+            cache: current.cache.clone(), key: current.key,
+            disk_snapshot: std::cell::RefCell::new(current.disk_snapshot.borrow().clone()),
+        };
+        current.cache.sessions.push(Session::new_empty());
+        current.save().unwrap();
+        let newest = fs::read_to_string(&current.path).unwrap();
+        assert!(stale.save().unwrap_err().to_string().contains("another process"));
+        assert_eq!(fs::read_to_string(&current.path).unwrap(), newest);
+        current.save().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_or_invalid_key_is_never_replaced_for_encrypted_data() {
+        let dir = std::env::temp_dir().join(format!("ms-key-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("sessions.json"), r#"{"password":"enc:v1:fixture"}"#).unwrap();
+        assert!(ConfigStore::load_or_create_key(&dir).is_err());
+        assert!(!dir.join("secret.key").exists());
+        fs::write(dir.join("secret.key"), b"broken").unwrap();
+        assert!(ConfigStore::load_or_create_key(&dir).is_err());
+        assert_eq!(fs::read(dir.join("secret.key")).unwrap(), b"broken");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explicit_empty_or_corrupt_profile_does_not_restore_unrelated_backup() {
+        let dir = std::env::temp_dir().join(format!("ms-restore-{}", Uuid::new_v4()));
+        let backup = dir.join("backup");
+        fs::create_dir_all(&backup).unwrap();
+        let cfg = ConfigFile { sessions: vec![Session::new_empty()], ..ConfigFile::default() };
+        fs::write(backup.join("sessions.json"), serde_json::to_string(&cfg).unwrap()).unwrap();
+        for raw in [r#"{"sessions":[]}"#, "{invalid"] {
+            fs::write(dir.join("sessions.json"), raw).unwrap();
+            restore_user_backup_if_needed(&dir, &backup);
+            assert_eq!(fs::read_to_string(dir.join("sessions.json")).unwrap(), raw);
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 }
