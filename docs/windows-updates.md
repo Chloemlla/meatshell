@@ -12,6 +12,14 @@ Windows x64 MSI 安装版可在设置的更新页面检查版本、下载更新�
 
 便携版、源码运行和其他系统保留通过发布页面更新的方式。应用内安装要求当前程序路径与 MSI 写入的安装位置匹配。
 
+## Windows 运行依赖
+
+更新模块使用 Windows 10 / Windows 11 x64 都提供的系统组件。辅助脚本调用系统自带的 Windows PowerShell 5.1 和 .NET Framework，通过 `Start-Process -Verb RunAs -Wait` 启动 `msiexec.exe /i /passive /norestart`。脚本保留 UTF-8 BOM，以正确读取中文文本；无需 PowerShell 7、额外安装的 .NET 或 winget。[PowerShell 5.1](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_windows_powershell_5.1)、[Start-Process 5.1](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/start-process?view=powershell-5.1) 和 [msiexec](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/msiexec) 的要求见微软文档。
+
+安装位置检测使用 `RegGetValueW`，临时文件互斥使用 Windows 文件共享模式；这些接口在 Windows 10 上可用。下载沿用项目已有的 `ureq` 和 SHA-256 依赖。更新代码不依赖 Windows 11 专属接口，也不按系统名称或版本号选择安装路径。
+
+当前真实 MSI 测试环境为 Windows 11 x64、Windows PowerShell 5.1。Windows 10 的接口和脚本兼容性已经核对，Windows 10 真机或虚拟机上的安装、回滚和清理仍待验证；此核对范围仅为新增更新模块。
+
 ## 代码位置
 
 - `src/update.rs`：发布信息、安装包选择和流式下载校验。
