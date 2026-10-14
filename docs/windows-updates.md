@@ -28,3 +28,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/update/installer.p
 ```
 
 Rust 用例覆盖正式版本比较、安装包来源、校验值、下载中断、磁盘写入失败及清理锁。PowerShell 用例用模拟安装器覆盖成功、需要重启、取消、安装失败、管理员授权取消、校验失败和重启参数转义，不会安装软件。
+
+真实 MSI 测试需要 Windows、WiX 3、MSVC Rust 工具链以及系统自带的 .NET Framework 编译器：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/update/msi.ps1 -WixBin <WiX目录> -ScratchDirectory <临时测试目录>
+```
+
+脚本从 `wix/main.wxs` 生成独立产品标识的测试 MSI，载荷为可记录启动版本的测试程序，使用实际更新辅助脚本和 Windows Installer 执行安装。测试覆盖成功升级、文件替换后取消（1602）、文件替换后失败（1603）及失败后重试；取消和失败由 MSI 内的延迟操作触发，安装回滚由 Windows Installer 实际执行。
+
+核对内容包括磁盘和重新启动的版本、产品注册状态、自定义安装位置、含空格和中文的数据目录、配置文件以及每次更新暂存目录的删除。测试需要管理员授权，结束时卸载测试产品；构建产物、安装日志和 `result.json` 保留在指定测试目录。这组测试覆盖安装链路，真实 MeatShell 界面交互和人工拒绝 UAC 的操作仍需交互验收。
