@@ -127,9 +127,8 @@ chacha20poly1305 = "0.10"
 # Detect whether the OS is running in dark or light mode.
 # Used on startup to honour the system preference before the user overrides it.
 dark-light = "1"
-# Lightweight synchronous HTTPS client (bundled rustls, no OpenSSL) for the
-# in-app update check against the GitHub releases API (#48). Runs on a
-# background thread so it never blocks startup; failure is silently ignored.
+# HTTPS release checks and installer downloads run on background threads.
+# rustls provides TLS without requiring a system OpenSSL installation.
 ureq = { version = "2", features = ["tls"] }
 
 # Image decoding: custom wallpapers (PNG/JPEG/WebP/BMP) for the immersive theme,
@@ -202,6 +201,7 @@ windows = { version = "0.58", features = [
     "Win32_Storage_EnhancedStorage",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",

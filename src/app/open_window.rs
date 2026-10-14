@@ -639,46 +639,7 @@ pub(super) fn open_window(
     wire_auth_prompts(&ctx);
 
     wire_downloads_and_links(&ctx, &tab_statuses, &local_snap, &local_net_hist);
-    // Query the GitHub releases API on a background thread; if a newer version
-    // exists, flip the banner on. Best-effort: any network/parse error is
-    // silently ignored and the app keeps working on the current version.
-    // Skipped entirely when the user turned the check off (#184). Runs only
-    // for the first window of the process: the old `registry.count() == 1`
-    // guard re-fired the check whenever the count returned to 1 after a
-    // close-then-open. The flag is set regardless of the enabled setting, so
-    // a disabled check is never deferred to a later window either.
-    let first_window = !core.first_window_done.get();
-    core.first_window_done.set(true);
-    if first_window && store.borrow().update_check_enabled() {
-        let weak = window.as_weak();
-        std::thread::spawn(move || {
-            let body =
-                match ureq::get("https://api.github.com/repos/yituorou/meatshell/releases/latest")
-                    .set("User-Agent", "meatshell-update-check")
-                    .timeout(std::time::Duration::from_secs(8))
-                    .call()
-                {
-                    Ok(resp) => resp.into_string().unwrap_or_default(),
-                    Err(_) => return,
-                };
-            let json: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let tag = json["tag_name"].as_str().unwrap_or("").to_string();
-            let newer = matches!(
-                (parse_version(&tag), parse_version(env!("CARGO_PKG_VERSION"))),
-                (Some(latest), Some(cur)) if latest > cur
-            );
-            if !newer {
-                return;
-            }
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                w.set_update_version(tag.into());
-                w.set_update_available(true);
-            });
-        });
-    }
+    super::update::wire(&core, &window);
 
     // Transfer records (download/upload progress + history) shown in the popup.
     let transfers_model: Rc<VecModel<TransferInfo>> = Rc::new(VecModel::default());

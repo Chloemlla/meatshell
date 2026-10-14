@@ -41,6 +41,7 @@ mod tab_transfer;
 mod term_output;
 mod terminal_ui;
 mod tray;
+mod update;
 mod tunnel_callbacks;
 mod webdav;
 mod window;
@@ -255,6 +256,7 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
         window_states: Rc::new(RefCell::new(HashMap::new())),
         tab_routes: Arc::new(Mutex::new(HashMap::new())),
         first_window_done: Cell::new(false),
+        update: RefCell::new(update::State::default()),
     });
 
     // IPC listener: forwarded "new-window" requests arrive on the listener
@@ -327,6 +329,8 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
     #[cfg(windows)]
     crate::app::jump_list::register_new_window_task();
 
+    #[cfg(windows)]
+    crate::update::windows::cleanup_stale_downloads();
     open_window(core.clone(), false, None)?;
     let tray_timer = tray::install(core.clone());
 
@@ -349,6 +353,7 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // hard-exit unconditionally. The event-loop error path goes through here
     // too: propagating with `?` would hand the runtime to the TLS destructor
     // chain, where a wedged blocking thread could hang the process forever.
+    update::cleanup(&core);
     NEW_WINDOW_CORE.with(|c| *c.borrow_mut() = None);
     tray::clear();
     drop(tray_timer);
