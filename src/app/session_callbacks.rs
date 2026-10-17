@@ -1167,13 +1167,22 @@ pub(super) fn wire_session_callbacks(
         let tab_routes = tab_routes.clone();
         window.on_connect_session(move |id: SharedString| {
             let id = id.to_string();
-            let session = if id.starts_with("system:") {
-                match builtin_local_sessions(store.borrow().wsl_profiles())
-                    .into_iter()
-                    .find(|s| s.id == id)
-                {
+            let builtin =
+                id.starts_with("system:") || id.starts_with(super::agents::AGENT_ID_PREFIX);
+            let session = if builtin {
+                match resolve_builtin_session(store.borrow().wsl_profiles(), &id) {
                     Some(s) => s,
-                    None => return,
+                    None => {
+                        // An agent uninstalled since meatshell detected it.
+                        if let (Some(name), Some(w)) =
+                            (super::agents::agent_name(&id), weak.upgrade())
+                        {
+                            w.set_ssh_import_hint(
+                                format!("{} {name}", t("未找到", "Not found:")).into(),
+                            );
+                        }
+                        return;
+                    }
                 }
             } else {
                 match store.borrow().get(&id).cloned() {
@@ -1477,12 +1486,14 @@ pub(super) fn wire_session_callbacks(
                 // Two separate borrows: the builtin fallback must not run while
                 // the store lookup's RefCell borrow is still alive.
                 let saved = store.borrow().get(&session_id).map(|s| s.name.clone());
-                saved.or_else(|| {
-                    session_models::builtin_local_sessions(store.borrow().wsl_profiles())
-                        .into_iter()
-                        .find(|s| s.id == session_id)
-                        .map(|s| s.name)
-                })
+                saved
+                    .or_else(|| {
+                        session_models::builtin_local_sessions(store.borrow().wsl_profiles())
+                            .into_iter()
+                            .find(|s| s.id == session_id)
+                            .map(|s| s.name)
+                    })
+                    .or_else(|| super::agents::agent_name(&session_id).map(String::from))
             } else {
                 tab_titles.borrow_mut().insert(tab_id.clone(), name.clone());
                 Some(name)
@@ -1601,6 +1612,7 @@ pub(super) fn wire_wsl_profiles(ctx: &WinCtx, sessions_model: &Rc<VecModel<Sessi
                 let _ = s.save();
                 if let Some(w) = weak.upgrade() {
                     w.set_wsl_profiles(wsl_profile_model(&s));
+                    w.set_launch_shells(launch_shell_model(&s));
                     sync_sessions_for_window(&weak, &s, &sessions_model);
                 }
             }
@@ -1619,6 +1631,7 @@ pub(super) fn wire_wsl_profiles(ctx: &WinCtx, sessions_model: &Rc<VecModel<Sessi
                 let _ = s.save();
                 if let Some(w) = weak.upgrade() {
                     w.set_wsl_profiles(wsl_profile_model(&s));
+                    w.set_launch_shells(launch_shell_model(&s));
                     sync_sessions_for_window(&weak, &s, &sessions_model);
                 }
             }

@@ -420,6 +420,15 @@ msgstr "meatshell — a lightweight Rust + Slint SSH client by 'lil meatball'"
 msgid "A lightweight and efficient Rust + Slint SSH client"
 msgstr "A lightweight and efficient Rust + Slint SSH client"
 
+msgid "Terminal"
+msgstr "Terminal"
+
+msgid "Open a terminal or AI agent"
+msgstr "Open a terminal or AI agent"
+
+msgid "AI agents"
+msgstr "AI agents"
+
 msgid "Quick connect"
 msgstr "Quick connect"
 

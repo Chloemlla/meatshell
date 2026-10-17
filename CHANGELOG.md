@@ -3,6 +3,11 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
+## [Unreleased]
+
+- **新建标签页菜单支持一键启动终端与 AI 智能体（#427）。** 参照 Warp，每个窗格标签栏的“+”旁新增“⌄”菜单，列出本地终端（PowerShell、CMD、WSL 配置等）以及本机已安装的命令行智能体，如 Claude Code、Codex、Gemini CLI、Qwen Code、Copilot CLI、OpenCode、Kimi CLI、Cursor CLI。选择智能体即在该窗格打开本地终端标签页并启动它（Windows 使用 PowerShell，其他平台使用登录 shell）；智能体退出后终端保留，可继续使用。欢迎页作为侧栏时菜单同样可用。快速连接列表中也新增与“system”相同、不可编辑的“agents”分组，列出这些智能体。
+- **Launch terminals and AI agents from the new-tab menu (#427).** Following Warp, a "⌄" next to each pane's "+" lists the local shells (PowerShell, CMD, WSL profiles, …) and the agent CLIs installed on this machine, such as Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, OpenCode, Kimi CLI and Cursor CLI. Picking an agent opens a local terminal tab in that pane running it (PowerShell on Windows, the login shell elsewhere); the shell stays open after the agent exits. The menu is also available when the welcome page is docked as a sidebar. Quick connect also lists the agents in a read-only built-in "agents" group, like "system".
+
 ## [0.7.7] - 2026-10-11
 
 - **Telnet 与串口会话支持按会话设置字符编码（#435）。** 此前编码选项（#338）仅对 SSH 生效，通过 Telnet 或串口连接的 GBK 设备始终按 UTF-8 解码而显示乱码。现在 Telnet 与串口会按会话所选编码解码输出、编码输入，多字节字符跨读取被拆分时也不再显示为替换字符。会话编辑器在 SSH / Telnet（高级选项）和串口（主设置区）中提供编码选择，并新增 GB18030、EUC-JP 及西里尔 / 中欧等编码。

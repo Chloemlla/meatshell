@@ -1584,7 +1584,8 @@ impl ConfigStore {
     /// folder so expanding one folder does not accidentally expand the rest.
     pub fn set_session_group_collapsed(&mut self, name: &str, collapsed: bool) {
         if self.cache.collapsed_session_groups.is_none() {
-            let mut groups = vec!["system".to_string()];
+            // Built-in groups: local shells, and the detected agent CLIs (#427).
+            let mut groups = vec!["system".to_string(), "agents".to_string()];
             if self
                 .cache
                 .sessions

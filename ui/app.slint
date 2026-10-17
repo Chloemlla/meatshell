@@ -16,7 +16,7 @@ import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
 import { Sidebar, DiskInfo } from "sidebar.slint";
-import { TabBar, TabInfo } from "tabs.slint";
+import { TabBar, TabInfo, LaunchItem } from "tabs.slint";
 import { Welcome, SessionInfo } from "welcome.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, JumpHop } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
@@ -32,7 +32,7 @@ import { InterfacePanel, OutputRuleItem, WslProfileInfo } from "interface_panel.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
-export { SessionInfo, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo }
+export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -852,6 +852,9 @@ export component AppWindow inherits Window {
 
     // --- Session list ------------------------------------------------------
     in property <[SessionInfo]> sessions;
+    // New-tab launch menu (#427): local shells and the agent CLIs found here.
+    in property <[LaunchItem]> launch-shells;
+    in property <[LaunchItem]> agents;
     // Bumped by Rust whenever the sessions model is rebuilt wholesale
     // (set_vec). A rebuild destroys the dragging row's pointer grab, so
     // Welcome watches this to clear its shared drag state instead of
@@ -1844,6 +1847,8 @@ export component AppWindow inherits Window {
                         // this row so tabs don't slide underneath them (#122).
                         reserve-right: pane.reserve-right;
                         show-new-tab: !root.welcome-as-sidebar;
+                        launch-shells: root.launch-shells;
+                        launch-agents: root.agents;
                         can-merge-pane: root.panes.length > 1;
                         tabs: pane.tabs;
                         active-id: pane.active-id;
@@ -1857,6 +1862,12 @@ export component AppWindow inherits Window {
                         tab-selected(id) => { root.pane-tab-selected(pane.id, id); }
                         tab-closed(id) => { root.pane-tab-closed(pane.id, id); }
                         new-tab() => { root.pane-new-tab(pane.id); }
+                        launch(id) => {
+                            // Open it in this pane: connect-session adds the tab
+                            // to the focused pane.
+                            root.pane-focus(pane.id);
+                            root.connect-session(id);
+                        }
                         tab-move(from-index, to-index) => {
                             root.tab-drag-live = false;
                             root.pane-tab-move(pane.id, from-index, to-index);

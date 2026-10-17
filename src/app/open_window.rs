@@ -185,6 +185,8 @@ pub(super) fn open_window(
     window.set_sessions(ModelRc::from(sessions_model.clone()));
     sync_sessions_to_model(&store.borrow(), &sessions_model);
     window.set_wsl_profiles(wsl_profile_model(&store.borrow()));
+    window.set_launch_shells(launch_shell_model(&store.borrow()));
+    super::agents::wire_agent_launchers(&window);
     listen_for_config_changes(&ctx, &sessions_model);
     wire_wsl_profiles(&ctx, &sessions_model);
     wire_webdav_download(&ctx, &sessions_model);

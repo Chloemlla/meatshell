@@ -9,6 +9,13 @@ export struct TabInfo {
     connected: bool,
 }
 
+// One entry of the new-tab launch menu (#427): a local shell ("system:…") or
+// an installed agent CLI ("agent:…"), opened through connect-session.
+export struct LaunchItem {
+    id: string,
+    name: string,
+}
+
 // --- SingleTab -------------------------------------------------------------
 component SingleTab inherits Rectangle {
     in property <TabInfo> info;
@@ -149,6 +156,58 @@ component SingleTab inherits Rectangle {
 
 }
 
+// --- New-tab launch menu item (#427) ----------------------------------------
+component LaunchMenuItem inherits Rectangle {
+    in property <string> glyph;   // Material Icons codepoint
+    in property <string> label;
+    callback clicked();
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: ta.has-hover ? Theme.bg-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Text {
+            width: 16px;
+            text: root.glyph;
+            font-family: "Material Icons";
+            color: Theme.text-secondary;
+            font-size: Theme.fs-md;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Muted section heading inside the launch menu.
+component LaunchMenuHeading inherits HorizontalLayout {
+    in property <string> text;
+    height: 24px;
+    padding-left: 10px;
+    Text {
+        text: root.text;
+        color: Theme.text-muted;
+        font-size: Theme.fs-xs;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
 // --- Tab context-menu item -------------------------------------------------
 component TabMenuItem inherits Rectangle {
     in property <string> label;
@@ -180,6 +239,11 @@ export component TabBar inherits Rectangle {
     in property <[TabInfo]> tabs;
     in property <string> active-id;
     in property <bool> show-new-tab: true;
+    // Warp-style launch menu next to "+" (#427): local shells, then the agent
+    // CLIs installed on this machine. Shown even when "+" is hidden (welcome
+    // page docked as a sidebar), since it is the only way to start them there.
+    in property <[LaunchItem]> launch-shells;
+    in property <[LaunchItem]> launch-agents;
     in property <bool> can-merge-pane: false;
     // Keep this much clear on the right so tabs don't slide under the app's
     // top-right toolbar icons, which are positioned over the tab row (#122).
@@ -197,6 +261,7 @@ export component TabBar inherits Rectangle {
     callback tab-selected(string);
     callback tab-closed(string);
     callback new-tab();
+    callback launch(string /* session id */);
     // Drag-to-reorder (#408), committed exactly once on drop: move the tab at
     // `from` to `to`, where `to` is the insertion index AFTER `from` has been
     // removed from the list.
@@ -455,6 +520,21 @@ export component TabBar inherits Rectangle {
                     y: (parent.height - self.height) / 2;
                     clicked => { root.new-tab(); }
                 }
+                if root.launch-shells.length + root.launch-agents.length > 0 : IconButton {
+                    glyph: "\u{E5CF}";   // expand_more
+                    font-family: "Material Icons";
+                    width: 20px;
+                    height: 28px;
+                    y: (parent.height - self.height) / 2;
+                    accessible-role: button;
+                    accessible-label: @tr("Open a terminal or AI agent");
+                    clicked => {
+                        root.launch-menu-x = self.absolute-position.x - root.absolute-position.x;
+                        root.launch-menu-y = self.absolute-position.y - root.absolute-position.y
+                            + self.height + 2px;
+                        launch-menu.show();
+                    }
+                }
             }
 
             // The dragged tab's floating copy. It lives in the Flickable (so its x
@@ -503,6 +583,51 @@ export component TabBar inherits Rectangle {
     }
     // Right-click context menu (v0.5): split this pane by peeling the clicked tab
     // into a new pane. Splitting needs at least two tabs so the source pane survives.
+    property <length> launch-menu-x;
+    property <length> launch-menu-y;
+    launch-menu := PopupWindow {
+        x: root.launch-menu-x;
+        y: root.launch-menu-y;
+        width: 220px;
+        height: launch-list.preferred-height;
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000060;
+            launch-list := VerticalLayout {
+                padding: 4px;
+                spacing: 1px;
+                if root.launch-shells.length > 0 : LaunchMenuHeading {
+                    text: @tr("Terminal");
+                }
+                for shell in root.launch-shells : LaunchMenuItem {
+                    glyph: "\u{EB8E}";   // terminal
+                    label: shell.name;
+                    clicked => { root.launch(shell.id); }
+                }
+                if root.launch-shells.length > 0 && root.launch-agents.length > 0 : Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                }
+                if root.launch-agents.length > 0 : LaunchMenuHeading {
+                    text: @tr("AI agents");
+                }
+                for agent in root.launch-agents : LaunchMenuItem {
+                    glyph: "\u{F06C}";   // smart_toy
+                    label: agent.name;
+                    clicked => { root.launch(agent.id); }
+                }
+            }
+        }
+    }
+
     tab-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;

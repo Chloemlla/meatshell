@@ -199,6 +199,12 @@ pub struct Session {
     pub local_distribution: String,
     #[serde(default)]
     pub local_working_dir: String,
+    /// Program a generated local session runs inside its shell, e.g. the
+    /// resolved path of an agent CLI launched from the welcome page (#427).
+    /// The shell stays open after the program exits. Never set on saved
+    /// sessions, so it is left out of the config file when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub local_command: String,
 
     // --- Serial-only fields (ignored unless kind == Serial) -----------------
     /// Serial device path, e.g. "COM3" (Windows) or "/dev/ttyUSB0" (Linux).
@@ -372,6 +378,7 @@ impl Session {
             kind: SessionKind::Ssh,
             local_distribution: String::new(),
             local_working_dir: String::new(),
+            local_command: String::new(),
             serial_port: String::new(),
             baud_rate: default_baud(),
             data_bits: default_data_bits(),

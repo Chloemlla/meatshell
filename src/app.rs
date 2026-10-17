@@ -5,6 +5,7 @@
 //!   * Drive the 1-Hz system sampler.
 //!   * Manage the tab list + per-tab `SessionHandle` map.
 //!   * Route Slint callbacks to the right domain module.
+mod agents;
 mod auth_dialogs;
 mod aux_windows;
 pub(crate) mod core;
