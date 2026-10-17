@@ -125,7 +125,6 @@ impl<H: Clone> WindowRegistry<H> {
         self.windows.borrow().len()
     }
 
-    #[cfg(test)]
     pub fn for_each<F: FnMut(&H)>(&self, mut f: F) {
         for h in self.windows.borrow().values() {
             f(h);
@@ -172,6 +171,7 @@ pub struct AppCore {
     /// `registry.count() == 1` would re-fire after close-then-open.
     /// UI-thread-only, like the rest of this struct.
     pub first_window_done: Cell<bool>,
+    pub update: RefCell<super::update::State>,
 }
 
 #[cfg(test)]

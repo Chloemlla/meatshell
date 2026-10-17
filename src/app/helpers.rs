@@ -31,23 +31,6 @@ pub(super) fn clipboard_set_text(text: String) {
 /// `http`/`https` scheme prefixes. A value without a (recognised) scheme is
 /// treated as SOCKS5, matching proxy.rs's parse default, so older configs that
 /// stored a bare `host:port` keep working.
-/// Parse a "vX.Y.Z" / "X.Y.Z" tag into a comparable tuple, or None if it isn't
-/// a three-part numeric version. A pre-release suffix on the patch (e.g.
-/// "3-rc1") is tolerated by taking its leading digits (#48).
-pub(super) fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim().trim_start_matches('v');
-    let mut it = s.split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next()?.parse().ok()?;
-    let patch = it
-        .next()?
-        .split(|c: char| !c.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()?;
-    Some((major, minor, patch))
-}
-
 pub(super) fn split_proxy(url: &str) -> (String, String) {
     let s = url.trim();
     if s.is_empty() {

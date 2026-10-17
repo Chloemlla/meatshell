@@ -80,7 +80,7 @@ pub(super) fn wire_downloads_and_links(
     // --- In-app update check (#48) -----------------------------------------
     // "Download" on the banner opens the latest-release page in the browser.
     window.on_open_update_url(move || {
-        let url = "https://github.com/yituorou/meatshell/releases/latest";
+        let url = crate::update::RELEASE_PAGE;
         #[cfg(windows)]
         let _ = std::process::Command::new("explorer").arg(url).spawn();
         #[cfg(target_os = "macos")]

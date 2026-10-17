@@ -795,12 +795,22 @@ export component AppWindow inherits Window {
     callback cancel-transfer(string);        // cancel an in-progress transfer by id (#100)
     callback set-language(string);           // switch UI language ("zh" / "en")
 
-    // --- Update check (#48) ------------------------------------------------
-    // Set by Rust after a background GitHub-releases query; purely informational
-    // (the app keeps working on the current version).
+    // --- Updates ----------------------------------------------------------
     in-out property <bool> update-available: false;
-    in property <string> update-version;     // e.g. "v0.3.3"
-    callback open-update-url();              // open the release page in a browser
+    in property <string> update-version;
+    in property <bool> update-busy;
+    in property <bool> update-ready;
+    in property <bool> update-error;
+    in property <bool> update-install-supported;
+    in property <string> update-status;
+    property <string> update-action-label: root.update-ready
+        ? (root.lang-en ? "Install and restart" : "安装并重启")
+        : root.update-install-supported
+            ? (root.lang-en ? "Download update" : "下载更新")
+            : (root.lang-en ? "Release page" : "发布页面");
+    callback check-for-updates();
+    callback update-action();
+    callback open-update-url();
 
     // --- Built-in file viewer/editor (#70) --------------------------------
     in-out property <bool> editor-open: false;
@@ -2690,14 +2700,12 @@ export component AppWindow inherits Window {
         }
     }
 
-    // --- Update-available banner (#48) ------------------------------------
-    // A dismissible top-centre banner; the app stays usable on the current
-    // version. "Download" opens the GitHub release page in the browser.
+    // A dismissible banner shares update actions with the settings page.
     if root.update-available : Rectangle {
-        x: (parent.width - 384px) / 2;
+        x: (parent.width - self.width) / 2;
         y: 8px;
-        width: 384px;
-        height: 38px;
+        width: min(560px, parent.width - 16px);
+        height: 44px;
         background: Theme.accent;
         border-radius: Theme.radius-md;
         border-width: 1px;
@@ -2709,7 +2717,9 @@ export component AppWindow inherits Window {
             padding-right: 6px;
             spacing: 8px;
             Text {
-                text: "🎉 " + @tr("Update available:") + " " + root.update-version;
+                text: root.update-busy ? root.update-status
+                    : root.update-error ? (root.lang-en ? "Update failed — see Settings" : "更新失败，请查看设置")
+                    : "🎉 " + @tr("Update available:") + " " + root.update-version;
                 color: #ffffff;
                 font-size: Theme.fs-sm;
                 font-family: Theme.ui-font-family;
@@ -2718,15 +2728,17 @@ export component AppWindow inherits Window {
                 overflow: elide;
             }
             Rectangle {
-                width: 68px; height: 26px;
+                width: root.lang-en ? 142px : 100px; height: 28px;
                 y: (parent.height - self.height) / 2;
                 border-radius: Theme.radius-sm;
                 background: upd-dl-ta.has-hover ? #ffffff45 : #ffffff28;
                 upd-dl-ta := TouchArea {
+                    enabled: !root.update-busy;
                     mouse-cursor: pointer;
-                    clicked => { root.open-update-url(); }
+                    clicked => { root.update-action(); }
                 }
-                Text { text: @tr("Download"); color: #ffffff; font-size: Theme.fs-sm;
+                opacity: root.update-busy ? 0.55 : 1;
+                Text { text: root.update-action-label; color: #ffffff; font-size: Theme.fs-sm;
                        horizontal-alignment: center; vertical-alignment: center; }
             }
             Rectangle {
@@ -5231,6 +5243,15 @@ export component AppWindow inherits Window {
                     welcome-as-sidebar <=> root.welcome-as-sidebar;
                     quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
                     update-check-enabled <=> root.update-check-enabled;
+                    update-version: root.update-version;
+                    update-busy: root.update-busy;
+                    update-error: root.update-error;
+                    update-install-supported: root.update-install-supported;
+                    update-status: root.update-status;
+                    update-action-label: root.update-action-label;
+                    check-for-updates => { root.check-for-updates(); }
+                    update-action => { root.update-action(); }
+                    open-update-url => { root.open-update-url(); }
                     mcp-enabled <=> root.mcp-enabled;
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;
