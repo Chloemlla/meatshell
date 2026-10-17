@@ -36,6 +36,8 @@ mod tunnel;
 #[cfg(not(feature = "headless"))]
 mod ui;
 #[cfg(not(feature = "headless"))]
+mod update;
+#[cfg(not(feature = "headless"))]
 mod wallpaper;
 #[cfg(not(feature = "headless"))]
 mod webdav;
