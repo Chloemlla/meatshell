@@ -1170,13 +1170,14 @@ pub(super) fn wire_session_callbacks(
             let builtin =
                 id.starts_with("system:") || id.starts_with(super::agents::AGENT_ID_PREFIX);
             let session = if builtin {
-                match resolve_builtin_session(store.borrow().wsl_profiles(), &id) {
+                match resolve_builtin_session(&store.borrow(), &id) {
                     Some(s) => s,
                     None => {
                         // An agent uninstalled since meatshell detected it.
-                        if let (Some(name), Some(w)) =
-                            (super::agents::agent_name(&id), weak.upgrade())
-                        {
+                        if let (Some(name), Some(w)) = (
+                            super::agents::agent_name(&store.borrow(), &id),
+                            weak.upgrade(),
+                        ) {
                             w.set_ssh_import_hint(
                                 format!("{} {name}", t("未找到", "Not found:")).into(),
                             );
@@ -1493,7 +1494,7 @@ pub(super) fn wire_session_callbacks(
                             .find(|s| s.id == session_id)
                             .map(|s| s.name)
                     })
-                    .or_else(|| super::agents::agent_name(&session_id).map(String::from))
+                    .or_else(|| super::agents::agent_name(&store.borrow(), &session_id))
             } else {
                 tab_titles.borrow_mut().insert(tab_id.clone(), name.clone());
                 Some(name)
@@ -1558,6 +1559,8 @@ pub(super) fn listen_for_config_changes(ctx: &WinCtx, sessions_model: &Rc<VecMod
                 let Some(w) = weak.upgrade() else { return };
                 // Rebuild the list with the window's current search filter.
                 sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                // Custom agents (#427): launch menu and Settings list.
+                w.invoke_refresh_agent_launchers();
                 // Re-apply the theme to the chrome AND every open terminal buffer.
                 apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
                 // Language translations are process-global; refresh our flag only.

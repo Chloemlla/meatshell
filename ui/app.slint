@@ -27,12 +27,12 @@ import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
 import { EditorWindow, EditorFindResult } from "editor_window.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
-export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo }
+export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo, CustomAgentInfo }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -607,6 +607,10 @@ export component AppWindow inherits Window {
     // every time the modal opens so coordinates from a larger/DPI-different
     // monitor can never leave the settings card outside the current window.
     changed interface-open => {
+        // A later open from the toolbar starts on the first page again.
+        if (!root.interface-open) {
+            root.interface-start-page = "font";
+        }
         if (root.interface-open) {
             root.ifd-dragging = false;
             root.ifd-resizing = false;
@@ -865,6 +869,18 @@ export component AppWindow inherits Window {
     // New-tab launch menu (#427): local shells and the agent CLIs found here.
     in property <[LaunchItem]> launch-shells;
     in property <[LaunchItem]> agents;
+    // Settings → AI agents: user-defined launchers for undetected agents.
+    in property <[CustomAgentInfo]> custom-agents;
+    in-out property <string> agent-new-name;
+    in-out property <string> agent-new-command;
+    in-out property <string> agent-new-directory;
+    callback add-custom-agent(string, string, string);
+    callback remove-custom-agent(string);
+    callback pick-agent-directory();
+    // Rebuild the launch menu, the "agents" group and the settings list.
+    callback refresh-agent-launchers();
+    // Settings page to show when the panel opens (see InterfacePanel).
+    in-out property <string> interface-start-page: "font";
     // Bumped by Rust whenever the sessions model is rebuilt wholesale
     // (set_vec). A rebuild destroys the dragging row's pointer grab, so
     // Welcome watches this to clear its shared drag state instead of
@@ -1877,6 +1893,11 @@ export component AppWindow inherits Window {
                             // to the focused pane.
                             root.pane-focus(pane.id);
                             root.connect-session(id);
+                        }
+                        customize-agents => {
+                            root.interface-start-page = "agents";
+                            root.settings-open = false;
+                            root.interface-open = true;
                         }
                         tab-move(from-index, to-index) => {
                             root.tab-drag-live = false;
@@ -5261,6 +5282,11 @@ export component AppWindow inherits Window {
                     custom-wallpaper-name: root.custom-wallpaper-name;
                     wsl-profiles: root.wsl-profiles;
                     wsl-new-directory <=> root.wsl-new-directory;
+                    start-page: root.interface-start-page;
+                    custom-agents: root.custom-agents;
+                    agent-new-name <=> root.agent-new-name;
+                    agent-new-command <=> root.agent-new-command;
+                    agent-new-directory <=> root.agent-new-directory;
                     set-wallpaper(v) => { root.set-wallpaper(v); }
                     pick-wallpaper-file() => { root.pick-wallpaper-file(); }
                     set-term-font(v) => { root.set-term-font(v); }
@@ -5319,6 +5345,9 @@ export component AppWindow inherits Window {
                     add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
                     remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
                     pick-wsl-directory => { root.pick-wsl-directory(); }
+                    add-custom-agent(name, command, directory) => { root.add-custom-agent(name, command, directory); }
+                    remove-custom-agent(id) => { root.remove-custom-agent(id); }
+                    pick-agent-directory => { root.pick-agent-directory(); }
                     persist-wallpaper-overlay(v) => { root.persist-wallpaper-overlay(v); }
                 }
             }

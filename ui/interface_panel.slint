@@ -26,6 +26,14 @@ export struct WslProfileInfo {
     directory: string,
 }
 
+// A user-defined agent launcher (#427).
+export struct CustomAgentInfo {
+    id: string,
+    name: string,
+    command: string,
+    directory: string,
+}
+
 // One left-nav row (icon + label).
 component NavItem inherits Rectangle {
     in property <string> icon;
@@ -419,7 +427,14 @@ export component InterfacePanel inherits Rectangle {
     in-out property <string> wsl-new-distribution;
     in-out property <string> wsl-new-directory: "~";
 
-    property <string> ifd-page: "font";
+    // Page shown when the panel opens; "agents" when opened from the tab
+    // bar's launch menu (#427).
+    in property <string> start-page: "font";
+    property <string> ifd-page: root.start-page;
+    in property <[CustomAgentInfo]> custom-agents;
+    in-out property <string> agent-new-name;
+    in-out property <string> agent-new-command;
+    in-out property <string> agent-new-directory;
     property <string> new-rule-pattern;
     property <bool> new-rule-regex;
     property <bool> new-rule-case-sensitive;
@@ -470,6 +485,9 @@ export component InterfacePanel inherits Rectangle {
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
+    callback add-custom-agent(string /* name */, string /* command */, string /* directory */);
+    callback remove-custom-agent(string /* id */);
+    callback pick-agent-directory();
 
     HorizontalLayout {
         // --- Left nav ------------------------------------------------------
@@ -526,6 +544,11 @@ export component InterfacePanel inherits Rectangle {
                     icon: "\u{E30A}"; label: "WSL";
                     active: root.ifd-page == "wsl";
                     clicked => { root.ifd-page = "wsl"; }
+                }
+                NavItem {
+                    icon: "\u{F06C}"; label: root.lang-en ? "AI agents" : "AI 智能体";
+                    active: root.ifd-page == "agents";
+                    clicked => { root.ifd-page = "agents"; }
                 }
                 NavItem {
                     icon: "\u{E5CB}"; label: root.lang-en ? "Sidebars" : "侧栏";
@@ -1396,6 +1419,90 @@ export component InterfacePanel inherits Rectangle {
                         GhostButton {
                             text: root.lang-en ? "Remove" : "删除";
                             clicked => { root.remove-wsl-profile(profile.id); }
+                        }
+                    }
+                }
+            }
+
+            // --- AI agents page (#427) ---------------------------------
+            if root.ifd-page == "agents" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 8px;
+                alignment: start;
+                SectionHeader { text: root.lang-en ? "AI AGENTS" : "AI 智能体"; height: 24px; }
+                Text {
+                    text: root.is-windows
+                        ? (root.lang-en
+                            ? "Installed agents such as Claude Code, Codex and Gemini CLI are found automatically. Add any other agent here: the command runs in PowerShell, e.g. kiro-cli chat or & 'C:\\Tools\\My Agent\\agent.exe' --fast."
+                            : "Claude Code、Codex、Gemini CLI 等已安装的智能体会被自动识别。其他智能体可在此添加：命令在 PowerShell 中运行，例如 kiro-cli chat 或 & 'C:\\Tools\\My Agent\\agent.exe' --fast。")
+                        : (root.lang-en
+                            ? "Installed agents such as Claude Code, Codex and Gemini CLI are found automatically. Add any other agent here: the command runs in your login shell, e.g. kiro-cli chat."
+                            : "Claude Code、Codex、Gemini CLI 等已安装的智能体会被自动识别。其他智能体可在此添加：命令在登录 shell 中运行，例如 kiro-cli chat。");
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Display name" : "显示名称";
+                    placeholder: "Kiro";
+                    value <=> root.agent-new-name;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Command" : "启动命令";
+                    placeholder: "kiro-cli chat";
+                    value <=> root.agent-new-command;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LabeledInput {
+                        horizontal-stretch: 1;
+                        label: root.lang-en ? "Start folder (optional)" : "启动目录（可选）";
+                        placeholder: root.is-windows ? "D:\\Projects\\app" : "~/projects/app";
+                        value <=> root.agent-new-directory;
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        GhostButton {
+                            text: root.lang-en ? "Browse…" : "选择目录…";
+                            clicked => { root.pick-agent-directory(); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    PrimaryButton {
+                        text: root.lang-en ? "Add agent" : "添加智能体";
+                        clicked => {
+                            root.add-custom-agent(root.agent-new-name, root.agent-new-command,
+                                root.agent-new-directory);
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                if root.custom-agents.length == 0 : Text {
+                    text: root.lang-en ? "No custom agents yet." : "暂无自定义智能体。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                }
+                for agent in root.custom-agents : Rectangle {
+                    height: 54px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-elevated;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 8px; spacing: 8px;
+                        VerticalLayout {
+                            horizontal-stretch: 1; alignment: center;
+                            Text { text: agent.name; color: Theme.text-primary; font-size: 13px * Theme.panel-font; }
+                            Text {
+                                text: agent.command + (agent.directory == "" ? "" : "  ·  " + agent.directory);
+                                color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide;
+                            }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Remove" : "删除";
+                            clicked => { root.remove-custom-agent(agent.id); }
                         }
                     }
                 }

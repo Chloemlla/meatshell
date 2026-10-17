@@ -262,6 +262,8 @@ export component TabBar inherits Rectangle {
     callback tab-closed(string);
     callback new-tab();
     callback launch(string /* session id */);
+    // "Customize…" in the launch menu: open Settings → AI agents (#427).
+    callback customize-agents();
     // Drag-to-reorder (#408), committed exactly once on drop: move the tab at
     // `from` to `to`, where `to` is the insertion index AFTER `from` has been
     // removed from the list.
@@ -520,7 +522,7 @@ export component TabBar inherits Rectangle {
                     y: (parent.height - self.height) / 2;
                     clicked => { root.new-tab(); }
                 }
-                if root.launch-shells.length + root.launch-agents.length > 0 : IconButton {
+                IconButton {
                     glyph: "\u{E5CF}";   // expand_more
                     font-family: "Material Icons";
                     width: 20px;
@@ -608,7 +610,7 @@ export component TabBar inherits Rectangle {
                     label: shell.name;
                     clicked => { root.launch(shell.id); }
                 }
-                if root.launch-shells.length > 0 && root.launch-agents.length > 0 : Rectangle {
+                if root.launch-shells.length > 0 : Rectangle {
                     height: 9px;
                     Rectangle {
                         y: 4px;
@@ -616,13 +618,20 @@ export component TabBar inherits Rectangle {
                         background: Theme.border-subtle;
                     }
                 }
-                if root.launch-agents.length > 0 : LaunchMenuHeading {
+                LaunchMenuHeading {
                     text: @tr("AI agents");
                 }
                 for agent in root.launch-agents : LaunchMenuItem {
                     glyph: "\u{F06C}";   // smart_toy
                     label: agent.name;
                     clicked => { root.launch(agent.id); }
+                }
+                // Always offered, so an agent meatshell does not detect can
+                // be added by hand.
+                LaunchMenuItem {
+                    glyph: "\u{E8B8}";   // settings
+                    label: @tr("Customize…");
+                    clicked => { root.customize-agents(); }
                 }
             }
         }

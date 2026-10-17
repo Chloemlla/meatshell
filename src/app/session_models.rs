@@ -247,11 +247,9 @@ fn build_session_rows(
     for s in builtin_sessions.iter().filter(|session| matches(session)) {
         let first_in_group = prev_group != Some(s.group.as_str());
         prev_group = Some(s.group.as_str());
-        // Agent rows show the program they run instead of the hosting shell.
-        let host = std::path::Path::new(&s.local_command)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or(&s.host);
+        // Agent rows show the program they run (kept in `note`, see
+        // agents.rs) instead of the hosting shell.
+        let host = if s.note.is_empty() { &s.host } else { &s.note };
         rows.push(SessionInfo {
             id: s.id.clone().into(),
             name: s.name.clone().into(),
@@ -372,10 +370,10 @@ pub(super) fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<Sessi
 }
 
 /// Generated rows at the top of Quick connect: the "system" shells, then the
-/// "agents" group of detected agent CLIs (#427).
+/// "agents" group of detected and custom agent CLIs (#427).
 fn quick_connect_builtin_sessions(store: &ConfigStore) -> Vec<Session> {
     let mut sessions = builtin_local_sessions(store.wsl_profiles());
-    sessions.extend(super::agents::detected_agent_sessions());
+    sessions.extend(super::agents::agent_sessions(store));
     sessions
 }
 
@@ -427,14 +425,11 @@ pub(super) fn builtin_local_sessions(wsl_profiles: &[crate::config::WslProfile])
 
 /// A built-in session by id: the `system:` shells listed in Quick connect or
 /// an `agent:` entry from the tab bar's launch menu (#427).
-pub(super) fn resolve_builtin_session(
-    wsl_profiles: &[crate::config::WslProfile],
-    id: &str,
-) -> Option<Session> {
+pub(super) fn resolve_builtin_session(store: &ConfigStore, id: &str) -> Option<Session> {
     if id.starts_with(super::agents::AGENT_ID_PREFIX) {
-        return super::agents::agent_session(id);
+        return super::agents::agent_session(store, id);
     }
-    builtin_local_sessions(wsl_profiles)
+    builtin_local_sessions(store.wsl_profiles())
         .into_iter()
         .find(|s| s.id == id)
 }
@@ -725,10 +720,10 @@ mod search_tests {
     #[test]
     fn agents_get_their_own_builtin_group_after_system() {
         let mut claude = session("agent:claude", "Claude Code", "powershell", "agents");
-        claude.local_command = "/opt/agents/claude".into();
+        claude.note = "claude".into();
         let codex = {
             let mut s = session("agent:codex", "Codex", "powershell", "agents");
-            s.local_command = "/opt/agents/codex.cmd".into();
+            s.note = "codex".into();
             s
         };
         let builtins = vec![

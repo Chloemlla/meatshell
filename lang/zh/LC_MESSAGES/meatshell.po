@@ -426,6 +426,9 @@ msgstr "终端"
 msgid "Open a terminal or AI agent"
 msgstr "打开终端或 AI 智能体"
 
+msgid "Customize…"
+msgstr "自定义…"
+
 msgid "AI agents"
 msgstr "AI 智能体"
 

@@ -426,6 +426,9 @@ msgstr "Terminal"
 msgid "Open a terminal or AI agent"
 msgstr "Open a terminal or AI agent"
 
+msgid "Customize…"
+msgstr "Customize…"
+
 msgid "AI agents"
 msgstr "AI agents"
 

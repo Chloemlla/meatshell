@@ -88,6 +88,13 @@ async fn run_local(
     for arg in &args {
         cmd.arg(arg);
     }
+    // WSL takes its directory as `--cd` (a Linux path); other local shells
+    // can be started in a Windows / host folder, e.g. a custom agent's (#427).
+    if session.host != "wsl" {
+        if let Some(dir) = start_directory(&session.local_working_dir) {
+            cmd.cwd(dir);
+        }
+    }
     cmd.env("TERM", "xterm-256color");
 
     let child = pair
@@ -223,8 +230,8 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
             // `-NoExit` keeps PowerShell open once the program returns, so an
             // agent tab drops back to a prompt instead of closing (#427).
             if let Some(command) = startup_command(session) {
-                script.push_str("; & ");
-                script.push_str(&powershell_quote(command));
+                script.push_str("; ");
+                script.push_str(command);
             }
             (
                 "powershell.exe".to_string(),
@@ -245,7 +252,7 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
                 // runs the program, then is replaced by an interactive shell
                 // so the tab stays usable after the program exits (#427).
                 Some(command) => {
-                    let script = format!("{}; exec {} -l", sh_quote(command), sh_quote(&shell));
+                    let script = format!("{command}; exec {} -l", sh_quote(&shell));
                     (shell, vec!["-l".to_string(), "-c".to_string(), script])
                 }
             }
@@ -257,6 +264,30 @@ fn local_program(session: &Session) -> (String, Vec<String>) {
 const POWERSHELL_UTF8_SETUP: &str = "$utf8 = New-Object System.Text.UTF8Encoding $false; \
      [Console]::InputEncoding = $utf8; [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8";
 
+/// Host folder for a local shell to start in: blank means the default, and a
+/// leading `~` is the user's home folder.
+fn start_directory(dir: &str) -> Option<std::path::PathBuf> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return None;
+    }
+    let home = || {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from)
+    };
+    match dir.strip_prefix('~') {
+        Some("") => home(),
+        Some(rest) if rest.starts_with(['/', '\\']) => {
+            home().map(|h| h.join(rest.trim_start_matches(['/', '\\'])))
+        }
+        _ => Some(std::path::PathBuf::from(dir)),
+    }
+}
+
+/// Shell command line a generated local session runs after the shell starts
+/// (#427). It is already in the hosting shell's syntax: detected agents are
+/// stored as a quoted path, custom agents as the line the user typed.
 fn startup_command(session: &Session) -> Option<&str> {
     let command = session.local_command.trim();
     (!command.is_empty()).then_some(command)
@@ -265,13 +296,13 @@ fn startup_command(session: &Session) -> Option<&str> {
 /// Single-quoted PowerShell literal: no variable or subexpression expansion;
 /// an embedded `'` is written twice.
 #[cfg(any(windows, test))]
-fn powershell_quote(value: &str) -> String {
+pub(crate) fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
 /// Single-quoted POSIX shell word; an embedded `'` closes, escapes and reopens.
 #[cfg(any(not(windows), test))]
-fn sh_quote(value: &str) -> String {
+pub(crate) fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
@@ -299,6 +330,30 @@ mod quote_tests {
     }
 }
 
+#[cfg(test)]
+mod start_directory_tests {
+    use super::start_directory;
+
+    #[test]
+    fn blank_means_default_and_tilde_is_home() {
+        assert_eq!(start_directory("  "), None);
+        assert_eq!(
+            start_directory(r"D:\work\proj"),
+            Some(std::path::PathBuf::from(r"D:\work\proj"))
+        );
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from);
+        assert_eq!(start_directory("~"), home);
+        assert_eq!(start_directory("~/proj"), home.map(|h| h.join("proj")));
+        // `~name` is not the home folder.
+        assert_eq!(
+            start_directory("~name"),
+            Some(std::path::PathBuf::from("~name"))
+        );
+    }
+}
+
 #[cfg(all(test, not(windows)))]
 mod unix_tests {
     use super::local_program;
@@ -312,7 +367,7 @@ mod unix_tests {
         let (shell, args) = local_program(&session);
         assert_eq!(args[0], "-l");
         assert_eq!(args[1], "-c");
-        assert!(args[2].starts_with("'/opt/bin/claude'; exec "));
+        assert!(args[2].starts_with("/opt/bin/claude; exec "));
         assert!(args[2].ends_with(" -l"));
         assert!(args[2].contains(&shell));
 
@@ -345,7 +400,7 @@ mod tests {
     fn powershell_runs_agent_command_after_utf8_setup() {
         let mut session = Session::new_empty();
         session.host = "powershell".to_string();
-        session.local_command = r"C:\Users\me\AppData\Roaming\npm\codex.cmd".to_string();
+        session.local_command = r"& 'C:\Users\me\AppData\Roaming\npm\codex.cmd'".to_string();
         let (program, args) = local_program(&session);
         assert_eq!(program, "powershell.exe");
         assert!(args.iter().any(|arg| arg == "-NoExit"));
