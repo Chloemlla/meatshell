@@ -310,17 +310,13 @@ pub(super) fn apply_session_event_to_window(
             error,
         } => {
             if error.is_empty() {
-                // Open the built-in viewer/editor (#70).
-                editor.set_editor_tab_id(tab_id.into());
-                editor.set_editor_path(path.into());
-                editor.set_editor_name(name.into());
-                editor_syntax::refresh(editor, &content);
-                editor.set_editor_content(content.into());
-                editor.set_editor_readonly(!edit);
-                editor.set_editor_dirty(false);
-                editor.set_editor_open(true);
-                let _ = editor.show();
-                editor.window().with_winit_window(|ww| ww.focus_window());
+                // Open the built-in viewer/editor (#70): docked in this window
+                // or in the detached editor window, per Settings → SFTP (#494).
+                if win.get_editor_embedded() {
+                    open_document(win, tab_id, path, name, content, edit);
+                } else {
+                    open_document(editor, tab_id, path, name, content, edit);
+                }
             } else {
                 // Couldn't open as text. The SFTP status line alone is easy to
                 // miss (looks like "nothing happened"), so also print the reason

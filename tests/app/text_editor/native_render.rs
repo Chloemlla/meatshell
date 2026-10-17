@@ -198,3 +198,30 @@ fn editor_app_window_renders_highlighted_document() {
         image::save_buffer(path, &bytes, 1000, 700, image::ColorType::Rgb8).unwrap();
     }).join().unwrap();
 }
+
+#[test]
+fn docked_editor_renders_inside_the_main_window() {
+    // #494: the main window hosts the same editor body beside its panes.
+    std::thread::spawn(|| {
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Backend(window.clone()))).unwrap();
+        let ui = super::super::AppWindow::new().unwrap();
+        let text = "server {\n    listen 80;\n}\nfn main() {\n    println!(\"docked\");\n}\n";
+        ui.set_editor_embedded(true);
+        ui.set_editor_path("example.rs".into());
+        ui.set_editor_name("example.rs".into());
+        ui.set_editor_content(text.into());
+        super::super::editor_syntax::refresh(&ui, text);
+        ui.set_editor_open(true);
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(1400, 800));
+        let mut pixels = vec![Rgb8Pixel::default(); 1400 * 800];
+        window.request_redraw();
+        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1400); }));
+        assert_eq!(ui.get_editor_language().as_str(), "Rust");
+        assert!(!ui.get_editor_syntax_spans().is_empty());
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/editor-docked-qa.png");
+        image::save_buffer(path, &bytes, 1400, 800, image::ColorType::Rgb8).unwrap();
+    }).join().unwrap();
+}

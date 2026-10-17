@@ -112,7 +112,8 @@ pub(super) fn hide_window(core: &Rc<AppCore>, window_id: u64, window: &AppWindow
     }
     window.set_process_window_open(false);
     window.set_system_info_window_open(false);
-    window.set_editor_open(false);
+    // A docked editor (#494) stays open with its unsaved edits while the
+    // window sits in the tray; only the detached windows are hidden.
     let _ = window.hide();
 }
 

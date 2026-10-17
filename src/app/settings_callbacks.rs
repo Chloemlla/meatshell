@@ -132,6 +132,21 @@ pub(super) fn wire_interface_toggles(
         });
     }
 
+    // Settings → SFTP: dock the editor in the main window (#494). Applies to
+    // the next file opened; an editor that is already open stays where it is.
+    window.set_editor_embedded(store.borrow().editor_embedded());
+    {
+        let store = store.clone();
+        let registry = registry.clone();
+        window.on_set_editor_embedded(move |embedded| {
+            let mut s = store.borrow_mut();
+            s.set_editor_embedded(embedded);
+            let _ = s.save();
+            drop(s);
+            registry.broadcast_config_changed();
+        });
+    }
+
     // Toolbar toggle: hide/show the quick-command bar (persisted globally).
     window.set_cmd_bar_hidden(store.borrow().cmd_bar_hidden());
     {

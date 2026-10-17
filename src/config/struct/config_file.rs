@@ -188,6 +188,10 @@ pub struct ConfigFile {
     /// enabled for existing users (#300).
     #[serde(default)]
     pub extra_paste_shortcuts_disabled: bool,
+    /// Open SFTP text files in a panel docked inside the main window instead of
+    /// the detached editor window. Defaults to false (#494).
+    #[serde(default)]
+    pub editor_embedded: bool,
     /// Hide auxiliary panels and edge strips so the terminal fills the window.
     #[serde(default)]
     pub zen_mode: bool,

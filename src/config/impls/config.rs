@@ -865,6 +865,14 @@ impl ConfigStore {
         self.cache.extra_paste_shortcuts_disabled = !enabled;
     }
 
+    pub fn editor_embedded(&self) -> bool {
+        self.cache.editor_embedded
+    }
+
+    pub fn set_editor_embedded(&mut self, embedded: bool) {
+        self.cache.editor_embedded = embedded;
+    }
+
     pub fn zen_mode(&self) -> bool {
         self.cache.zen_mode
     }
@@ -2528,6 +2536,19 @@ mod tests {
         assert!(!store.paste_confirm_enabled());
         assert!(!store.extra_paste_shortcuts_enabled());
         assert!(store.zen_mode());
+    }
+
+    #[test]
+    fn issue_494_editor_embedded_defaults_off_and_round_trips() {
+        let mut store = temp_store();
+        // Existing configs keep the detached editor window.
+        store.cache = serde_json::from_str("{}").unwrap();
+        assert!(!store.editor_embedded());
+
+        store.set_editor_embedded(true);
+        let json = serde_json::to_string(&store.cache).unwrap();
+        store.cache = serde_json::from_str(&json).unwrap();
+        assert!(store.editor_embedded());
     }
 
     #[test]

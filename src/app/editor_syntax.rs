@@ -88,7 +88,7 @@ pub(super) fn highlight(text: &str, path: &str) -> String {
     result
 }
 
-pub(super) fn refresh(window: &EditorWindow, text: &str) {
+pub(super) fn refresh<H: EditorHost>(window: &H, text: &str) {
     let path = window.get_editor_path();
     window.set_editor_language(language(path.as_str()).into());
     let mut spans = highlight(text, path.as_str());
