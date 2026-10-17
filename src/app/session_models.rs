@@ -41,6 +41,16 @@ pub(super) fn launch_shell_model(store: &ConfigStore) -> ModelRc<LaunchItem> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+/// SFTP privilege mode from the editor (#438): only "sudo" and "custom" are
+/// stored, and "custom" without a command falls back to the default.
+fn normalized_sftp_mode(mode: &str, command: &str) -> String {
+    match mode {
+        "sudo" => "sudo".to_string(),
+        "custom" if !command.trim().is_empty() => "custom".to_string(),
+        _ => String::new(),
+    }
+}
+
 pub(super) fn parse_batch_import(text: &str) -> Vec<Session> {
     let mut out = Vec::new();
     for raw in text.lines() {
@@ -556,6 +566,16 @@ pub(super) fn session_from_draft(
         forwards,
         triggers,
         disable_shell_integration: draft.disable_shell_integration,
+        sftp_mode: if kind == SessionKind::Ssh {
+            normalized_sftp_mode(&draft.sftp_mode, &draft.sftp_command)
+        } else {
+            String::new()
+        },
+        sftp_command: if kind == SessionKind::Ssh {
+            draft.sftp_command.trim().to_string()
+        } else {
+            String::new()
+        },
         note: draft.note.to_string(),
         jump_session_id: String::new(),
         jump_session_ids: if kind == SessionKind::Ssh {
@@ -746,6 +766,15 @@ mod search_tests {
         // Each built-in group collapses on its own.
         assert!(rows[0].collapsed);
         assert!(!rows[1].collapsed);
+    }
+
+    #[test]
+    fn sftp_mode_keeps_only_usable_choices() {
+        assert_eq!(normalized_sftp_mode("sudo", ""), "sudo");
+        assert_eq!(normalized_sftp_mode("custom", "  sudo -u web sftp-server "), "custom");
+        assert_eq!(normalized_sftp_mode("custom", "   "), "");
+        assert_eq!(normalized_sftp_mode("", "ignored"), "");
+        assert_eq!(normalized_sftp_mode("bogus", ""), "");
     }
 
     #[test]

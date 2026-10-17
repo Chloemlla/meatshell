@@ -972,6 +972,8 @@ export component AppWindow inherits Window {
     in-out property <bool> dialog-vt100-drawing: false;
     in-out property <string> dialog-session-log: "default";
     in-out property <bool> dialog-disable-shell-integration: false;
+    in-out property <string> dialog-sftp-mode: "";
+    in-out property <string> dialog-sftp-command: "";
     in-out property <string> dialog-note;
     in-out property <string> dialog-test-status;
 
@@ -4786,6 +4788,8 @@ export component AppWindow inherits Window {
         draft-vt100-drawing <=> root.dialog-vt100-drawing;
         draft-session-log <=> root.dialog-session-log;
         draft-disable-shell-integration <=> root.dialog-disable-shell-integration;
+        draft-sftp-mode <=> root.dialog-sftp-mode;
+        draft-sftp-command <=> root.dialog-sftp-command;
         draft-note <=> root.dialog-note;
         test-status <=> root.dialog-test-status;
         forwards: root.dialog-forwards;

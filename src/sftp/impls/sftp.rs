@@ -32,6 +32,7 @@ use crate::config::{AuthMethod, Session};
 use crate::i18n::t;
 use crate::ssh::{format_mtime, format_size, RemoteEntry, RemoteTreeNode, SessionEvent};
 
+use super::elevation::Elevation;
 use super::transfer::{DownloadConflict, SftpCommand, SftpHandle};
 
 impl SftpHandle {
@@ -137,6 +138,13 @@ fn chmod_attributes(mode: u32) -> FileAttributes {
 /// channel / handshake (or an explicit "permission denied"). For that family we
 /// give a plain-language hint instead of the raw russh error (#190).
 fn friendly_sftp_error(err: &anyhow::Error) -> String {
+    // SFTP privileges problems (#438) already say what to fix.
+    if let Some(elevation) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<super::elevation::ElevationError>())
+    {
+        return elevation.to_string();
+    }
     let chain = err
         .chain()
         .map(|e| e.to_string().to_lowercase())
@@ -428,26 +436,42 @@ async fn run_sftp(
         return Err(anyhow!(t("SFTP 认证失败", "SFTP authentication failed")));
     }
 
-    // --- Open the sftp subsystem channel -----------------------------------
-    let channel = crate::ssh::network_stage(
+    // --- Decide who SFTP works as (#438) ----------------------------------
+    // Login user via the `sftp` subsystem by default; root via sudo, or a
+    // custom SFTP server command, when the session asks for it.
+    let elevation = Elevation::resolve(&handle, &session, password.as_str()).await?;
+
+    // --- Open the SFTP channel ---------------------------------------------
+    let stream = crate::ssh::network_stage(
         &format!("open SFTP channel at {}:{}", session.host, session.port),
-        handle.channel_open_session(),
-    )
-    .await?;
-    crate::ssh::network_stage(
-        &format!("request SFTP subsystem at {}:{}", session.host, session.port),
-        channel.request_subsystem(true, "sftp"),
+        elevation.open_stream(&handle),
     )
     .await?;
     let sftp = crate::ssh::network_stage(
         &format!("SFTP handshake at {}:{}", session.host, session.port),
-        SftpSession::new(channel.into_stream()),
+        SftpSession::new(stream),
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        if elevation.is_custom() {
+            tracing::warn!("sftp handshake over custom server failed: {err:#}");
+            elevation.handshake_error()
+        } else {
+            err
+        }
+    })?;
+    if !elevation.label().is_empty() {
+        tracing::info!(
+            "sftp {}:{} opened{}",
+            session.host,
+            session.port,
+            elevation.label()
+        );
+    }
     // Share the session + connection so transfers can run on their own task,
     // leaving the command loop free to list/switch directories meanwhile (#116-2).
     let sftp = std::sync::Arc::new(sftp);
-    let handle = std::sync::Arc::new(handle);
+    let handle = std::sync::Arc::new(SftpLink { handle, elevation });
 
     // Owner/group names live for the whole SFTP connection so every listing
     // after the first can paint names without another `getent` round-trip.
@@ -815,7 +839,11 @@ async fn run_sftp(
                     }
                     let _ = &sftp; // listing session kept alive; transfer uses `handle`
                     let res: Result<bool> = async {
-                        let st = exec_remote(&handle, &cmd).await.context("tar on remote")?;
+                        let st = handle
+                            .elevation
+                            .exec_shell(&handle.handle, &cmd)
+                            .await
+                            .context("tar on remote")?;
                         if st != 0 {
                             return Err(anyhow!(t("远端 tar 打包失败", "remote tar failed")));
                         }
@@ -825,7 +853,10 @@ async fn run_sftp(
                     .await;
                     // Best-effort cleanup of the remote temp tar — success, failure
                     // or cancel all reach here, so no junk is left on the server (#100).
-                    let _ = exec_remote(&handle, &format!("rm -f {}", sh_quote(&tmp))).await;
+                    let _ = handle
+                        .elevation
+                        .exec_shell(&handle.handle, &format!("rm -f {}", sh_quote(&tmp)))
+                        .await;
                     match res {
                         Ok(true) => {
                             let _ = events.send(SessionEvent::SftpStatus(format!(
@@ -1533,27 +1564,6 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run a one-shot command on the remote over its own exec channel and return
-/// the exit status. Stdout/stderr are drained and discarded.
-async fn exec_remote(handle: &client::Handle<SftpClientHandler>, cmd: &str) -> Result<u32> {
-    let mut ch = handle
-        .channel_open_session()
-        .await
-        .context("open exec channel")?;
-    ch.exec(true, cmd.as_bytes())
-        .await
-        .context("exec remote command")?;
-    let mut status = 0u32;
-    while let Some(msg) = ch.wait().await {
-        match msg {
-            russh::ChannelMsg::ExitStatus { exit_status } => status = exit_status,
-            russh::ChannelMsg::Close => break,
-            _ => {}
-        }
-    }
-    Ok(status)
-}
-
 async fn exec_remote_output(
     handle: &client::Handle<SftpClientHandler>,
     cmd: &str,
@@ -1775,7 +1785,7 @@ async fn cleanup_import_path(path: &Path) {
 
 async fn stage_remote_for_copy(
     sftp: &SftpSession,
-    handle: &client::Handle<SftpClientHandler>,
+    handle: &SftpLink,
     remote: &str,
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<(PathBuf, PathBuf)> {
@@ -2220,7 +2230,7 @@ fn emit_transfer(
 /// transfer was cancelled. In both the cancel and error cases the partial
 /// local file is removed so no half-downloaded junk is left behind.
 async fn download_impl(
-    handle: &client::Handle<SftpClientHandler>,
+    handle: &SftpLink,
     remote: &str,
     local: &str,
     name: &str,
@@ -2233,15 +2243,12 @@ async fn download_impl(
     const CHUNK: usize = 32 * 1024;
     const MAX_INFLIGHT: usize = 32; // ~1 MB outstanding hides the RTT
 
-    let channel = handle
-        .channel_open_session()
+    let stream = handle
+        .elevation
+        .open_stream(&handle.handle)
         .await
         .context("open sftp download channel")?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .context("request sftp subsystem")?;
-    let raw = Arc::new(RawSftpSession::new(channel.into_stream()));
+    let raw = Arc::new(RawSftpSession::new(stream));
     raw.init().await.context("sftp download handshake")?;
 
     let total = raw
@@ -2395,7 +2402,7 @@ async fn download_impl(
 /// so a hostile server can't escape the chosen folder.
 async fn download_dir(
     sftp: &SftpSession,
-    handle: &client::Handle<SftpClientHandler>,
+    handle: &SftpLink,
     remote_root: &str,
     local_parent: &str,
     events: &UnboundedSender<SessionEvent>,
@@ -2471,7 +2478,7 @@ async fn remove_dir_recursive(sftp: &SftpSession, root: &str) -> Result<()> {
 /// "already exists" error is ignored), then upload its files with the pipelined
 /// path. Symlinks and other special files are skipped.
 async fn upload_dir(
-    handle: &client::Handle<SftpClientHandler>,
+    handle: &SftpLink,
     sftp: &SftpSession,
     local_root: &Path,
     remote_parent: &str,
@@ -2515,7 +2522,7 @@ async fn upload_dir(
 /// which hides the latency and brings us within a single order of magnitude of
 /// native scp.
 async fn upload_pipelined(
-    handle: &client::Handle<SftpClientHandler>,
+    handle: &SftpLink,
     local: &Path,
     remote: &str,
     name: &str,
@@ -2538,15 +2545,12 @@ async fn upload_pipelined(
 
     // Dedicated raw SFTP channel for the transfer (keeps the browse session
     // responsive and lets us issue concurrent WRITE requests).
-    let channel = handle
-        .channel_open_session()
+    let stream = handle
+        .elevation
+        .open_stream(&handle.handle)
         .await
         .context("open sftp upload channel")?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .context("request sftp subsystem")?;
-    let raw = Arc::new(RawSftpSession::new(channel.into_stream()));
+    let raw = Arc::new(RawSftpSession::new(stream));
     raw.init().await.context("sftp upload handshake")?;
 
     let fhandle = raw
@@ -2648,6 +2652,21 @@ struct SftpClientHandler {
     port: u16,
     events: UnboundedSender<SessionEvent>,
     host_key_wait: crate::ssh::HostKeyWait,
+}
+
+/// The SFTP connection plus how its SFTP channels are opened (#438). Derefs to
+/// the SSH handle, so helpers that only run plain commands take it as is.
+struct SftpLink {
+    handle: client::Handle<SftpClientHandler>,
+    elevation: Elevation,
+}
+
+impl std::ops::Deref for SftpLink {
+    type Target = client::Handle<SftpClientHandler>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
 }
 
 impl crate::ssh::HandshakeHandler for SftpClientHandler {

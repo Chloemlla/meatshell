@@ -182,6 +182,8 @@ pub(super) fn wire_session_callbacks(
             w.set_dialog_vt100_drawing(false);
             w.set_dialog_session_log("default".into());
             w.set_dialog_disable_shell_integration(false);
+            w.set_dialog_sftp_mode("".into());
+            w.set_dialog_sftp_command("".into());
             w.set_dialog_note("".into());
             w.set_dialog_editing(false);
             w.set_dialog_open(true);
@@ -455,6 +457,8 @@ pub(super) fn wire_session_callbacks(
                 w.set_dialog_vt100_drawing(session.vt100_drawing);
                 w.set_dialog_session_log(session.session_log.as_str().into());
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
+                w.set_dialog_sftp_mode(session.sftp_mode.clone().into());
+                w.set_dialog_sftp_command(session.sftp_command.clone().into());
                 w.set_dialog_note(session.note.clone().into());
                 w.set_dialog_editing(true);
                 w.set_dialog_open(true);

@@ -270,6 +270,16 @@ pub struct Session {
     /// shells or interactive auto-login scripts. SFTP remains available.
     #[serde(default)]
     pub disable_shell_integration: bool,
+    /// Who the SFTP panel works as (#438): "" = the login user (the `sftp`
+    /// subsystem), "sudo" = root, by running sftp-server through sudo, or
+    /// "custom" = run `sftp_command` as the SFTP server, like WinSCP's
+    /// "SFTP server" setting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sftp_mode: String,
+    /// SFTP server command for `sftp_mode == "custom"`, e.g.
+    /// `sudo -u www-data /usr/lib/openssh/sftp-server`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sftp_command: String,
     /// Free-form note for this session — somewhere to stash extra info (jump-host
     /// details, credentials hints, owner, etc.). Shown only in the edit dialog.
     /// (B站 suggestion)
@@ -395,6 +405,8 @@ impl Session {
             forwards: Vec::new(),
             triggers: Vec::new(),
             disable_shell_integration: false,
+            sftp_mode: String::new(),
+            sftp_command: String::new(),
             note: String::new(),
         }
     }

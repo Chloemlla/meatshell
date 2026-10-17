@@ -516,6 +516,30 @@ msgstr "Confirm"
 msgid "Interactive login compatibility mode"
 msgstr "Interactive login compatibility mode"
 
+msgid "SFTP privileges"
+msgstr "SFTP privileges"
+
+msgid "Login user (default)"
+msgstr "Login user (default)"
+
+msgid "Root, via sudo"
+msgstr "Root, via sudo"
+
+msgid "Custom SFTP server command"
+msgstr "Custom SFTP server command"
+
+msgid "SFTP server command"
+msgstr "SFTP server command"
+
+msgid "The SFTP panel runs sftp-server through sudo, so it can read and write files only root can. Needs passwordless sudo, or the saved login password when sudo asks for one."
+msgstr "The SFTP panel runs sftp-server through sudo, so it can read and write files only root can. Needs passwordless sudo, or the saved login password when sudo asks for one."
+
+msgid "Runs this command instead of the sftp subsystem; it must speak SFTP on stdin/stdout. Folder downloads (tar) still run as the login user."
+msgstr "Runs this command instead of the sftp subsystem; it must speak SFTP on stdin/stdout. Folder downloads (tar) still run as the login user."
+
+msgid "The SFTP panel works as the user you log in with."
+msgstr "The SFTP panel works as the user you log in with."
+
 msgid "For auto-login scripts or non-POSIX shells: skips shell hooks and remote monitoring while keeping SFTP available."
 msgstr "For auto-login scripts or non-POSIX shells: skips shell hooks and remote monitoring while keeping SFTP available."
 
