@@ -27,7 +27,7 @@ import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
 import { EditorWindow } from "editor_window.slint";
-import { EditorPane, EditorFindResult } from "editor_pane.slint";
+import { EditorPane, EditorFindResult, EditorDoc } from "editor_pane.slint";
 import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
@@ -443,9 +443,8 @@ export component AppWindow inherits Window {
     callback persist-sidebar-dock(string);
     // The top-right toolbar icons float over the tab row; when the sidebar docks
     // top/right it covers that corner, so shift the icons to stay over the tabs.
-    // A docked editor (#494) takes the right of the content area the same way.
     property <length> toolbar-x-off:
-        root.dock-right-gap + 4px + central.editor-w + central.editor-split;
+        root.dock-right-gap + 4px;
     property <length> toolbar-y-off:
         root.dock-top-gap;
     property <length> toolbar-y:
@@ -552,7 +551,7 @@ export component AppWindow inherits Window {
     init => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
     changed dark-mode => {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
-        if root.editor-open { root.editor-highlight-pending = true; }
+        root.refresh-editor-syntax();
     }
     in-out property <string> term-font-family <=> Theme.term-font-family;
     in-out property <length> term-font-size <=> Theme.term-font-size;
@@ -818,45 +817,27 @@ export component AppWindow inherits Window {
     callback update-action();
     callback open-update-url();
 
-    // --- Built-in file viewer/editor (#70) --------------------------------
-    in-out property <bool> editor-open: false;
-    in-out property <string> editor-name;     // file name shown in the title
-    in-out property <string> editor-path;     // remote path (used on save)
-    in-out property <string> editor-content;  // text, two-way with the input
-    in-out property <bool> editor-readonly;   // view = true, edit = false
-    in-out property <bool> editor-dirty: false; // edited since load
-    in-out property <string> editor-tab-id;   // SFTP tab that owns the file
-    // Settings → SFTP: open files in a panel docked inside this window instead
-    // of the detached editor window (#494). `editor-open` above is the docked
-    // panel's own state; the detached window keeps a separate one.
+    // --- Editor tabs (#70, #494) ------------------------------------------
+    // Settings → SFTP: open text files as tabs in this window (true) or in the
+    // detached EditorWindow (false). Each open file is a row here and a tab of
+    // kind "editor" in the panes; the tab shows only the editor (no SFTP panel
+    // or command bar) and can be dragged to split like any other tab.
     in-out property <bool> editor-embedded: false;
     callback set-editor-embedded(bool);       // apply + persist
+    in property <[EditorDoc]> editor-docs;
+    callback open-editor-tab(string /* owner tab */, string /* path */, string /* name */,
+                             string /* content */, bool /* readonly */);
+    callback editor-doc-edited(string /* id */, string /* content */);
+    callback editor-doc-highlight(string /* id */, string /* content */);
+    callback editor-doc-save(string /* id */);
+    callback editor-doc-replace-all(string /* id */, string /* query */, string /* replacement */);
+    callback refresh-editor-syntax();         // theme changed: recolour every doc
+    // Closing a tab with unsaved edits asks first (#287).
     in-out property <bool> editor-discard-confirm-open: false;
-    // Docked panel width; the splitter drags it, clamped to keep panes usable.
-    in-out property <length> editor-dock-w: 560px;
-    property <bool> editor-split-dragging: false;
-    public function request-editor-close() {
-        if root.editor-dirty && !root.editor-readonly {
-            root.editor-discard-confirm-open = true;
-        } else { root.close-editor(); }
-    }
-    // Opening the dynamic editor and focusing its TextInput in the same event
-    // can re-enter Windows AccessKit while it is registering the new item tree.
-    property <bool> editor-focus-pending: false;
-    in-out property <string> editor-syntax-source;
-    in-out property <string> editor-syntax-spans;
-    in-out property <string> editor-language;
-    property <bool> editor-highlight-pending: false;
-    callback editor-highlight(string);
-    in-out property <string> editor-find-query;
-    in-out property <string> editor-replace-text;
-    in-out property <int> editor-match-count: 0;
-    in-out property <int> editor-find-position: -1;
-    callback save-file();                     // Ctrl+S / Save button (edit only)
-    callback close-editor();                  // X / Esc; discard unsaved edits (#287)
+    in-out property <string> editor-discard-id;
+    callback editor-discard-confirmed(string /* id */);
     callback editor-count-matches(string /* content */, string /* query */) -> int;
     callback editor-find-step(string /* content */, string /* query */, int /* current */, bool /* reverse */) -> EditorFindResult;
-    callback editor-replace-all(string /* query */, string /* replacement */);
 
     // --- Session list ------------------------------------------------------
     in property <[SessionInfo]> sessions;
@@ -1846,90 +1827,11 @@ export component AppWindow inherits Window {
                 height: root.quick-panel-open && !root.quick-panel-collapsed && !parent.quick-horizontal
                     ? parent.height - parent.quick-h - parent.quick-sp : parent.height;
                 clip: true;
-                // Docked editor (#494): when enabled in Settings → SFTP, an open
-                // file takes a resizable column on the right and the panes shrink
-                // to the remaining width (Rust re-tiles them via content-resized).
-                // `editor-open` is set only by a docked open, so an editor that
-                // is open when the setting is switched off stays until closed.
-                property <bool> editor-docked: root.editor-open;
-                property <length> editor-split: central.editor-docked ? 4px : 0px;
-                property <length> editor-w: central.editor-docked
-                    ? clamp(root.editor-dock-w, 320px, max(320px, self.width - 240px))
-                    : 0px;
-                if central.editor-docked : Rectangle {
-                    x: parent.width - central.editor-w - central.editor-split;
-                    width: central.editor-split;
-                    height: parent.height;
-                    background: editor-split-ta.has-hover || root.editor-split-dragging
-                        ? Theme.accent : Theme.border-subtle;
-                    editor-split-ta := TouchArea {
-                        mouse-cursor: ew-resize;
-                        pointer-event(ev) => {
-                            if (ev.kind == PointerEventKind.down) {
-                                root.editor-split-dragging = true;
-                            } else if (ev.kind == PointerEventKind.up) {
-                                root.editor-split-dragging = false;
-                            }
-                        }
-                        moved => {
-                            // Stable window-space coordinates: the splitter moves
-                            // with the drag, so local deltas would feed back (#244).
-                            if (root.editor-split-dragging) {
-                                root.editor-dock-w = clamp(
-                                    central.absolute-position.x + central.width
-                                        - (self.absolute-position.x + self.mouse-x),
-                                    320px, max(320px, central.width - 240px));
-                            }
-                        }
-                    }
-                }
-                if central.editor-docked : Rectangle {
-                    x: parent.width - central.editor-w;
-                    width: central.editor-w;
-                    height: parent.height;
-                    // Defer focus to the next UI turn; focusing from init re-enters
-                    // the Windows accessibility adapter (#386).
-                    property <bool> focus-pending: true;
-                    Timer {
-                        interval: 0ms;
-                        running: parent.focus-pending;
-                        triggered => {
-                            parent.focus-pending = false;
-                            docked-editor.focus-editor();
-                        }
-                    }
-                    docked-editor := EditorPane {
-                        width: parent.width;
-                        height: parent.height;
-                        active: root.editor-open;
-                        show-header: true;
-                        editor-name: root.editor-name;
-                        editor-content <=> root.editor-content;
-                        editor-readonly: root.editor-readonly;
-                        editor-dirty <=> root.editor-dirty;
-                        editor-syntax-source: root.editor-syntax-source;
-                        editor-syntax-spans: root.editor-syntax-spans;
-                        editor-language: root.editor-language;
-                        editor-find-query <=> root.editor-find-query;
-                        editor-replace-text <=> root.editor-replace-text;
-                        editor-match-count <=> root.editor-match-count;
-                        editor-find-position <=> root.editor-find-position;
-                        highlight-pending <=> root.editor-highlight-pending;
-                        save-file => { root.save-file(); }
-                        request-close => { root.request-editor-close(); }
-                        editor-highlight(text) => { root.editor-highlight(text); }
-                        editor-count-matches(content, query) => { return root.editor-count-matches(content, query); }
-                        editor-find-step(content, query, current, reverse) => {
-                            return root.editor-find-step(content, query, current, reverse);
-                        }
-                        editor-replace-all(query, replacement) => { root.editor-replace-all(query, replacement); }
-                    }
-                }
                 // Split-pane area (v0.5): panes tile this rect; each pane has its own
                 // tab strip + active terminal / welcome. Rust flattens the split tree
                 // into `panes` for the size we report here.
                 pane-area := Rectangle {
-                    width: parent.width - central.editor-w - central.editor-split;
+                    width: parent.width;
                     height: parent.height;
                     changed width => { root.content-resized(self.width, self.height); }
                     changed height => { root.content-resized(self.width, self.height); }
@@ -2250,6 +2152,41 @@ export component AppWindow inherits Window {
                         select-end() => { root.term-select-end(term.id); }
                         select-word(r, c) => { root.term-select-word(term.id, r, c); }
                         select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
+                    }
+
+                    // Editor tabs (#494): same show-by-active-id scheme as the
+                    // terminals above. Only the editor is shown — no SFTP panel
+                    // or command bar; drag the tab to split it beside a terminal.
+                    for doc in root.editor-docs : EditorPane {
+                        visible: doc.id == pane.active-id;
+                        width: doc.id == pane.active-id ? parent.width : 0px;
+                        height: doc.id == pane.active-id ? parent.height : 0px;
+                        doc-mode: true;
+                        shown: doc.id == pane.active-id;
+                        active: self.shown;
+                        show-header: true;
+                        show-close: false;
+                        esc-closes: false;
+                        doc-content: doc.content;
+                        doc-revision: doc.revision;
+                        can-save: !doc.orphaned;
+                        status-note: doc.orphaned ? @tr("Connection closed") : "";
+                        editor-name: doc.name;
+                        editor-readonly: doc.readonly;
+                        editor-dirty: doc.dirty;
+                        editor-language: doc.language;
+                        editor-syntax-source: doc.syntax-source;
+                        editor-syntax-spans: doc.syntax-spans;
+                        content-changed => { root.editor-doc-edited(doc.id, self.editor-content); }
+                        save-file => { root.editor-doc-save(doc.id); }
+                        editor-highlight(text) => { root.editor-doc-highlight(doc.id, text); }
+                        editor-count-matches(content, query) => { return root.editor-count-matches(content, query); }
+                        editor-find-step(content, query, current, reverse) => {
+                            return root.editor-find-step(content, query, current, reverse);
+                        }
+                        editor-replace-all(query, replacement) => {
+                            root.editor-doc-replace-all(doc.id, query, replacement);
+                        }
                     }
 
                     // Windows may show the terminal model being reconstructed when
@@ -2854,9 +2791,9 @@ export component AppWindow inherits Window {
         }
     }
 
-    // --- Docked editor: discard confirmation (#287, #494) ------------------
-    // The docked panel itself lives in `central` next to the panes; its unsaved-
-    // changes prompt is a window-level modal like the detached editor's.
+    // --- Editor tabs: discard confirmation (#287, #494) --------------------
+    // Closing an editor tab with unsaved edits asks first, like the detached
+    // editor window. Rust opens this from the tab-close path.
     ConfirmDialog {
         is-open <=> root.editor-discard-confirm-open;
         is-mac: root.is-mac;
@@ -2866,7 +2803,7 @@ export component AppWindow inherits Window {
         confirm-label: @tr("Discard and close");
         confirm => {
             root.editor-discard-confirm-open = false;
-            root.close-editor();
+            root.editor-discard-confirmed(root.editor-discard-id);
         }
         cancel => { root.editor-discard-confirm-open = false; }
     }

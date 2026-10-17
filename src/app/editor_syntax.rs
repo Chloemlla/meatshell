@@ -88,11 +88,18 @@ pub(super) fn highlight(text: &str, path: &str) -> String {
     result
 }
 
-pub(super) fn refresh<H: EditorHost>(window: &H, text: &str) {
+/// Refresh the detached editor window's language and syntax colours.
+pub(super) fn refresh(window: &EditorWindow, text: &str) {
     let path = window.get_editor_path();
     window.set_editor_language(language(path.as_str()).into());
-    let mut spans = highlight(text, path.as_str());
-    if !window.get_dark_mode() {
+    window.set_editor_syntax_spans(themed_spans(text, path.as_str(), window.get_dark_mode()).into());
+    window.set_editor_syntax_source(text.into());
+}
+
+/// Syntax spans for `text`, recoloured for the light theme when needed.
+pub(super) fn themed_spans(text: &str, path: &str, dark: bool) -> String {
+    let mut spans = highlight(text, path);
+    if !dark {
         for (dark, light) in [
             ("ff6a9955", "ff38761d"),
             ("ffce9178", "ffa31515"),
@@ -104,8 +111,7 @@ pub(super) fn refresh<H: EditorHost>(window: &H, text: &str) {
             spans = spans.replace(dark, light);
         }
     }
-    window.set_editor_syntax_spans(spans.into());
-    window.set_editor_syntax_source(text.into());
+    spans
 }
 
 #[cfg(test)]

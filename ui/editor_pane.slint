@@ -7,21 +7,53 @@ export struct EditorFindResult {
     count: int,
 }
 
+// One open file in the main window's editor tabs (#494). Rows live in
+// AppWindow.editor-docs; Slint cannot two-way bind into model rows, so the
+// pane loads `content` on (re)show / `revision` bumps and reports every edit
+// back through a callback, which keeps the row authoritative.
+export struct EditorDoc {
+    id: string,          // tab id ("editor-N")
+    owner: string,       // terminal tab whose SFTP channel reads/writes the file
+    path: string,        // remote path
+    name: string,        // file name shown on the tab
+    content: string,     // latest text, updated on every edit
+    revision: int,       // bumped when Rust replaces `content` (open, replace all)
+    readonly: bool,      // opened with View
+    dirty: bool,         // edited since load / last save
+    orphaned: bool,      // owner tab closed: nothing left to save through
+    language: string,
+    syntax-source: string,
+    syntax-spans: string,
+}
+
 // Body of the built-in file viewer/editor (#70), shared by the detached
-// EditorWindow and the panel embedded in the main window (#494). The host owns
-// the document state and binds it here; this component owns only the find bar,
-// the line-number gutter, the text area and the debounced syntax refresh.
+// EditorWindow and the editor tabs in the main window (#494). It owns the find
+// bar, the line-number gutter, the text area and the debounced syntax refresh;
+// the host owns the document.
 export component EditorPane inherits Rectangle {
     // True while a document is loaded; gates the highlight timer.
     in property <bool> active: false;
-    // The embedded panel needs its own title row; the detached window draws
-    // the same controls in its custom title bar instead.
+    // Editor tabs draw their own title row; the detached window draws the same
+    // controls in its custom title bar instead.
     in property <bool> show-header: false;
+    // The tab strip already has a close button and Esc belongs to the window
+    // in tab mode, so both are only on for the detached window.
+    in property <bool> show-close: true;
+    in property <bool> esc-closes: true;
+    in property <bool> can-save: true;
+    in property <string> status-note;   // e.g. "Connection closed"
+
+    // Document mode (editor tabs): load `doc-content` whenever the pane is
+    // shown or `doc-revision` changes, instead of a two-way bound content.
+    in property <bool> doc-mode: false;
+    in property <string> doc-content;
+    in property <int> doc-revision: 0;
+    in property <bool> shown: false;
 
     in property <string> editor-name;
     in-out property <string> editor-content;
     in property <bool> editor-readonly;
-    in-out property <bool> editor-dirty: false;
+    in property <bool> editor-dirty: false;
     in property <string> editor-syntax-source;
     in property <string> editor-syntax-spans;
     in property <string> editor-language;
@@ -33,23 +65,55 @@ export component EditorPane inherits Rectangle {
 
     callback save-file();
     callback request-close();
+    callback content-changed();          // the user typed; host marks dirty
     callback editor-highlight(string);
     callback editor-count-matches(string, string) -> int;
     callback editor-find-step(string, string, int, bool) -> EditorFindResult;
     callback editor-replace-all(string, string);
 
     public function focus-editor() { edit-input.focus(); }
+    function load-doc() {
+        if root.doc-mode && root.editor-content != root.doc-content {
+            root.editor-content = root.doc-content;
+        }
+    }
+    // Focus on the next UI turn; focusing from init or a change handler can
+    // re-enter the Windows accessibility adapter (#386).
+    property <bool> focus-pending: false;
+    init => {
+        root.load-doc();
+        if root.shown { root.focus-pending = true; }
+    }
+    changed doc-revision => {
+        root.load-doc();
+        root.editor-find-position = -1;
+        root.editor-match-count = root.editor-count-matches(root.editor-content, root.editor-find-query);
+    }
+    changed shown => {
+        if root.shown {
+            root.load-doc();
+            root.focus-pending = true;
+        }
+    }
+    Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            root.focus-pending = false;
+            edit-input.focus();
+        }
+    }
 
     background: Theme.bg-root;
 
-    // Ctrl+S saves and Esc closes while focus is anywhere inside the editor.
-    // The scope never takes focus itself, so in the main window it only sees
-    // keys whose focused item lives in this panel.
+    // Ctrl+S saves (and, for the detached window, Esc closes) while focus is
+    // anywhere inside the editor. The scope never takes focus itself, so in
+    // the main window it only sees keys whose focused item is in this pane.
     FocusScope {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         capture-key-pressed(e) => {
-            if (e.text == Key.Escape) {
+            if (root.esc-closes && e.text == Key.Escape) {
                 root.request-close();
                 return accept;
             }
@@ -79,14 +143,15 @@ export component EditorPane inherits Rectangle {
                         text: root.editor-name + "  ·  " + root.editor-language
                             + (root.editor-readonly
                                 ? "  ·  " + @tr("Read-only")
-                                : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""));
+                                : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""))
+                            + (root.status-note == "" ? "" : "  ·  " + root.status-note);
                         color: Theme.text-secondary;
                         font-size: Theme.fs-sm;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                         overflow: elide;
                     }
-                    if !root.editor-readonly : Rectangle {
+                    if !root.editor-readonly && root.can-save : Rectangle {
                         width: 76px;
                         height: 28px;
                         y: (parent.height - self.height) / 2;
@@ -99,7 +164,7 @@ export component EditorPane inherits Rectangle {
                         Text { text: @tr("Save"); color: #ffffff; font-size: Theme.fs-sm;
                                horizontal-alignment: center; vertical-alignment: center; }
                     }
-                    Rectangle {
+                    if root.show-close : Rectangle {
                         width: 28px;
                         height: 28px;
                         y: (parent.height - self.height) / 2;
@@ -287,7 +352,7 @@ export component EditorPane inherits Rectangle {
                                     }
                                 }
                                 edited => {
-                                    root.editor-dirty = true;
+                                    root.content-changed();
                                     root.highlight-pending = true;
                                     root.editor-match-count = root.editor-count-matches(
                                         root.editor-content, root.editor-find-query);

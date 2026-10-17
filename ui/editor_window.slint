@@ -154,7 +154,8 @@ export component EditorWindow inherits Window {
                 editor-name: root.editor-name;
                 editor-content <=> root.editor-content;
                 editor-readonly: root.editor-readonly;
-                editor-dirty <=> root.editor-dirty;
+                editor-dirty: root.editor-dirty;
+                content-changed => { root.editor-dirty = true; }
                 editor-syntax-source: root.editor-syntax-source;
                 editor-syntax-spans: root.editor-syntax-spans;
                 editor-language: root.editor-language;

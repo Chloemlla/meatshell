@@ -5,7 +5,8 @@ export struct TabInfo {
     id: string,
     title: string,
     title_len: int,
-    kind: string,   // "welcome" | "terminal"
+    kind: string,   // "welcome" | "terminal" | "editor" (#494)
+    // terminal: session connected. editor: no unsaved edits.
     connected: bool,
 }
 
@@ -112,7 +113,7 @@ component SingleTab inherits Rectangle {
             }
         }
         double-clicked => {
-            if (root.info.kind != "welcome") { root.duplicated(); }
+            if (root.info.kind == "terminal") { root.duplicated(); }
         }
     }
 
@@ -127,7 +128,9 @@ component SingleTab inherits Rectangle {
             width: 8px; height: 8px;
             y: (parent.height - self.height) / 2;
             border-radius: 4px;
+            // Editor tabs (#494): accent while there are unsaved edits.
             background: info.kind == "welcome" ? Theme.text-muted
+                : info.kind == "editor" ? (info.connected ? Theme.text-muted : Theme.accent)
                 : (info.connected ? Theme.success : Theme.warning);
         }
 
@@ -292,6 +295,7 @@ export component TabBar inherits Rectangle {
     property <length> menu-x;
     property <length> menu-y;
     property <string> menu-target;
+    property <string> menu-target-kind;
 
     height: 36px;
     background: Theme.bg-panel-alt;
@@ -503,6 +507,7 @@ export component TabBar inherits Rectangle {
                         duplicated => { root.tab-duplicate(tab.id); }
                         context-requested(ax, ay) => {
                             root.menu-target = tab.id;
+                            root.menu-target-kind = tab.kind;
                             root.menu-x = ax - root.absolute-position.x;
                             root.menu-y = ay - root.absolute-position.y;
                             tab-menu.show();
@@ -654,12 +659,12 @@ export component TabBar inherits Rectangle {
                 spacing: 1px;
                 TabMenuItem {
                     label: @tr("Duplicate connection");
-                    enabled: root.menu-target != "welcome";
+                    enabled: root.menu-target-kind == "terminal";
                     clicked => { root.tab-duplicate(root.menu-target); }
                 }
                 TabMenuItem {
                     label: @tr("Rename");
-                    enabled: root.menu-target != "welcome";
+                    enabled: root.menu-target-kind == "terminal";
                     clicked => { root.tab-rename-request(root.menu-target); }
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }

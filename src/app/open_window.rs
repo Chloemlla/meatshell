@@ -204,6 +204,9 @@ pub(super) fn open_window(
 
     let terminals_model: Rc<VecModel<TerminalState>> = Rc::new(VecModel::default());
     window.set_terminals(ModelRc::from(terminals_model.clone()));
+    // Files open as editor tabs (#494); see editor_tabs.rs.
+    let editor_docs_model: Rc<VecModel<EditorDoc>> = Rc::new(VecModel::default());
+    window.set_editor_docs(ModelRc::from(editor_docs_model.clone()));
 
     // Split-pane layout tree (v0.5). Starts as a single pane owning the welcome
     // tab; tab opens/closes/moves mutate it and re-flatten into the `panes`
@@ -701,6 +704,18 @@ pub(super) fn open_window(
         &editor_win,
         sftp_handles.clone(),
         sftp_last_cwd.clone(),
+    );
+    wire_editor_tabs(
+        &window,
+        EditorTabModels {
+            docs: editor_docs_model.clone(),
+            tabs: tabs_model.clone(),
+            layout: layout.clone(),
+            content_size: content_size.clone(),
+            panes: panes_model.clone(),
+            splitters: splitters_model.clone(),
+        },
+        sftp_handles.clone(),
     );
     wire_key_input(
         &window,

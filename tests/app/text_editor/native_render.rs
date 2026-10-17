@@ -199,29 +199,103 @@ fn editor_app_window_renders_highlighted_document() {
     }).join().unwrap();
 }
 
+fn editor_doc(id: &str, owner: &str, path: &str, content: &str, dirty: bool) -> super::super::EditorDoc {
+    super::super::EditorDoc {
+        id: id.into(),
+        owner: owner.into(),
+        path: path.into(),
+        name: path.rsplit('/').next().unwrap_or(path).into(),
+        content: content.into(),
+        revision: 0,
+        readonly: false,
+        dirty,
+        orphaned: false,
+        language: super::super::editor_syntax::language(path).into(),
+        syntax_source: content.into(),
+        syntax_spans: super::super::editor_syntax::themed_spans(content, path, true).into(),
+    }
+}
+
+fn tab(id: &str, title: &str, kind: &str, connected: bool) -> super::super::TabInfo {
+    super::super::TabInfo {
+        id: id.into(),
+        title: title.into(),
+        title_len: title.chars().count() as i32,
+        kind: kind.into(),
+        connected,
+    }
+}
+
 #[test]
-fn docked_editor_renders_inside_the_main_window() {
-    // #494: the main window hosts the same editor body beside its panes.
+fn editor_tab_renders_in_a_split_pane() {
+    // #494: an editor tab shows only the editor, in whichever pane holds it.
     std::thread::spawn(|| {
+        use slint::{ModelRc, VecModel};
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
         slint::platform::set_platform(Box::new(Backend(window.clone()))).unwrap();
         let ui = super::super::AppWindow::new().unwrap();
-        let text = "server {\n    listen 80;\n}\nfn main() {\n    println!(\"docked\");\n}\n";
-        ui.set_editor_embedded(true);
-        ui.set_editor_path("example.rs".into());
-        ui.set_editor_name("example.rs".into());
-        ui.set_editor_content(text.into());
-        super::super::editor_syntax::refresh(&ui, text);
-        ui.set_editor_open(true);
+        let text = "server {\n    listen 80;\n}\nfn main() {\n    println!(\"tab\");\n}\n";
+        ui.set_editor_docs(ModelRc::from(std::rc::Rc::new(VecModel::from(vec![
+            editor_doc("editor-1", "t1", "/etc/example.rs", text, true),
+        ]))));
+        let pane = |id: i32, x: f32, w: f32, tabs: Vec<super::super::TabInfo>, active: &str| {
+            super::super::PaneInfo {
+                id,
+                x,
+                y: 0.0,
+                w,
+                h: 700.0,
+                active_id: active.into(),
+                focused: id == 1,
+                reserve_right: 0.0,
+                tabs: ModelRc::from(std::rc::Rc::new(VecModel::from(tabs))),
+            }
+        };
+        ui.set_panes(ModelRc::from(std::rc::Rc::new(VecModel::from(vec![
+            pane(0, 0.0, 500.0, vec![tab("welcome", "New tab", "welcome", false)], "welcome"),
+            // Unsaved edits: the tab dot uses the accent colour.
+            pane(1, 504.0, 600.0, vec![tab("editor-1", "example.rs", "editor", false)], "editor-1"),
+        ]))));
         ui.show().unwrap();
         window.set_size(slint::PhysicalSize::new(1400, 800));
         let mut pixels = vec![Rgb8Pixel::default(); 1400 * 800];
         window.request_redraw();
         assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1400); }));
-        assert_eq!(ui.get_editor_language().as_str(), "Rust");
-        assert!(!ui.get_editor_syntax_spans().is_empty());
         let bytes: Vec<u8> = pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/editor-docked-qa.png");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/editor-tab-qa.png");
         image::save_buffer(path, &bytes, 1400, 800, image::ColorType::Rgb8).unwrap();
+    }).join().unwrap();
+}
+
+#[test]
+fn editor_tab_close_asks_when_dirty_and_orphans_on_terminal_close() {
+    std::thread::spawn(|| {
+        use slint::{Model, ModelRc, VecModel};
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Backend(window.clone()))).unwrap();
+        let ui = super::super::AppWindow::new().unwrap();
+        let docs = std::rc::Rc::new(VecModel::from(vec![
+            editor_doc("editor-1", "t1", "/a.conf", "a", true),
+            editor_doc("editor-2", "t1", "/b.conf", "b", false),
+            editor_doc("editor-3", "t2", "/c.conf", "c", false),
+        ]));
+        ui.set_editor_docs(ModelRc::from(docs.clone()));
+
+        // Unsaved edits defer the close to the confirmation dialog.
+        assert!(super::super::editor_tabs::close_needs_confirm(&ui, "editor-1"));
+        assert!(ui.get_editor_discard_confirm_open());
+        assert_eq!(ui.get_editor_discard_id().as_str(), "editor-1");
+        // A clean document and a terminal tab close straight away.
+        assert!(!super::super::editor_tabs::close_needs_confirm(&ui, "editor-2"));
+        assert!(!super::super::editor_tabs::close_needs_confirm(&ui, "t1"));
+
+        // Closing an editor tab drops its document only.
+        super::super::editor_tabs::forget_tab(&ui, "editor-2");
+        assert_eq!(docs.row_count(), 2);
+        // Closing terminal t1 orphans the documents it saved through.
+        super::super::editor_tabs::forget_tab(&ui, "t1");
+        let rows: Vec<_> = docs.iter().collect();
+        assert!(rows.iter().find(|d| d.id == "editor-1").unwrap().orphaned);
+        assert!(!rows.iter().find(|d| d.id == "editor-3").unwrap().orphaned);
     }).join().unwrap();
 }

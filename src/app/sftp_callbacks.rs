@@ -728,10 +728,9 @@ pub(super) fn wire_sftp_callbacks(
         });
     }
 
-    // Built-in editor (#70): the detached window and the panel docked in the
-    // main window (#494) share save/close/find logic.
-    wire_editor_host(editor, sftp_handles.clone());
-    wire_editor_host(window, sftp_handles);
+    // Built-in editor (#70), detached-window mode. Editor tabs (#494) are
+    // wired in editor_tabs::wire_editor_tabs.
+    wire_editor_window(editor, sftp_handles);
 }
 
 // ---------------------------------------------------------------------------

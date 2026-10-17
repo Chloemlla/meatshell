@@ -1346,10 +1346,10 @@ export component InterfacePanel inherits Rectangle {
                     }
                 }
                 SettingRow {
-                    label: root.lang-en ? "Edit files in the main window" : "在主界面中编辑文件";
+                    label: root.lang-en ? "Open files in a tab" : "在标签页中打开文件";
                     desc: root.lang-en
-                        ? "Open text files in a panel docked on the right of the main window instead of a separate editor window."
-                        : "在主界面右侧的停靠面板中打开文本文件,而不是单独的编辑器窗口。";
+                        ? "On: text files open as editor tabs in the main window (drag a tab to split it). Off: they open in a separate editor window."
+                        : "开启:文本文件以编辑器标签页在主界面中打开(拖动标签可分屏)。关闭:在单独的编辑器窗口中打开。";
                     show-divider: false;
                     Switch {
                         on: root.editor-embedded;

@@ -310,10 +310,17 @@ pub(super) fn apply_session_event_to_window(
             error,
         } => {
             if error.is_empty() {
-                // Open the built-in viewer/editor (#70): docked in this window
-                // or in the detached editor window, per Settings → SFTP (#494).
+                // Open the built-in viewer/editor (#70): as an editor tab in
+                // this window or in the detached editor window, per
+                // Settings → SFTP (#494).
                 if win.get_editor_embedded() {
-                    open_document(win, tab_id, path, name, content, edit);
+                    win.invoke_open_editor_tab(
+                        tab_id.into(),
+                        path.into(),
+                        name.into(),
+                        content.into(),
+                        !edit,
+                    );
                 } else {
                     open_document(editor, tab_id, path, name, content, edit);
                 }
