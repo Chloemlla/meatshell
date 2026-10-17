@@ -584,6 +584,17 @@ pub(super) fn wire_sftp_callbacks(
             }
         });
     }
+    // Double-click on a file (#493): edit it if it is text, else download.
+    {
+        let sftp_handles = sftp_handles.clone();
+        window.on_sftp_open_file(move |tab_id: SharedString, path: SharedString| {
+            if let Ok(handles) = sftp_handles.lock() {
+                if let Some(h) = handles.get(tab_id.as_str()) {
+                    h.open_or_download(path.to_string());
+                }
+            }
+        });
+    }
     {
         let sftp_handles = sftp_handles.clone();
         window.on_sftp_edit(move |tab_id: SharedString, path: SharedString| {

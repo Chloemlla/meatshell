@@ -102,6 +102,10 @@ impl SftpHandle {
     pub fn read_text(&self, remote: String, edit: bool) {
         let _ = self.commands.send(SftpCommand::ReadText { remote, edit });
     }
+    /// Double-click on a file: edit it if it is text, else download (#493).
+    pub fn open_or_download(&self, remote: String) {
+        let _ = self.commands.send(SftpCommand::OpenOrDownload { remote });
+    }
     pub fn write_text(&self, remote: String, content: String) {
         let _ = self
             .commands
@@ -1383,6 +1387,32 @@ async fn run_sftp(
                     error,
                 });
             }
+            SftpCommand::OpenOrDownload { remote } => {
+                let name = base_name(&remote);
+                let _ = events.send(SessionEvent::SftpStatus(format!(
+                    "{} {}...",
+                    t("打开", "Opening"),
+                    name
+                )));
+                // Same checks as "Edit": anything the built-in editor would
+                // refuse (binary, not UTF-8, too large, unreadable) is
+                // downloaded instead, without an error message.
+                match read_text_guarded(&sftp, &remote).await {
+                    Ok(content) => {
+                        let _ = events.send(SessionEvent::SftpFileText {
+                            path: remote,
+                            name,
+                            content,
+                            edit: true,
+                            error: String::new(),
+                        });
+                    }
+                    Err(reason) => {
+                        tracing::debug!("double-click {remote}: not opened as text ({reason})");
+                        let _ = events.send(SessionEvent::SftpDownloadInstead { path: remote });
+                    }
+                }
+            }
             SftpCommand::WriteText { remote, content } => {
                 let name = base_name(&remote);
                 match write_text_file(&sftp, &remote, &content).await {
@@ -1423,16 +1453,18 @@ enum EditorTextRejection {
     InvalidUtf8,
 }
 
+/// Control characters other than tab / LF / CR (and DEL): the file is binary.
+fn has_control_bytes(bytes: &[u8]) -> bool {
+    bytes.iter().any(|&byte| {
+        (byte < 0x20 && byte != b'\t' && byte != b'\n' && byte != b'\r') || byte == 0x7f
+    })
+}
+
 fn validate_editor_text(bytes: Vec<u8>) -> std::result::Result<String, EditorTextRejection> {
     if bytes.len() > MAX_BUILTIN_EDITOR_BYTES {
         return Err(EditorTextRejection::TooLarge);
     }
-    if bytes
-        .iter()
-        .any(|&byte| {
-            (byte < 0x20 && byte != b'\t' && byte != b'\n' && byte != b'\r') || byte == 0x7f
-        })
-    {
+    if has_control_bytes(&bytes) {
         return Err(EditorTextRejection::Binary);
     }
 
@@ -1513,6 +1545,12 @@ async fn read_text_guarded(
             .map_err(|e| format!("{}: {e}", t("读取失败", "Read failed")))?;
         if count == 0 {
             break;
+        }
+        // Binary files usually show it in the first chunk: stop reading
+        // instead of pulling up to 512 KB first (matters for #493, where every
+        // double-clicked file is tried as text before it is downloaded).
+        if has_control_bytes(&chunk[..count]) {
+            return Err(editor_rejection_message(EditorTextRejection::Binary));
         }
         lines += chunk[..count].iter().filter(|&&byte| byte == b'\n').count();
         if lines > MAX_BUILTIN_EDITOR_LINES {
@@ -2820,6 +2858,40 @@ mod sanitize_tests {
         assert_eq!(attrs.size, None);
         assert_eq!(attrs.atime, None);
         assert_eq!(attrs.mtime, None);
+    }
+
+    #[test]
+    fn double_click_text_detection_keeps_text_and_rejects_binaries() {
+        // #493: the same check decides between "open in editor" and "download".
+        for text in [
+            "plain\n",
+            "tabs\tand\r\nCRLF",
+            "中文 UTF-8 ✓\n",
+            "#!/bin/sh\necho hi\n",
+            "",
+        ] {
+            assert!(!super::has_control_bytes(text.as_bytes()), "{text:?}");
+            assert_eq!(validate_editor_text(text.as_bytes().to_vec()), Ok(text.to_string()));
+        }
+        for binary in [
+            &b"\x89PNG\r\n\x1a\n"[..],
+            &b"\x7fELF\x02\x01"[..],
+            &b"PK\x03\x04"[..],
+            &b"text\0with nul"[..],
+        ] {
+            assert!(super::has_control_bytes(binary), "{binary:?}");
+            assert_eq!(
+                validate_editor_text(binary.to_vec()),
+                Err(EditorTextRejection::Binary)
+            );
+        }
+        // GBK text has no control bytes but is not UTF-8: downloaded, not garbled.
+        let gbk = vec![0xc4, 0xe3, 0xba, 0xc3];
+        assert!(!super::has_control_bytes(&gbk));
+        assert_eq!(
+            validate_editor_text(gbk),
+            Err(EditorTextRejection::InvalidUtf8)
+        );
     }
 
     #[test]

@@ -345,6 +345,11 @@ pub(super) fn apply_session_event_to_window(
                 update_terminal(&|t| t.sftp_status = error.clone().into());
             }
         }
+        SessionEvent::SftpDownloadInstead { path } => {
+            // Double-clicked file that isn't editable text (#493): run the
+            // regular download, exactly as the Download menu entry would.
+            win.invoke_sftp_download(tab_id.into(), path.into());
+        }
         SessionEvent::SftpTreeUpdate(nodes) => {
             let slint_nodes: Vec<SftpTreeNode> = nodes
                 .iter()

@@ -175,6 +175,9 @@ export component SftpPanel inherits Rectangle {
     callback toggle-collapsed();    // minimise / restore the panel
     callback navigate(string);
     callback download(string);
+    // Double-click on a file (#493): open it in the built-in editor when it
+    // is text, otherwise download it.
+    callback open-file(string);
     callback upload-clicked(string /* remote dir */, bool /* folder */);
     callback refresh(string);
     callback tree-expand(string);   // toggle expand/collapse + navigate
@@ -961,7 +964,7 @@ export component SftpPanel inherits Rectangle {
                                         if (entry.is-dir) {
                                             root.navigate(entry.full-path);
                                         } else {
-                                            root.download(entry.full-path);
+                                            root.open-file(entry.full-path);
                                         }
                                     }
                                     pointer-event(ev) => {

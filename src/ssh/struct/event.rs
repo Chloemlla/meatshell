@@ -128,6 +128,9 @@ pub enum SessionEvent {
         edit: bool,
         error: String,
     },
+    /// A double-clicked file could not be opened as text (#493): download it
+    /// the usual way instead (download folder, conflict prompt and all).
+    SftpDownloadInstead { path: String },
 }
 
 /// Handle retained by the UI layer to talk to a running session.
