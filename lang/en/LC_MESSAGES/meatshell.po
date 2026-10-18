@@ -378,6 +378,12 @@ msgstr "Terminal character encoding"
 msgid "Use GBK for servers configured for GB2312 or GBK output."
 msgstr "Use GBK for servers configured for GB2312 or GBK output."
 
+msgid "Terminal type"
+msgstr "Terminal type"
+
+msgid "Sent to the server as TERM. Try xterm if a program fails to start or shows garbled output."
+msgstr "Sent to the server as TERM. Try xterm if a program fails to start or shows garbled output."
+
 msgid "Enable VT100 line drawing even in UTF-8 mode"
 msgstr "Enable VT100 line drawing even in UTF-8 mode"
 

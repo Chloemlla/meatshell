@@ -1683,7 +1683,7 @@ async fn run_session(
         &format!("request PTY at {}:{}", session.host, session.port),
         channel.request_pty(
             true,
-            "xterm-256color",
+            session.effective_term_type(),
             initial_cols,
             initial_rows,
             0,

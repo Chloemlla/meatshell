@@ -964,6 +964,7 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-rdp-height: "720";
     in-out property <string> dialog-encoding: "UTF-8";
     in-out property <bool> dialog-vt100-drawing: false;
+    in-out property <string> dialog-term-type: "xterm-256color";
     in-out property <string> dialog-session-log: "default";
     in-out property <bool> dialog-disable-shell-integration: false;
     in-out property <string> dialog-sftp-mode: "";
@@ -4499,6 +4500,7 @@ export component AppWindow inherits Window {
         draft-rdp-height <=> root.dialog-rdp-height;
         draft-encoding <=> root.dialog-encoding;
         draft-vt100-drawing <=> root.dialog-vt100-drawing;
+        draft-term-type <=> root.dialog-term-type;
         draft-session-log <=> root.dialog-session-log;
         draft-disable-shell-integration <=> root.dialog-disable-shell-integration;
         draft-sftp-mode <=> root.dialog-sftp-mode;

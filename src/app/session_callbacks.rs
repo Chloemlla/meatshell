@@ -180,6 +180,7 @@ pub(super) fn wire_session_callbacks(
             w.set_dialog_rdp_height("720".into());
             w.set_dialog_encoding("UTF-8".into());
             w.set_dialog_vt100_drawing(false);
+            w.set_dialog_term_type(crate::config::DEFAULT_TERM_TYPE.into());
             w.set_dialog_session_log("default".into());
             w.set_dialog_disable_shell_integration(false);
             w.set_dialog_sftp_mode("".into());
@@ -455,6 +456,7 @@ pub(super) fn wire_session_callbacks(
                 w.set_dialog_rdp_height(session.rdp_height.to_string().into());
                 w.set_dialog_encoding(session.encoding.clone().into());
                 w.set_dialog_vt100_drawing(session.vt100_drawing);
+                w.set_dialog_term_type(session.effective_term_type().into());
                 w.set_dialog_session_log(session.session_log.as_str().into());
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
                 w.set_dialog_sftp_mode(session.sftp_mode.clone().into());
