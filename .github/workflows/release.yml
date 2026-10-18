@@ -152,8 +152,12 @@ jobs:
         run: |
           mkdir -p target/release
           cp target/${{ matrix.target }}/release/meatshell target/release/meatshell
-          cargo deb --no-build
-          echo "DEB=$(find target/debian -name '*.deb' -print -quit)" >> "$GITHUB_ENV"
+          # Name it like the other release files: meatshell-v0.7.8-linux-x86_64.deb
+          DEB="target/debian/meatshell-${GITHUB_REF_NAME:-dev}-${{ matrix.name }}.deb"
+          mkdir -p target/debian
+          cargo deb --no-build --output "$DEB"
+          test -f "$DEB"
+          echo "DEB=$DEB" >> "$GITHUB_ENV"
 
       - name: Package
         shell: bash
