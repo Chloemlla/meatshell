@@ -130,6 +130,10 @@ dark-light = "1"
 # HTTPS release checks and installer downloads run on background threads.
 # rustls provides TLS without requiring a system OpenSSL installation.
 ureq = { version = "2", features = ["tls"] }
+# Unpack the Linux .tar.gz release for one-click in-place updates (#390).
+# Both were already in the dependency tree.
+flate2 = "1"
+tar = "0.4"
 
 # Image decoding: custom wallpapers (PNG/JPEG/WebP/BMP) for the immersive theme,
 # and the embedded PNG window icon on Linux. On Windows the icon comes from the

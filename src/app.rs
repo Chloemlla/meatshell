@@ -336,6 +336,7 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
 
     #[cfg(windows)]
     crate::update::windows::cleanup_stale_downloads();
+    crate::update::inplace::cleanup_after_update();
     open_window(core.clone(), false, None)?;
     let tray_timer = tray::install(core.clone());
 

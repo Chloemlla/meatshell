@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::time::Duration;
 
+pub mod inplace;
 #[cfg(windows)]
 pub mod windows;
 
@@ -64,13 +65,18 @@ pub fn check() -> Result<Option<Release>> {
 
 impl Release {
     pub fn windows_installer(&self) -> Result<&Asset> {
+        self.asset(&format!("meatshell-{}-windows-x86_64.msi", self.tag_name))
+    }
+
+    /// The release file named `name`, accepted only from this repository's
+    /// release download path for this tag and only with a SHA-256 digest.
+    pub fn asset(&self, name: &str) -> Result<&Asset> {
         ensure!(version(&self.tag_name).is_some(), "Invalid release version");
-        let name = format!("meatshell-{}-windows-x86_64.msi", self.tag_name);
         let asset = self
             .assets
             .iter()
             .find(|asset| asset.name == name)
-            .context("This release has no Windows x64 installer yet. Try again later.")?;
+            .with_context(|| format!("This release has no {name} yet. Try again later."))?;
         let url = url::Url::parse(&asset.browser_download_url)?;
         ensure!(
             url.scheme() == "https"

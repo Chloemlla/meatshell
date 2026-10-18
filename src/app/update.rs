@@ -1,6 +1,7 @@
 //! Connects the shared update state to each window's existing update controls.
 
 use super::*;
+use crate::update::inplace::{self, Method};
 use crate::update::Release;
 
 #[derive(Default)]
@@ -9,8 +10,33 @@ pub struct State {
     busy: bool,
     status: String,
     error: bool,
+    /// How this build updates; detected once (it probes folder permissions).
+    method: Option<Method>,
+    package: Option<Package>,
+}
+
+/// A verified update waiting for "Install and restart".
+enum Package {
     #[cfg(windows)]
-    download: Option<crate::update::windows::Download>,
+    Msi(crate::update::windows::Download),
+    InPlace(inplace::Prepared),
+}
+
+fn method(core: &Rc<AppCore>) -> Method {
+    core.update
+        .borrow_mut()
+        .method
+        .get_or_insert_with(inplace::detect)
+        .clone()
+}
+
+fn one_click(method: &Method) -> bool {
+    match method {
+        #[cfg(windows)]
+        Method::Msi(_) => true,
+        Method::InPlace(_) => true,
+        _ => false,
+    }
 }
 
 fn publish(core: &Rc<AppCore>) {
@@ -29,8 +55,7 @@ fn publish(core: &Rc<AppCore>) {
                     .into(),
             );
             window.set_update_available(state.release.is_some());
-            #[cfg(windows)]
-            window.set_update_ready(state.download.is_some());
+            window.set_update_ready(state.package.is_some());
         }
     });
 }
@@ -49,6 +74,7 @@ fn check(core: &Rc<AppCore>, manual: bool) {
     if core.update.borrow().busy {
         return;
     }
+    let package_manager = method(core) == Method::PackageManager;
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
@@ -64,16 +90,18 @@ fn check(core: &Rc<AppCore>, manual: bool) {
                 state.busy = false;
                 match result {
                     Ok(release) => {
-                        #[cfg(windows)]
                         if state.release.as_ref().map(|r| &r.tag_name)
                             != release.as_ref().map(|r| &r.tag_name)
                         {
-                            state.download = None;
+                            state.package = None;
                         }
-                        state.status = if release.is_some() {
-                            t("有新版本可用", "An update is available")
-                        } else {
-                            t("当前已是最新版本", "You are up to date")
+                        state.status = match (&release, package_manager) {
+                            (Some(_), true) => t(
+                                "有新版本，请通过系统包管理器更新",
+                                "An update is available — update it with your package manager",
+                            ),
+                            (Some(_), false) => t("有新版本可用", "An update is available"),
+                            (None, _) => t("当前已是最新版本", "You are up to date"),
                         }
                         .into();
                         state.release = release;
@@ -96,7 +124,6 @@ fn check(core: &Rc<AppCore>, manual: bool) {
     });
 }
 
-#[cfg(windows)]
 fn download(core: &Rc<AppCore>) {
     if core.update.borrow().busy {
         return;
@@ -104,6 +131,10 @@ fn download(core: &Rc<AppCore>) {
     let Some(release) = core.update.borrow().release.clone() else {
         return;
     };
+    let method = method(core);
+    if !one_click(&method) {
+        return;
+    }
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
@@ -113,26 +144,34 @@ fn download(core: &Rc<AppCore>) {
     publish(core);
     std::thread::spawn(move || {
         let mut last_percent = 0;
-        let result = release.windows_installer().and_then(|asset| {
-            crate::update::windows::Download::fetch(asset, |received, size| {
-                let percent = (received.saturating_mul(100) / size) as i32;
-                if percent != last_percent {
-                    last_percent = percent;
-                    on_ui(move |core| {
-                        core.update.borrow_mut().status =
-                            format!("{} {percent}%", t("正在下载", "Downloading"));
-                        publish(core);
-                    });
-                }
-            })
-        });
+        let progress = move |received: u64, size: u64| {
+            let percent = (received.saturating_mul(100) / size.max(1)) as i32;
+            if percent != last_percent {
+                last_percent = percent;
+                on_ui(move |core| {
+                    core.update.borrow_mut().status =
+                        format!("{} {percent}%", t("正在下载", "Downloading"));
+                    publish(core);
+                });
+            }
+        };
+        let result = match method {
+            #[cfg(windows)]
+            Method::Msi(_) => release.windows_installer().and_then(|asset| {
+                crate::update::windows::Download::fetch(asset, progress).map(Package::Msi)
+            }),
+            Method::InPlace(target) => {
+                inplace::prepare(&release, &target, progress).map(Package::InPlace)
+            }
+            _ => unreachable!("download is offered only for one-click updates"),
+        };
         on_ui(move |core| {
             {
                 let mut state = core.update.borrow_mut();
                 state.busy = false;
                 match result {
                     Ok(package) => {
-                        state.download = Some(package);
+                        state.package = Some(package);
                         state.status = t(
                             "下载已验证，可以安装",
                             "Download verified; ready to install",
@@ -153,29 +192,50 @@ fn download(core: &Rc<AppCore>) {
     });
 }
 
-#[cfg(windows)]
+/// Close every window through the same path as Quit (saves layouts, stops workers).
+fn shut_down(core: &Rc<AppCore>) {
+    let windows: Vec<_> = core
+        .window_states
+        .borrow()
+        .values()
+        .map(|state| state.main_win.clone())
+        .collect();
+    for window in windows {
+        window.invoke_confirm_close_yes();
+    }
+}
+
 fn install(core: &Rc<AppCore>, weak: &slint::Weak<AppWindow>) {
-    if core.update.borrow().busy {
+    if core.update.borrow().busy || core.update.borrow().package.is_none() {
         return;
     }
-    let Some(executable) = crate::update::windows::installed_executable() else {
-        return;
-    };
-    let result = DialogOwner::of_weak(weak).message()
-        .set_title(t("安装更新", "Install update"))
-        .set_description(t(
+    #[cfg(windows)]
+    let msi = matches!(core.update.borrow().package, Some(Package::Msi(_)));
+    #[cfg(not(windows))]
+    let msi = false;
+    let description = if msi {
+        t(
             "将关闭所有 MeatShell 窗口和连接，然后安装更新并重新打开程序。请先保存编辑中的文件。Windows 可能要求管理员授权。",
             "All MeatShell windows and connections will close. The update will be installed and the app reopened. Save any files you are editing first. Windows may request administrator permission.",
-        ))
-        .set_buttons(rfd::MessageButtons::OkCancel).show();
+        )
+    } else {
+        t(
+            "将关闭所有 MeatShell 窗口和连接，然后替换为新版本并重新打开程序。请先保存编辑中的文件。",
+            "All MeatShell windows and connections will close, MeatShell will be replaced with the new version and reopened. Save any files you are editing first.",
+        )
+    };
+    let result = DialogOwner::of_weak(weak)
+        .message()
+        .set_title(t("安装更新", "Install update"))
+        .set_description(description)
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .show();
     if result != rfd::MessageDialogResult::Ok {
         return;
     }
-    let Some(mut package) = core.update.borrow_mut().download.take() else {
+    let Some(package) = core.update.borrow_mut().package.take() else {
         return;
     };
-    let data_dir = crate::config::data_dir();
-    let english = crate::i18n::is_en();
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
@@ -183,44 +243,80 @@ fn install(core: &Rc<AppCore>, weak: &slint::Weak<AppWindow>) {
         state.error = false;
     }
     publish(core);
+    match package {
+        #[cfg(windows)]
+        Package::Msi(package) => install_msi(package),
+        Package::InPlace(prepared) => install_in_place(prepared),
+    }
+}
+
+#[cfg(windows)]
+fn install_msi(mut package: crate::update::windows::Download) {
+    let Some(executable) = crate::update::windows::installed_executable() else {
+        return;
+    };
+    let data_dir = crate::config::data_dir();
+    let english = crate::i18n::is_en();
     std::thread::spawn(move || {
         let result = package.launch(&executable, &data_dir, english);
         on_ui(move |core| match result {
-            Ok(()) => {
-                // Use the same shutdown path as Quit: save layouts and stop workers.
-                let windows: Vec<_> = core
-                    .window_states
-                    .borrow()
-                    .values()
-                    .map(|state| state.main_win.clone())
-                    .collect();
-                for window in windows {
-                    window.invoke_confirm_close_yes();
-                }
-            }
+            Ok(()) => shut_down(core),
             Err(error) => {
                 drop(package);
-                {
-                    let mut state = core.update.borrow_mut();
-                    state.busy = false;
-                    state.error = true;
-                    state.status = format!(
-                        "{}: {error:#}",
-                        t(
-                            "无法开始安装，请重新下载",
-                            "Could not start installation; download again"
-                        )
-                    );
-                }
-                publish(core);
+                failed(
+                    core,
+                    t("无法开始安装，请重新下载", "Could not start installation; download again"),
+                    error,
+                );
             }
         });
     });
 }
 
+fn install_in_place(mut prepared: inplace::Prepared) {
+    std::thread::spawn(move || {
+        let result = prepared.install();
+        drop(prepared);
+        let outcome = result.map(|path| inplace::relaunch(&path));
+        on_ui(move |core| match outcome {
+            Ok(Ok(())) => shut_down(core),
+            Ok(Err(error)) => {
+                // The new files are in place; only the automatic restart failed.
+                tracing::warn!("update: relaunch failed: {error:#}");
+                {
+                    let mut state = core.update.borrow_mut();
+                    state.busy = false;
+                    state.error = true;
+                    state.release = None;
+                    state.status = t(
+                        "更新已安装，请重新启动 MeatShell 以使用新版本",
+                        "Update installed; restart MeatShell to use it",
+                    )
+                    .into();
+                }
+                publish(core);
+            }
+            Err(error) => failed(
+                core,
+                t("安装失败，请重新下载", "Installation failed; download again"),
+                error,
+            ),
+        });
+    });
+}
+
+fn failed(core: &Rc<AppCore>, message: &str, error: anyhow::Error) {
+    {
+        let mut state = core.update.borrow_mut();
+        state.busy = false;
+        state.error = true;
+        state.status = format!("{message}: {error:#}");
+    }
+    publish(core);
+}
+
 pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
-    #[cfg(windows)]
-    window.set_update_install_supported(crate::update::windows::installed_executable().is_some());
+    window.set_update_install_supported(one_click(&method(core)));
     {
         let core = core.clone();
         window.on_check_for_updates(move || check(&core, true));
@@ -230,9 +326,8 @@ pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
         let weak = window.as_weak();
         window.on_update_action(move || {
             let Some(window) = weak.upgrade() else { return };
-            #[cfg(windows)]
             if window.get_update_install_supported() {
-                if core.update.borrow().download.is_some() {
+                if core.update.borrow().package.is_some() {
                     install(&core, &weak);
                 } else {
                     download(&core);
@@ -252,8 +347,5 @@ pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
 /// The application uses process::exit after bounded shutdown, so drop pending
 /// downloads explicitly rather than relying on destructors at process exit.
 pub(super) fn cleanup(core: &Rc<AppCore>) {
-    #[cfg(windows)]
-    {
-        core.update.borrow_mut().download = None;
-    }
+    core.update.borrow_mut().package = None;
 }

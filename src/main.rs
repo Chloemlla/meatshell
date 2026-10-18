@@ -62,6 +62,9 @@ impl StartMode {
 
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
+    // Started by a one-click update: let the previous process exit first (#390).
+    #[cfg(not(feature = "headless"))]
+    update::inplace::wait_for_previous(&mut args);
     if args.iter().any(|arg| arg == "--http-config") {
         anyhow::ensure!(args.iter().any(|arg| arg == "--data-dir") || std::env::var_os("MEATSHELL_DATA_DIR").is_some(),
             "HTTP service requires an explicitly selected --data-dir or MEATSHELL_DATA_DIR profile");

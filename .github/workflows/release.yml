@@ -397,6 +397,9 @@ jobs:
 
       - name: Build (release)
         shell: bash
+        env:
+          # One-click updates fetch the same .tar.gz variant this build came from (#390).
+          MEATSHELL_RELEASE_VARIANT: glibc228
         run: |
           set -eu
           . "$HOME/.cargo/env"
@@ -489,6 +492,9 @@ jobs:
 
       - name: Build (release)
         shell: bash
+        env:
+          # One-click updates fetch the same .tar.gz variant this build came from (#390).
+          MEATSHELL_RELEASE_VARIANT: glibc228
         run: |
           set -eu
           . "$HOME/.cargo/env"
