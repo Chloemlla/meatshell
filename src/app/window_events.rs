@@ -286,11 +286,19 @@ pub(super) fn install_window_event_hook(
                         // Keep the maximize/restore icon (and resize-edge gating) in
                         // sync when the OS changes the window state (#119).
                         if let Some(win) = weak.upgrade() {
-                            let maxed = win
+                            let (maxed, fullscreen) = win
                                 .window()
-                                .with_winit_window(|ww| ww.is_maximized())
-                                .unwrap_or(false);
+                                .with_winit_window(|ww| {
+                                    (ww.is_maximized(), ww.fullscreen().is_some())
+                                })
+                                .unwrap_or((false, false));
                             win.set_window_maximized(maxed);
+                            // The OS can leave fullscreen on its own (macOS
+                            // green button / gesture): drop the chromeless
+                            // terminal-fullscreen layout with it (#495).
+                            if win.get_term_fullscreen() && !fullscreen {
+                                set_term_fullscreen(&win, false);
+                            }
                             if !ev_window_size_tracking_ready.get()
                                 && is_wayland_window(&win.window())
                             {
@@ -356,7 +364,11 @@ pub(super) fn install_window_event_hook(
                             // observe an installer/minimize transition instead
                             // (#278). Keep writes in memory here; save_layout flushes
                             // the config on exit.
-                            if ev_window_size_tracking_ready.get() && !maxed && !minimized {
+                            if ev_window_size_tracking_ready.get()
+                                && !maxed
+                                && !fullscreen
+                                && !minimized
+                            {
                                 let scale = win.window().scale_factor().max(0.01);
                                 let width = size.width as f32 / scale;
                                 let height = size.height as f32 / scale;

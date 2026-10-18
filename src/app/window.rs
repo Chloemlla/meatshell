@@ -299,6 +299,45 @@ pub(super) fn refresh_revealed_main_window(weak: slint::Weak<AppWindow>) {
 #[path = "../../tests/app/window_geometry/mod.rs"]
 mod mixed_dpi_window_tests;
 
+/// Terminal fullscreen (#495) may only be entered while the active tab is a
+/// terminal session (SSH, local shell, serial, …) — not the welcome page or an
+/// editor tab, which would leave a chromeless window with nothing to show.
+pub(super) fn term_fullscreen_allowed<'a>(
+    active_tab: &str,
+    mut terminal_ids: impl Iterator<Item = &'a str>,
+) -> bool {
+    !active_tab.is_empty() && active_tab != "welcome" && terminal_ids.any(|id| id == active_tab)
+}
+
+fn active_tab_is_terminal(win: &AppWindow) -> bool {
+    let active = win.get_active_tab_id();
+    let terms = win.get_terminals();
+    let ids: Vec<SharedString> = (0..terms.row_count())
+        .filter_map(|i| terms.row_data(i))
+        .map(|t| t.id)
+        .collect();
+    term_fullscreen_allowed(active.as_str(), ids.iter().map(|id| id.as_str()))
+}
+
+/// Enter/leave terminal fullscreen (#495): borderless OS fullscreen plus the
+/// `term-fullscreen` flag that hides all window chrome in app.slint. Entering
+/// is refused unless a terminal tab is active.
+pub(super) fn set_term_fullscreen(win: &AppWindow, on: bool) {
+    if on && !active_tab_is_terminal(win) {
+        return;
+    }
+    if win.get_term_fullscreen() != on {
+        win.set_term_fullscreen(on);
+    }
+    if win.window().is_fullscreen() != on {
+        win.window().set_fullscreen(on);
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/app/term_fullscreen/mod.rs"]
+mod term_fullscreen_tests;
+
 #[cfg(target_os = "linux")]
 pub(super) fn schedule_slint_pointer_ungrab<T>(weak: slint::Weak<T>)
 where
@@ -520,6 +559,25 @@ pub(super) fn wire_window_controls(
                 });
                 if let Some(m) = now {
                     w.set_window_maximized(m);
+                }
+            }
+        });
+    }
+    // --- Terminal fullscreen (#495) ----------------------------------------
+    {
+        let weak = window.as_weak();
+        window.on_toggle_term_fullscreen(move || {
+            if let Some(w) = weak.upgrade() {
+                set_term_fullscreen(&w, !w.get_term_fullscreen());
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.on_term_fullscreen_check(move || {
+            if let Some(w) = weak.upgrade() {
+                if w.get_term_fullscreen() && !active_tab_is_terminal(&w) {
+                    set_term_fullscreen(&w, false);
                 }
             }
         });

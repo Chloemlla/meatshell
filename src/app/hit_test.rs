@@ -35,9 +35,9 @@ pub(super) fn terminal_wheel_hit(
     let mut term_w = term.w;
     let mut term_h = term.h;
 
-    // Zen mode removes only the 24px status strip; docks and the command bar
-    // stay on screen.
-    if !win.get_zen_mode() {
+    // Zen mode / terminal fullscreen remove the 24px status strip; the
+    // command bar stays on screen.
+    if !panels_hidden(win) {
         term_y += 24.0;
         term_h = (term_h - 24.0).max(0.0);
     }
@@ -120,12 +120,21 @@ pub(super) fn contains_logical(rect: LogicalRect, x: f32, y: f32) -> bool {
     x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
 }
 
+/// Zen mode and terminal fullscreen (#495) both hide every docked panel and
+/// the terminal status strip — mirrors `hide-panels` in app.slint.
+pub(super) fn panels_hidden(win: &AppWindow) -> bool {
+    win.get_zen_mode() || win.get_term_fullscreen()
+}
+
 pub(super) fn app_content_area(win: &AppWindow) -> LogicalRect {
     let size = win.window().size();
     let scale = win.window().scale_factor().max(0.01) as f32;
     let mut area = LogicalRect {
         x: 0.0,
-        y: if win.get_custom_titlebar() {
+        // Terminal fullscreen drops the title bar / macOS inset (#495).
+        y: if win.get_term_fullscreen() {
+            0.0
+        } else if win.get_custom_titlebar() {
             38.0
         } else if win.get_is_mac() {
             28.0
@@ -137,7 +146,7 @@ pub(super) fn app_content_area(win: &AppWindow) -> LogicalRect {
     };
     area.h = size.height as f32 / scale - area.y;
 
-    if win.get_zen_mode() {
+    if panels_hidden(win) {
         return area;
     }
 
@@ -225,13 +234,15 @@ pub(super) fn active_terminal_panel_rects(
         .filter_map(|i| terms.row_data(i))
         .find(|t| t.id.as_str() == active.as_str())?;
 
+    // Terminal fullscreen hides the 36px tab strip (#495).
+    let top = if win.get_term_fullscreen() { 4.0 } else { 40.0 };
     Some((
         active,
         LogicalRect {
             x: area.x + pane.x,
-            y: area.y + pane.y + 40.0,
+            y: area.y + pane.y + top,
             w: pane.w,
-            h: (pane.h - 40.0).max(0.0),
+            h: (pane.h - top).max(0.0),
         },
         term_state,
     ))
@@ -250,7 +261,7 @@ pub(super) fn active_sftp_file_list_rect(win: &AppWindow) -> Option<LogicalRect>
     // TerminalView starts with a 24px connection-status line (hidden in zen
     // mode); SFTP docks inside the remaining dock-region. This mirrors
     // ui/terminal_view.slint.
-    let strip = if win.get_zen_mode() { 0.0 } else { 24.0 };
+    let strip = if panels_hidden(win) { 0.0 } else { 24.0 };
     let dock_region = LogicalRect {
         x: term.x,
         y: term.y + strip,

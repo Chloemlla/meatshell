@@ -36,8 +36,8 @@ pub(super) fn save_layout(
     // property can lag during startup/shutdown on frameless Windows (#234).
     let native_maximized = win
         .window()
-        .with_winit_window(|ww| ww.is_maximized())
-        .unwrap_or_else(|| win.get_window_maximized());
+        .with_winit_window(|ww| ww.is_maximized() || ww.fullscreen().is_some())
+        .unwrap_or_else(|| win.get_window_maximized() || win.get_term_fullscreen());
     if !native_maximized && w > 200.0 && h > 200.0 {
         // Resize events normally keep this cache current. Persist the final
         // valid native geometry as well, because a close can arrive before the
@@ -314,8 +314,9 @@ pub(super) fn refresh_dock_inner(
         });
         return;
     }
-    // Zen mode hides every docked panel and the terminal fills the window.
-    if w.get_zen_mode() {
+    // Zen mode (and terminal fullscreen, #495) hides every docked panel and
+    // the terminal fills the window.
+    if panels_hidden(&w) {
         panels_model.set_vec(Vec::new());
         dividers_model.set_vec(Vec::new());
         w.set_dock_central_x(0.0);

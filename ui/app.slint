@@ -399,7 +399,7 @@ export component AppWindow inherits Window {
     // macOS immersive title bar: Rust makes the native bar transparent and lets
     // content render under it, so we reserve this much space at the top for the
     // traffic-light buttons + a clean drag strip (0 elsewhere). See setup_macos_platform.
-    property <length> titlebar-inset: root.is-mac ? 28px : 0px;
+    property <length> titlebar-inset: root.is-mac && !root.term-fullscreen ? 28px : 0px;
     in-out property <bool> window-maximized: false;
     // Rust disables live model updates while the native window is unfocused,
     // minimized or occluded. Cached samples are applied when it becomes active.
@@ -674,6 +674,25 @@ export component AppWindow inherits Window {
     // two-way binding) must re-run the dock geometry — one hook covers them all
     // (#dock-stack).
     changed zen-mode => { root.dock-layout-changed(); }
+    // Terminal fullscreen (#495): Alt+Enter puts the window into borderless
+    // OS fullscreen and drops every piece of chrome (title bar, tab strips,
+    // toolbar, docked panels, status strip) so the terminal gets the whole
+    // screen — like Xshell's full-screen view. Transient per window, never
+    // persisted. Rust owns the toggle: it only enters while a terminal tab is
+    // active and keeps this flag in sync with the native window state.
+    in-out property <bool> term-fullscreen: false;
+    callback toggle-term-fullscreen();
+    // Leave fullscreen if the active tab is no longer a terminal (Rust check).
+    callback term-fullscreen-check();
+    // Everything zen hides is hidden in terminal fullscreen too.
+    property <bool> hide-panels: root.zen-mode || root.term-fullscreen;
+    changed term-fullscreen => {
+        if (root.term-fullscreen) {
+            root.settings-open = false;
+            root.download-open = false;
+        }
+        root.dock-layout-changed();
+    }
     // Collapse-by-default settings + shared SFTP collapse state (#78).
     in-out property <bool> collapse-sidebar-default: false;
     callback set-collapse-sidebar-default(bool);   // apply + persist
@@ -1108,6 +1127,10 @@ export component AppWindow inherits Window {
         if (root.active-tab-id == "welcome" && root.terminals.length == 0) {
             shortcut-scope.focus();
         }
+        // Terminal fullscreen only makes sense on a terminal tab (#495).
+        if (root.term-fullscreen) {
+            root.term-fullscreen-check();
+        }
     }
 
     // Raw keystroke forwarding: Rust converts key+modifiers to PTY bytes.
@@ -1284,6 +1307,12 @@ export component AppWindow inherits Window {
                     && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
                 root.toggle-zen-key();
                 accept
+            // Terminal fullscreen: Alt+Enter toggles (#495). Same key as the
+            // terminal branch; this catches it when focus sits elsewhere.
+            } else if (e.modifiers.alt && !e.modifiers.control && !e.modifiers.shift
+                    && (e.text == Key.Return || e.text == "\u{000d}")) {
+                root.toggle-term-fullscreen();
+                accept
             } else {
                 reject
             }
@@ -1307,7 +1336,7 @@ export component AppWindow inherits Window {
             // (move window / double-click to maximize), then the toolbar icons and
             // window controls on the right. macOS keeps its native title bar and
             // shows the toolbar icons via the overlay further below.
-            if root.custom-titlebar : Rectangle {
+            if root.custom-titlebar && !root.term-fullscreen : Rectangle {
                 height: 38px;
                 background: Theme.bg-panel;
                 tb-drag := TouchArea {
@@ -1368,11 +1397,11 @@ export component AppWindow inherits Window {
             // Collapsed-only (M5): the icon strip shows only while collapsed; the
             // panel itself (welcome-w) only while expanded — one or the other.
             property <bool> sidebar-strip-outside:
-                !root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed
+                !root.hide-panels && root.welcome-as-sidebar && !root.welcome-collapsed
                 && root.sidebar-collapsed && root.sidebar-dock == root.welcome-sidebar-dock;
             property <length> sidebar-outside-strip: dock-area.sidebar-strip-outside ? 36px : 0px;
-            property <length> welcome-strip: (!root.zen-mode && root.welcome-as-sidebar && root.welcome-collapsed) ? 36px : 0px;
-            property <length> welcome-size: (!root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed) ? root.welcome-sidebar-width : 0px;
+            property <length> welcome-strip: (!root.hide-panels && root.welcome-as-sidebar && root.welcome-collapsed) ? 36px : 0px;
+            property <length> welcome-size: (!root.hide-panels && root.welcome-as-sidebar && !root.welcome-collapsed) ? root.welcome-sidebar-width : 0px;
             property <length> welcome-taken: welcome-strip + welcome-size + sidebar-outside-strip;
             property <bool> welcome-horizontal: root.welcome-sidebar-horizontal;
             property <bool> welcome-sidebar-dragging;
@@ -1391,7 +1420,7 @@ export component AppWindow inherits Window {
                 && !dock-area.quick-merge-welcome && root.sidebar-collapsed
                 && root.quick-panel-dock == root.sidebar-dock;
             property <length> quick-outer-strip:
-                !root.zen-mode && root.quick-panel-open && root.quick-panel-collapsed
+                !root.hide-panels && root.quick-panel-open && root.quick-panel-collapsed
                     && !dock-area.quick-merge-welcome && !dock-area.quick-merge-sidebar
                     ? 36px : 0px;
             property <bool> quick-outer-horizontal:
@@ -1462,7 +1491,7 @@ export component AppWindow inherits Window {
             // Collapsed resource panel → a ToolStrip icon bar at the same docked
             // edge (M5), anchored to the OUTER edge of dock-area so it lines up
             // with the 36px band the Rust dock engine reserves for it (#dock-stack).
-            if !root.zen-mode && root.sidebar-collapsed && !dock-area.combine-collapsed-tools && !dock-area.sidebar-strip-outside : ToolStrip {
+            if !root.hide-panels && root.sidebar-collapsed && !dock-area.combine-collapsed-tools && !dock-area.sidebar-strip-outside : ToolStrip {
                 x: root.sidebar-dock == "right"
                     ? parent.width - 36px - parent.quick-right
                     : parent.quick-left;
@@ -1664,9 +1693,9 @@ export component AppWindow inherits Window {
             // A shared ToolStrip is already reserved outside `rest` while the
             // welcome panel is expanded, or by the merged welcome strip while both
             // panels are collapsed. Do not reserve the same 36px a second time.
-            property <length> sb-w: root.zen-mode ? 0px
+            property <length> sb-w: root.hide-panels ? 0px
                 : root.sidebar-collapsed ? 36px : 0px;
-            property <length> sb-h: root.zen-mode ? 0px
+            property <length> sb-h: root.hide-panels ? 0px
                 : root.sidebar-collapsed ? 36px : 0px;
             property <length> sp: 0px;
             // The collapsed bar (sb-h) already reserves the bottom strip now.
@@ -1841,7 +1870,9 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                     spacing: 0;
 
-                    HorizontalLayout {
+                    // Terminal fullscreen hides every tab strip (#495); Ctrl+Tab
+                    // still cycles tabs.
+                    if !root.term-fullscreen : HorizontalLayout {
                     spacing: 0;
                     // (Collapsed resource panel now reserves its own ToolStrip slot in
                     // `rest`, so the tab strip no longer needs a spacer for it.)
@@ -1972,7 +2003,8 @@ export component AppWindow inherits Window {
                     for term[i] in root.terminals : TerminalView {
                         visible: term.id == pane.active-id;
                         active: term.id == root.active-tab-id;
-                        zen-mode: root.zen-mode;
+                        // Fullscreen also hides the status strip (#495).
+                        zen-mode: root.hide-panels;
                         width: term.id == pane.active-id ? parent.width : 0px;
                         height: term.id == pane.active-id ? parent.height : 0px;
                         tab-id: term.id;
@@ -2074,6 +2106,7 @@ export component AppWindow inherits Window {
                         new-window-key() => { root.new-window-clicked(); }
                         zoom-key(direction, window-wide) => { root.zoom-term-font(term.id, direction, window-wide); }
                         zen-key() => { root.toggle-zen-key(); }
+                        fullscreen-key() => { root.toggle-term-fullscreen(); }
                         term-font-size-px: term.font-size > 0 ? term.font-size * 1.0 : root.term-font-size / 1px;
                         terminal-resize(w, h) => { root.terminal-resize(term.id, w, h) }
                         sftp-navigate(path) => { root.sftp-navigate(term.id, path); }
@@ -2631,6 +2664,7 @@ export component AppWindow inherits Window {
     // at the very top on macOS where the native title bar is separate (#119).
     IconBtn {
         x: root.width - 34px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: "\u{E8B8}";
         tooltip: root.lang-en ? "Settings" : "设置";
         active: root.settings-open;
@@ -2638,6 +2672,7 @@ export component AppWindow inherits Window {
     }
     IconBtn {
         x: root.width - 64px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: "\u{E8D5}";   // Material "swap_vert" — symmetrical up+down arrows, clearer "transfer" semantic
         tooltip: @tr("Transfers manager");
         active: root.download-open;
@@ -2653,6 +2688,7 @@ export component AppWindow inherits Window {
     // icon stays clean and no stray dot shows over the toolbar (#breathing-light).
     IconBtn {
         x: root.width - 94px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: Theme.dark ? "\u{E518}" : "\u{E51C}";
         icon-color: Theme.dark ? #f5c542 : #5856d6;
         tooltip: root.lang-en ? "Toggle theme" : "切换主题";
@@ -2660,6 +2696,7 @@ export component AppWindow inherits Window {
     }
     IconBtn {
         x: root.width - 124px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: "\u{E627}";
         icon-color: root.sync-input ? Theme.accent : Theme.text-secondary;
         active: root.sync-input;
@@ -2670,6 +2707,7 @@ export component AppWindow inherits Window {
     }
     IconBtn {
         x: root.width - 154px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: "\u{E86F}";   // Material "code" — command bar
         active: !root.cmd-bar-hidden;
         tooltip: root.lang-en
@@ -2679,6 +2717,7 @@ export component AppWindow inherits Window {
     }
     IconBtn {
         x: root.width - 184px - root.toolbar-x-off; y: root.toolbar-y;
+        visible: !root.term-fullscreen;
         icon: "\u{F10D}";   // Material "push_pin" — always on top (#450)
         icon-color: root.pinned ? Theme.accent : Theme.text-secondary;
         active: root.pinned;
@@ -2690,7 +2729,7 @@ export component AppWindow inherits Window {
 
     // Frameless resize edges (#119): thin hit-zones that start an OS-level
     // resize via winit. Hidden when maximized.
-    if root.custom-titlebar && !root.window-maximized : Rectangle {
+    if root.custom-titlebar && !root.window-maximized && !root.term-fullscreen : Rectangle {
         width: 100%;
         height: 100%;
         TouchArea {  // top
@@ -4254,6 +4293,7 @@ export component AppWindow inherits Window {
                        color: Theme.text-muted; font-size: Theme.fs-xs; }
                 ShortcutRow { keys: root.is-mac ? "⌘⇧N" : "Ctrl+Shift+N"; desc: root.lang-en ? "New window" : "新建窗口"; }
                 ShortcutRow { keys: root.is-mac ? "⌘⌥Z" : "Ctrl+Alt+Z"; desc: root.lang-en ? "Toggle zen (focus) mode" : "切换专注模式"; }
+                ShortcutRow { keys: root.is-mac ? "⌥↩" : "Alt+Enter"; desc: root.lang-en ? "Toggle terminal fullscreen" : "切换终端全屏"; }
 
                 Rectangle { height: 6px; }
                 Text { text: root.lang-en ? "Terminal" : "终端";
@@ -5089,7 +5129,7 @@ export component AppWindow inherits Window {
     // same visual affordance + drag-resize behavior when the OS title bar is
     // hidden (custom-titlebar mode). Only rendered in frameless mode; otherwise
     // the OS frame already provides this corner.
-    if root.custom-titlebar : Rectangle {
+    if root.custom-titlebar && !root.term-fullscreen : Rectangle {
         width: 16px;
         height: 16px;
         x: root.width - self.width;
