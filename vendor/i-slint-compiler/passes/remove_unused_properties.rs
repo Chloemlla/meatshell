@@ -3,6 +3,7 @@
 
 //! Remove the properties which are not used
 
+use crate::expression_tree::TwoWayBinding;
 use crate::object_tree::{Component, Document};
 use std::collections::HashSet;
 
@@ -19,6 +20,14 @@ pub fn remove_unused_properties(doc: &Document) {
                         && !elem.named_references.is_referenced(prop)
                         && !elem.property_analysis.borrow().get(prop).is_some_and(|v| v.is_used())
                         && !elem.change_callbacks.contains_key(prop)
+                        // Keep properties that carry model-data two-way bindings:
+                        // these bridge repeater data to other properties (e.g. globals)
+                        // and must survive for the interpreter to wire them up at runtime.
+                        && !elem.binding(prop).is_some_and(|b| {
+                            b.two_way_bindings
+                                .iter()
+                                .any(|t| matches!(t, TwoWayBinding::ModelData { .. }))
+                        })
                     {
                         to_remove.insert(prop.to_owned());
                     }
@@ -26,7 +35,7 @@ pub fn remove_unused_properties(doc: &Document) {
                 for x in &to_remove {
                     elem.property_declarations.remove(x);
                     elem.property_analysis.borrow_mut().remove(x);
-                    elem.bindings.remove(x);
+                    elem.take_binding(x);
                 }
                 // Remove changed callbacks over properties that are not materialized as they are not used
                 let mut change_callbacks = std::mem::take(&mut elem.change_callbacks);

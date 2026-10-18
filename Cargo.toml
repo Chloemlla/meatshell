@@ -35,7 +35,7 @@ headless = []
 
 [dependencies]
 # Keep all desktop platforms on the native text layout patched below.
-slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "compat-1-2"] }
 
 # ICU4X (pulled in by Slint's text layout) spams stderr with raw `eprintln!`
 # ("ICU4X data error: No segmentation model for language: ja") because its
@@ -44,7 +44,7 @@ slint = { version = "=1.16.1", default-features = false, features = ["std", "bac
 # subscriber, where init_tracing silences the `icu_provider` target.
 icu_provider = { version = "2", features = ["logging"] }
 # Direct access to the winit window/events (OS file-drop for drag-and-drop upload).
-i-slint-backend-winit = "1.16"
+i-slint-backend-winit = "=1.18.1"
 # Raw HWND access (matches winit's rwh 0.6) for the Win11 rounded-corner + shadow
 # DWM tweaks on the frameless window (#162 / #166). Only used under cfg(windows).
 raw-window-handle = "0.6"
@@ -161,7 +161,7 @@ jemallocator = "0.5"
 # Windows/Linux never compile Skia; on Windows it conflicts with another ICU
 # import library at link time when using the MSVC toolchain (#224).
 [target.'cfg(target_os = "macos")'.dependencies]
-slint = { version = "=1.16.1", default-features = false, features = ["renderer-skia"] }
+slint = { version = "=1.18.1", default-features = false, features = ["renderer-skia"] }
 
 # Official MCP HTTP transport and externally issued OAuth JWT verification.
 [dependencies.rmcp]
@@ -182,7 +182,7 @@ version = "0.7"
 version = "2"
 
 [build-dependencies]
-slint-build = "=1.16.1"
+slint-build = "=1.18.1"
 # Precomputes the bundled terminal font's glyph coverage table (#461).
 ttf-parser = "0.20"
 
@@ -222,12 +222,12 @@ debug = 1
 opt-level = 1
 
 [patch.crates-io]
-# Avoid Slint/winit's AppKit DisplayLink selector on old macOS. The local
-# patched backend falls back to timer throttling on macOS only. On macOS it also
-# never drops its AccessKit adapter, which avoids a Touch Bar crash when a
-# window closes (#488; see vendor/i-slint-backend-winit/accesskit.rs).
+# Patched backend (see vendor/EDITOR_PATCH.md): on macOS it never drops its
+# AccessKit adapter, which avoids a Touch Bar crash when a window closes (#488),
+# and on Wayland windows the app never showed stay unmapped. The old macOS
+# DisplayLink workaround is upstream since Slint 1.18.
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 
-# Native color spans, cached editor layout and a virtual gutter; see vendor/EDITOR_PATCH.md.
+# Native colour spans and a virtual line-number gutter; see vendor/EDITOR_PATCH.md.
 i-slint-core = { path = "vendor/i-slint-core" }
 i-slint-compiler = { path = "vendor/i-slint-compiler" }

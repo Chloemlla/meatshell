@@ -29,8 +29,8 @@ pub struct Translations {
     /// Only builtin math functions, and its first argument
     pub plural_rules: Vec<Option<Expression>>,
 
-    /// The "names" of the languages
-    pub languages: Vec<SmolStr>,
+    /// The "names" of the languages and the decimal separator
+    pub languages: Vec<(SmolStr, char)>,
 }
 
 #[derive(Clone)]
@@ -45,21 +45,35 @@ pub struct TranslationsBuilder {
 }
 
 impl TranslationsBuilder {
-    pub fn load_translations(path: &Path, domain: &str) -> std::io::Result<Self> {
-        let mut languages = vec!["".into()];
+    pub fn load_translations(
+        path: &Path,
+        domain: &str,
+        all_loaded_files: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> std::io::Result<Self> {
+        let mut languages = vec![("".into(), i_slint_common::DEFAULT_DECIMAL_SEPARATOR)];
         let mut catalogs = Vec::new();
         let mut plural_rules =
             vec![Some(plural_rule_parser::parse_rule_expression("n!=1").unwrap())];
-        for l in std::fs::read_dir(path)
+        // Sort the entries so the bundled language order doesn't depend on the
+        // filesystem's directory order.
+        // Otherwise the same sources produce different string tables on
+        // different machines, which breaks reproducible builds.
+        let mut entries = std::fs::read_dir(path)
             .map_err(|e| std::io::Error::other(format!("Error reading directory {path:?}: {e}")))?
-        {
-            let l = l?;
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|l| l.file_name());
+        for l in entries {
             let path = l.path().join("LC_MESSAGES").join(format!("{domain}.po"));
             if path.exists() {
+                all_loaded_files.insert(path.clone());
                 let catalog = rspolib::pofile(path.as_path()).map_err(|e| {
                     std::io::Error::other(format!("Error parsing {}: {e}", path.display()))
                 })?;
-                languages.push(l.file_name().to_string_lossy().into());
+                let language_name = l.file_name().to_string_lossy().to_smolstr();
+                languages.push((
+                    language_name.clone(),
+                    i_slint_common::decimal_separator_for_locale(language_name.as_str()),
+                ));
 
                 let expr = if let Some(header) = catalog.metadata.get("Plural-Forms") {
                     let plural_expr = header.split(';').find_map(|sub_entry| {
@@ -170,6 +184,7 @@ impl TranslationsBuilder {
         self.result
     }
 
+    /// Add all characters in any po file to `characters_seen` if they are not yet there
     pub fn collect_characters_seen(&self, characters_seen: &mut impl Extend<char>) {
         characters_seen.extend(
             self.catalogs
@@ -233,14 +248,14 @@ mod plural_rule_parser {
 
     impl ParsingState<'_> {
         fn skip_whitespace(self) -> Self {
-            let rest = skip_whitespace(self.rest);
+            let rest = self.rest.trim_ascii_start();
             Self { rest, ..self }
         }
     }
 
     /// `<condition> ('?' <expr> : <expr> )?`
     fn parse_expression(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let state = parse_condition(string)?.skip_whitespace();
         if state.ty != Ty::Boolean {
             return Ok(state);
@@ -258,7 +273,7 @@ mod plural_rule_parser {
                     true_expr: s1.expr.into(),
                     false_expr: s2.expr.into(),
                 },
-                rest: skip_whitespace(s2.rest),
+                rest: s2.rest.trim_ascii_start(),
                 ty: s2.ty,
             })
         } else {
@@ -268,7 +283,7 @@ mod plural_rule_parser {
 
     /// `<and_expr> ("||" <condition>)?`
     fn parse_condition(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let state = parse_and_expr(string)?.skip_whitespace();
         if state.rest.is_empty() {
             return Ok(state);
@@ -285,7 +300,7 @@ mod plural_rule_parser {
                     op: '|',
                 },
                 ty: Ty::Boolean,
-                rest: skip_whitespace(state2.rest),
+                rest: state2.rest.trim_ascii_start(),
             })
         } else {
             Ok(state)
@@ -294,7 +309,7 @@ mod plural_rule_parser {
 
     /// `<cmp_expr> ("&&" <and_expr>)?`
     fn parse_and_expr(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let state = parse_cmp_expr(string)?.skip_whitespace();
         if state.rest.is_empty() {
             return Ok(state);
@@ -311,7 +326,7 @@ mod plural_rule_parser {
                     op: '&',
                 },
                 ty: Ty::Boolean,
-                rest: skip_whitespace(state2.rest),
+                rest: state2.rest.trim_ascii_start(),
             })
         } else {
             Ok(state)
@@ -320,9 +335,9 @@ mod plural_rule_parser {
 
     /// `<value> ('=='|'!='|'<'|'>'|'<='|'>=' <cmp_expr>)?`
     fn parse_cmp_expr(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let mut state = parse_value(string)?;
-        state.rest = skip_whitespace(state.rest);
+        state.rest = state.rest.trim_ascii_start();
         if state.rest.is_empty() {
             return Ok(state);
         }
@@ -346,7 +361,7 @@ mod plural_rule_parser {
                         op,
                     },
                     ty: Ty::Boolean,
-                    rest: skip_whitespace(state2.rest),
+                    rest: state2.rest.trim_ascii_start(),
                 });
             }
         }
@@ -355,9 +370,9 @@ mod plural_rule_parser {
 
     /// `<term> ('%' <term>)?`
     fn parse_value(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let mut state = parse_term(string)?;
-        state.rest = skip_whitespace(state.rest);
+        state.rest = state.rest.trim_ascii_start();
         if state.rest.is_empty() {
             return Ok(state);
         }
@@ -368,11 +383,12 @@ mod plural_rule_parser {
             }
             Ok(ParsingState {
                 expr: Expression::BuiltinFunctionCall {
+                    source_location: None,
                     function: crate::expression_tree::BuiltinFunction::Mod,
                     arguments: vec![state.expr, state2.expr],
                 },
                 ty: Ty::Number,
-                rest: skip_whitespace(state2.rest),
+                rest: state2.rest.trim_ascii_start(),
             })
         } else {
             Ok(state)
@@ -380,7 +396,7 @@ mod plural_rule_parser {
     }
 
     fn parse_term(string: &[u8]) -> Result<ParsingState<'_>, ParseError<'_>> {
-        let string = skip_whitespace(string);
+        let string = string.trim_ascii_start();
         let state = match string.first().ok_or(ParseError("unexpected end of string", string))? {
             b'n' => ParsingState {
                 expr: Expression::FunctionParameterReference { index: 0 },
@@ -408,14 +424,6 @@ mod plural_rule_parser {
             .map_err(|_| ParseError("can't parse number", string))?;
         Ok((n, &string[end..]))
     }
-    fn skip_whitespace(mut string: &[u8]) -> &[u8] {
-        // slice::trim_ascii_start when MSRV >= 1.80
-        while !string.is_empty() && string[0].is_ascii_whitespace() {
-            string = &string[1..];
-        }
-        string
-    }
-
     #[test]
     fn test_parse_rule_expression() {
         #[track_caller]
@@ -429,6 +437,7 @@ mod plural_rule_parser {
                     has_debug_info: false,
                     translations: None,
                     popup_menu: None,
+                    type_exports: Default::default(),
                 },
                 current_scope: crate::llr::EvaluationScope::Global(0.into()),
                 generator_state: (),

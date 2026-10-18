@@ -14,7 +14,7 @@ pub(super) fn wire_monitor_windows(ctx: &WinCtx) {
         // ✕ hides the window (data keeps flowing into the shared model).
         let weak = proc_win.as_weak();
         let main_weak = window.as_weak();
-        proc_win.on_close(move || {
+        proc_win.on_close_window(move || {
             if let Some(main) = main_weak.upgrade() {
                 main.set_process_window_open(false);
             }
@@ -90,7 +90,7 @@ pub(super) fn wire_monitor_windows(ctx: &WinCtx) {
     {
         let weak = sys_win.as_weak();
         let main_weak = window.as_weak();
-        sys_win.on_close(move || {
+        sys_win.on_close_window(move || {
             if let Some(main) = main_weak.upgrade() {
                 main.set_system_info_window_open(false);
             }

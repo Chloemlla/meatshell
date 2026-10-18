@@ -1,37 +1,60 @@
-# Native editor patch (Slint 1.16.1)
+# Native editor patch (Slint 1.18.1)
 
-`i-slint-core` and `i-slint-compiler` are the published 1.16.1 crates, with
+`i-slint-core` and `i-slint-compiler` are the published 1.18.1 crates, with
 upstream license files retained. Both are selected by `[patch.crates-io]`.
-They must be upgraded together; do not remove only one override.
+They must be upgraded together; do not remove only one override. Every change
+is marked with a `MeatShell editor patch` comment.
 
 Changes from upstream:
 
-- `i-slint-compiler/builtins.slint` and `i-slint-core/items/text.rs` expose three
-  opt-in TextInput properties: `syntax-source`, `syntax-spans`, and
-  `line-number-width`. Existing inputs use empty/zero defaults.
-- `i-slint-core/textlayout/sharedparley.rs` applies color-only ranges through
-  Parley, keeping native shaping, wrap, cursor, clipboard, selection, and IME.
-  It is shared by the desktop FemtoVG, Software, and Skia renderers.
-  Qt's separate native renderer does not implement these properties, so the
-  application explicitly enables Winit instead of `backend-default`. Slint and
-  slint-build are pinned to the patched version.
+- `i-slint-compiler/builtin_elements.rs` (the `item! { TextInput { … } }`
+  block) and `i-slint-core/items/text.rs` expose three opt-in TextInput
+  properties: `syntax-source`, `syntax-spans`, and `line-number-width`.
+  Existing inputs use empty/zero defaults.
+- `i-slint-core/item_rendering.rs` adds `RenderString::syntax_colors()`
+  (default `None`). `TextInput` returns its spans only when `syntax-source`
+  equals the displayed text, no IME preedit is active, and it is not a
+  password field, so debounced results never colour the wrong text.
+- `i-slint-core/textlayout/sharedparley/shaping.rs` applies those colour-only
+  ranges while shaping plain text (`create_text_paragraphs_with_syntax`). The
+  paragraph split, byte ranges and metrics are exactly those of plain text, so
+  native shaping, wrap, cursor, clipboard, selection and IME are unchanged.
+  Because shaping reads the properties, Slint's own `TextLayoutCache` reshapes
+  when they change and reuses the shaped text otherwise (typing reshapes once;
+  scrolling, selecting and cursor blinking do not).
 - Syntax spans use sorted, non-overlapping UTF-8 byte ranges encoded as
-  `start:end:AARRGGBB;`. Invalid ranges are ignored. Source mismatch or active
-  preedit disables spans, so debounced results never color the wrong text.
-  Selection foreground is applied last and overrides syntax colors.
-- A positive `line-number-width` draws logical line numbers only, aligned to
-  the first visual baseline of each paragraph. The gutter uses the same source,
-  font, width, height, and wrapping as the editable input and is clipped by its
-  narrow parent. It draws only visible numbers instead of creating a Slint item
-  for every logical line.
-- Opt-in inputs cache one layout per item. Text, source, ranges, font, scale,
-  wrap, size, alignment, selection, and preedit changes invalidate it; moving
-  the viewport or blinking the cursor does not. Cache lifetime is the item
-  lifetime. Paragraph drawing skips text outside the clip with overhang margin.
+  `start:end:AARRGGBB;`. Invalid ranges are ignored.
+- A positive `line-number-width` (`sharedparley.rs`, `draw_line_numbers`)
+  draws logical line numbers only, right-aligned and on the first visual
+  baseline of each paragraph. The gutter uses the same source, font, width,
+  height and wrapping as the editable input and is clipped by its narrow
+  parent. Only numbers inside the clip are shaped and drawn.
+
+Dropped when rebasing from 1.16.1, because Slint 1.18 does it upstream: the
+per-item editor layout cache (now `TextLayoutCache`), drawing the selection
+after syntax colours (selection is now recoloured by clipping), painting the
+selection background inside the input's clip (#440), and skipping paragraphs
+outside the clip.
+
+Qt's separate native renderer does not implement these properties, so the
+application explicitly enables Winit instead of `backend-default`. Slint and
+slint-build are pinned to the patched version.
 
 The application owns language detection and lexical tokenization in
 `src/app/editor_syntax.rs`; the renderer does not parse programming languages.
-Highlighting is lexical, not a language server or semantic analyzer.
+
+## i-slint-backend-winit
+
+Also the published 1.18.1 crate, with two fixes marked `MeatShell patch`:
+
+- `accesskit.rs`: never drop the AccessKit adapter on macOS, which avoids a
+  Touch Bar crash when a window closes (#488).
+- `lib.rs`: don't materialize windows the app never showed; on Wayland they
+  would be mapped immediately and appear in the taskbar.
+
+Dropped as upstream in 1.18: the macOS DisplayLink fallback (1.18 probes the
+`displayLinkWithTarget:selector:` selector itself) and the focus-change
+`RefCell` re-entrancy guard.
 
 Validation: `cargo test --locked editor_ -- --nocapture`. The headless native
 render test compares plain/highlighted geometry at two wrapping widths, checks

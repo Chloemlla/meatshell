@@ -327,12 +327,12 @@ export component TabBar inherits Rectangle {
     // Cursor in strip-content space: past the bar's 3px padding and through the
     // scroll offset. A binding, not a stored value, so edge auto-scrolling keeps
     // the ghost and the insertion index live while the pointer stands still.
-    property <length> content-x: root.cursor-x - 3px - flick.viewport-x;
+    property <length> content-x: root.cursor-x - 3px - flick.content-x;
     // Ghost's left edge, clamped to the visible part of the strip so it can never
     // be dragged out of sight. Only ever evaluated while a drag is live.
     property <length> ghost-x: clamp(root.content-x - root.grab-offset,
-        -flick.viewport-x,
-        max(-flick.viewport-x, -flick.viewport-x + flick.width - root.drag-width));
+        -flick.content-x,
+        max(-flick.content-x, -flick.content-x + flick.width - root.drag-width));
 
     function begin-drag(index: int, offset: length, slot-width: length) {
         root.drag-from = index;
@@ -396,7 +396,7 @@ export component TabBar inherits Rectangle {
 
     // --- Insertion index for a tab dragged in from another pane (#408) ------
     property <bool> ext-hover: root.ext-drag-over && !root.drag-active;
-    property <length> ext-content-x: root.ext-drag-x - 3px - flick.viewport-x;
+    property <length> ext-content-x: root.ext-drag-x - 3px - flick.content-x;
     property <int> ext-index: -1;
     changed ext-hover => {
         root.ext-index = root.ext-hover ? 0 : -1;
@@ -426,8 +426,8 @@ export component TabBar inherits Rectangle {
         interval: 16ms;
         running: root.edge-step != 0px;
         triggered => {
-            flick.viewport-x = clamp(flick.viewport-x - root.edge-step,
-                min(0px, flick.width - flick.viewport-width), 0px);
+            flick.content-x = clamp(flick.content-x - root.edge-step,
+                min(0px, flick.width - flick.content-width), 0px);
         }
     }
 
@@ -446,8 +446,8 @@ export component TabBar inherits Rectangle {
             // arrows below remain.
             interactive: false;
             horizontal-stretch: 1;
-            viewport-height: self.height;
-            viewport-width: max(self.width, strip.preferred-width);
+            content-height: self.height;
+            content-width: max(self.width, strip.preferred-width);
             strip := HorizontalLayout {
                 spacing: 2px;
                 alignment: start;
@@ -573,7 +573,7 @@ export component TabBar inherits Rectangle {
         background: Theme.bg-panel-alt;
         IconButton {
             glyph: "<"; size: 24px;
-            clicked => { flick.viewport-x = min(0px, flick.viewport-x + 120px); }
+            clicked => { flick.content-x = min(0px, flick.content-x + 120px); }
         }
     }
     if root.tab-overflow : Rectangle {
@@ -584,7 +584,7 @@ export component TabBar inherits Rectangle {
         IconButton {
             glyph: ">"; size: 24px;
             clicked => {
-                flick.viewport-x = max(flick.width - flick.viewport-width, flick.viewport-x - 120px);
+                flick.content-x = max(flick.width - flick.content-width, flick.content-x - 120px);
             }
         }
     }

@@ -3,7 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::parser::TextSize;
 use std::collections::BTreeSet;
@@ -11,14 +11,10 @@ use std::collections::BTreeSet;
 /// Span represent an error location within a file.
 ///
 /// Currently, it is just an offset in byte within the file + the corresponding length.
-///
-/// When the `proc_macro_span` feature is enabled, it may also hold a proc_macro span.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Span {
     pub offset: usize,
     pub length: usize,
-    #[cfg(feature = "proc_macro_span")]
-    pub span: Option<proc_macro::Span>,
 }
 
 impl Span {
@@ -26,33 +22,14 @@ impl Span {
         self.offset != usize::MAX
     }
 
-    #[allow(clippy::needless_update)] // needed when `proc_macro_span` is enabled
     pub fn new(offset: usize, length: usize) -> Self {
-        Self { offset, length, ..Default::default() }
+        Self { offset, length }
     }
 }
 
 impl Default for Span {
     fn default() -> Self {
-        Span {
-            offset: usize::MAX,
-            length: 0,
-            #[cfg(feature = "proc_macro_span")]
-            span: Default::default(),
-        }
-    }
-}
-
-impl PartialEq for Span {
-    fn eq(&self, other: &Span) -> bool {
-        self.offset == other.offset && self.length == other.length
-    }
-}
-
-#[cfg(feature = "proc_macro_span")]
-impl From<proc_macro::Span> for Span {
-    fn from(span: proc_macro::Span) -> Self {
-        Self { span: Some(span), ..Default::default() }
+        Span { offset: usize::MAX, length: 0 }
     }
 }
 
@@ -73,7 +50,7 @@ pub struct SourceFileInner {
     source: Option<String>,
 
     /// The offset of each linebreak
-    line_offsets: std::cell::OnceCell<Vec<usize>>,
+    line_offsets: std::sync::OnceLock<Vec<usize>>,
 }
 
 impl std::fmt::Debug for SourceFileInner {
@@ -92,19 +69,22 @@ impl SourceFileInner {
     }
 
     /// Create a SourceFile that has just a path, but no contents
-    pub fn from_path_only(path: PathBuf) -> Rc<Self> {
-        Rc::new(Self { path, ..Default::default() })
+    pub fn from_path_only(path: PathBuf) -> Arc<Self> {
+        Arc::new(Self { path, ..Default::default() })
     }
 
     /// Returns a tuple with the line (starting at 1) and column number (starting at 1)
     pub fn line_column(&self, offset: usize, format: ByteFormat) -> (usize, usize) {
         let adjust_utf16 = |line_begin, col| {
-            if format == ByteFormat::Utf8 {
-                col
-            } else {
-                let Some(source) = &self.source else { return col };
-                source[line_begin..][..col].encode_utf16().count()
+            if format == ByteFormat::Utf16
+                && let Some(source) = &self.source
+            {
+                return i_slint_common::unicode_utils::byte_offset_to_utf16_offset(
+                    &source[line_begin..],
+                    col,
+                );
             }
+            col
         };
 
         let line_offsets = self.line_offsets();
@@ -134,19 +114,15 @@ impl SourceFileInner {
     /// Returns the offset that corresponds to the line/column
     pub fn offset(&self, line: usize, column: usize, format: ByteFormat) -> usize {
         let adjust_utf16 = |line_begin, col| {
-            if format == ByteFormat::Utf8 {
-                col
-            } else {
-                let Some(source) = &self.source else { return col };
-                let mut utf16_counter = 0;
-                for (utf8_index, c) in source[line_begin..].char_indices() {
-                    if utf16_counter >= col {
-                        return utf8_index;
-                    }
-                    utf16_counter += c.len_utf16();
-                }
-                col
+            if format == ByteFormat::Utf16
+                && let Some(source) = &self.source
+            {
+                return i_slint_common::unicode_utils::utf16_offset_to_byte_offset_clamped(
+                    &source[line_begin..],
+                    col,
+                );
             }
+            col
         };
 
         let col_offset = column.saturating_sub(1);
@@ -188,7 +164,7 @@ pub enum ByteFormat {
     Utf16,
 }
 
-pub type SourceFile = Rc<SourceFileInner>;
+pub type SourceFile = Arc<SourceFileInner>;
 
 pub fn load_from_path(path: &Path) -> Result<String, Diagnostic> {
     let string = (if path == Path::new("-") {
@@ -365,6 +341,10 @@ pub struct BuildDiagnostics {
     /// When false, throw error for experimental features
     pub enable_experimental: bool,
 
+    /// When true, reject features not supported by the safety-critical subset
+    #[cfg(feature = "slint-sc")]
+    pub slint_sc: bool,
+
     /// This is the list of all loaded files (with or without diagnostic)
     /// does not include the main file.
     /// FIXME: this doesn't really belong in the diagnostics, it should be somehow returned in another way
@@ -381,6 +361,21 @@ impl IntoIterator for BuildDiagnostics {
 }
 
 impl BuildDiagnostics {
+    /// Diagnostics for analyzing code that may already be in error, and whose
+    /// messages are thrown away.
+    ///
+    /// Seeded with an error because the compiler asserts that an error was
+    /// reported before it produces an `ElementType::Error` or an invalid
+    /// expression.
+    pub fn discarded() -> Self {
+        let mut diag = Self::default();
+        diag.push_error_with_span(
+            "Dummy error because some of the code asserts there was an error".into(),
+            Default::default(),
+        );
+        diag
+    }
+
     pub fn push_diagnostic_with_span(
         &mut self,
         message: String,
@@ -415,16 +410,55 @@ impl BuildDiagnostics {
         self.inner.push(error);
     }
 
+    /// Whether the compilation targets the Slint SC subset. Callable without
+    /// the `slint-sc` feature, unlike reading the field, so call sites need
+    /// no `cfg` of their own.
+    pub fn is_slint_sc(&self) -> bool {
+        #[cfg(feature = "slint-sc")]
+        return self.slint_sc;
+        #[cfg(not(feature = "slint-sc"))]
+        false
+    }
+
+    /// If in safety-critical mode, push an error saying that `feature` is not
+    /// supported.
+    ///
+    /// Errors are suppressed for builtin files (paths starting with `builtin:`)
+    /// since those are loaded automatically by the compiler and are not user code.
+    #[cfg(feature = "slint-sc")]
+    pub fn slint_sc_error(&mut self, feature: &str, source: &dyn Spanned) {
+        if self.slint_sc
+            && !source
+                .source_file()
+                .is_some_and(|sf| sf.path().to_string_lossy().starts_with("builtin:"))
+        {
+            self.push_error(format!("{feature} not supported in Slint SC"), source);
+        }
+    }
+
     pub fn push_property_deprecation_warning(
         &mut self,
         old_property: &str,
         new_property: &str,
         source: &dyn Spanned,
     ) {
+        self.push_property_deprecation_warning_with_message(
+            old_property,
+            &format!("Please use '{new_property}' instead"),
+            source,
+        )
+    }
+
+    /// Same as [`Self::push_property_deprecation_warning`], but with a free-form message shown
+    /// after "The property 'xxx' has been deprecated."
+    pub fn push_property_deprecation_warning_with_message(
+        &mut self,
+        old_property: &str,
+        message: &str,
+        source: &dyn Spanned,
+    ) {
         self.push_diagnostic_with_span(
-            format!(
-                "The property '{old_property}' has been deprecated. Please use '{new_property}' instead"
-            ),
+            format!("The property '{old_property}' has been deprecated. {message}"),
             source.to_source_location(),
             crate::diagnostics::DiagnosticLevel::Warning,
         )
@@ -495,9 +529,10 @@ impl BuildDiagnostics {
     #[cfg(feature = "display-diagnostics")]
     /// Print the diagnostics on the console
     pub fn print(self) {
+        use std::io::Write;
         let to_print = self.call_diagnostics(None);
         if !to_print.is_empty() {
-            std::eprintln!("{to_print}");
+            let _ = writeln!(std::io::stderr(), "{to_print}");
         }
     }
 
@@ -509,28 +544,26 @@ impl BuildDiagnostics {
 
     #[cfg(all(feature = "proc_macro_span", feature = "display-diagnostics"))]
     /// Will convert the diagnostics that only have offsets to the actual proc_macro::Span
+    ///
+    /// `tokens` are the tokens the document was parsed from, in document order.
     pub fn report_macro_diagnostic(
         self,
-        span_map: &[crate::parser::Token],
+        tokens: &[crate::parser::Token],
     ) -> proc_macro::TokenStream {
         let mut result = proc_macro::TokenStream::default();
         let mut needs_error = self.has_errors();
         let output = self.call_diagnostics(
             Some(&mut |diag| {
-                let span = diag.span.span.span.or_else(|| {
-                    //let pos =
-                    //span_map.binary_search_by_key(d.span.offset, |x| x.0).unwrap_or_else(|x| x);
-                    //d.span.span = span_map.get(pos).as_ref().map(|x| x.1);
-                    let mut offset = 0;
-                    span_map.iter().find_map(|t| {
-                        if diag.span.span.offset <= offset {
-                            t.span
-                        } else {
-                            offset += t.text.len();
-                            None
-                        }
-                    })
-                });
+                // A diagnostic only carries an offset into the document, which is the
+                // concatenation of the token texts: find the token that offset lands in.
+                let span = if diag.span.span.is_valid() {
+                    let index = tokens
+                        .binary_search_by_key(&diag.span.span.offset, |t| t.offset)
+                        .unwrap_or_else(|i| i.saturating_sub(1));
+                    tokens.get(index).and_then(|t| t.span)
+                } else {
+                    None
+                };
                 let message = &diag.message;
 
                 let span: proc_macro2::Span = if let Some(span) = span {
