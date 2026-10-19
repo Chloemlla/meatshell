@@ -865,6 +865,27 @@ impl ConfigStore {
         self.cache.extra_paste_shortcuts_disabled = !enabled;
     }
 
+    /// Customised shortcut overrides (action id → chord string).
+    pub fn keybindings(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.cache.keybindings
+    }
+
+    /// Set (`Some`) or drop back to the default (`None`) one action's chord.
+    pub fn set_keybinding(&mut self, action: &str, chord: Option<String>) {
+        match chord {
+            Some(c) => {
+                self.cache.keybindings.insert(action.to_string(), c);
+            }
+            None => {
+                self.cache.keybindings.remove(action);
+            }
+        }
+    }
+
+    pub fn reset_keybindings(&mut self) {
+        self.cache.keybindings.clear();
+    }
+
     pub fn editor_embedded(&self) -> bool {
         self.cache.editor_embedded
     }

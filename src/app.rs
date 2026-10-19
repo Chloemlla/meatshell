@@ -37,6 +37,7 @@ mod session_trigger;
 mod settings_callbacks;
 mod sftp_callbacks;
 mod sftp_ui;
+mod shortcuts;
 mod sidebar;
 mod single_instance;
 mod tab_callbacks;

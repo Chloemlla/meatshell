@@ -40,6 +40,16 @@ export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, Sft
 // TerminalState carries the streaming log + status line. Kept as a parallel
 // model so opening/closing tabs doesn't churn the log strings.
 // One file-transfer record shown in the download manager.
+// One rebindable action in the Shortcuts dialog. `header` is non-empty on
+// the first row of each section.
+export struct ShortcutBinding {
+    id: string,
+    header: string,
+    desc: string,
+    keys: string,
+    is-default: bool,
+}
+
 export struct TransferInfo {
     id: string,
     name: string,
@@ -342,6 +352,85 @@ component ShortcutRow inherits Rectangle {
     }
 }
 
+// A rebindable row in the Shortcuts dialog: click the chip to record a new
+// chord; customised entries show their chip in the accent colour plus a
+// per-row reset button.
+component EditableShortcutRow inherits Rectangle {
+    in property <string> keys;
+    in property <string> desc;
+    in property <bool> recording;
+    in property <bool> is-default;
+    in property <bool> lang-en;
+    callback start-record();
+    callback reset();
+    height: 28px;
+    HorizontalLayout {
+        spacing: 10px;
+        Rectangle {
+            width: 132px;
+            chip := Rectangle {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                width: min(parent.width, ekt.preferred-width + 16px);
+                height: 20px;
+                background: root.recording ? Theme.bg-active
+                    : (chip-ta.has-hover ? Theme.bg-hover : Theme.bg-root);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.recording || chip-ta.has-hover || !root.is-default
+                    ? Theme.accent : Theme.border-strong;
+                ekt := Text {
+                    text: root.recording
+                        ? (root.lang-en ? "Press keys…" : "按下快捷键…")
+                        : root.keys;
+                    color: root.recording ? Theme.text-secondary
+                        : (root.is-default ? Theme.text-primary : Theme.accent);
+                    font-family: Theme.font-mono;
+                    font-size: Theme.fs-xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+                chip-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.start-record(); }
+                }
+            }
+        }
+        Text {
+            text: root.desc;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        // Reset to default — only for customised rows.
+        Rectangle {
+            width: 22px;
+            if !root.is-default : Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 22px; height: 22px;
+                border-radius: Theme.radius-sm;
+                background: rst-ta.has-hover ? Theme.bg-hover : transparent;
+                rst-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.reset(); }
+                }
+                Text {
+                    text: "\u{E166}"; // undo
+                    font-family: "Material Icons";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "meatshell";
     icon: @image-url("../assets/icon.png");
@@ -452,6 +541,28 @@ export component AppWindow inherits Window {
     in-out property <bool> about-open: false;     // centered About dialog
     callback open-repo();                          // open the project's GitHub page
     in-out property <bool> shortcuts-open: false; // centered keyboard-shortcuts dialog (#103)
+    // Customisable shortcuts: rows set by Rust; `shortcut-recording` is the
+    // action id waiting for a new chord ("" = not recording).
+    in-out property <[ShortcutBinding]> shortcut-bindings;
+    in-out property <string> shortcut-recording: "";
+    in-out property <string> shortcut-status: "";
+    in-out property <bool> shortcut-status-error: false;
+    // Key event → action id ("" = not a shortcut). Implemented in Rust
+    // (src/app/shortcuts.rs) so every handler shares one keymap.
+    callback match-shortcut(string /* text */, bool /* control */, bool /* meta */,
+                            bool /* alt */, bool /* shift */, bool /* alt-screen */) -> string;
+    callback shortcut-record(string /* id */, string /* text */, bool /* control */,
+                             bool /* meta */, bool /* alt */, bool /* shift */);
+    callback shortcut-reset(string /* id */);
+    callback shortcut-reset-all();
+    callback shortcuts-refresh();
+    // Opening the dialog: fresh rows (the language may have changed) and no
+    // leftover recording / status from last time.
+    changed shortcuts-open => {
+        root.shortcut-recording = "";
+        root.shortcut-status = "";
+        if (root.shortcuts-open) { root.shortcuts-refresh(); }
+    }
     in property <string> download-dir;      // preset SFTP download folder ("" = ask)
     // Download (Transfers) popup size + resize-drag state. The popup is an
     // embedded Rectangle (not a top-level window), so its resize is driven in
@@ -1272,47 +1383,27 @@ export component AppWindow inherits Window {
             }
         }
         key-pressed(e) => {
-            // New window: ⌘⇧N / Ctrl+Shift+N (#multi-window). On macOS Slint
-            // maps `control` to Cmd (#158), so this single condition yields ⌘⇧N
-            // there and Ctrl+Shift+N elsewhere — identical to the TerminalView
-            // branch. \u{000e} is the Ctrl-N control char some backends send.
-            if (e.modifiers.control && e.modifiers.shift
-                    && (e.text == "n" || e.text == "N"
-                        || e.text == "\u{000e}")) {
+            // Window-wide fallback for the (customisable) window shortcuts:
+            // new window, font zoom, zen, terminal fullscreen. A focused
+            // terminal consumes these itself (terminal_view.slint), so there
+            // is no double-fire; this catches them when focus sits elsewhere
+            // (welcome page, sidebars, a hidden tab's view).
+            let act = root.match-shortcut(e.text, e.modifiers.control, e.modifiers.meta,
+                                          e.modifiers.alt, e.modifiers.shift, false);
+            if (act == "new-window") {
                 root.new-window-clicked();
                 accept
-            // Font zoom: Ctrl+= / Ctrl+- / Ctrl+0 zooms the active session;
-            // adding Alt zooms every session in this window (Alt, not Shift:
-            // Ctrl+Shift is the IME-switch hotkey on Chinese Windows). Same
-            // keys as the focused-terminal branch (terminal_view.slint); a
-            // focused terminal consumes them itself, so no double-fire.
-            // Ctrl+- arrives as \u{001f} (^_) on some backends.
-            } else if (e.modifiers.control && e.modifiers.alt
-                    && (e.text == "=" || e.text == "+" || e.text == "-"
-                        || e.text == "\u{001f}" || e.text == "0")) {
+            } else if (act == "zoom-in" || act == "zoom-out" || act == "zoom-reset"
+                    || act == "zoom-in-all" || act == "zoom-out-all" || act == "zoom-reset-all") {
                 root.zoom-term-font(root.active-tab-id,
-                    e.text == "-" || e.text == "\u{001f}" ? -1
-                        : e.text == "0" ? 0 : 1, true);
+                    (act == "zoom-in" || act == "zoom-in-all") ? 1
+                        : (act == "zoom-out" || act == "zoom-out-all") ? -1 : 0,
+                    act == "zoom-in-all" || act == "zoom-out-all" || act == "zoom-reset-all");
                 accept
-            } else if (e.modifiers.control && (e.text == "=" || e.text == "+")) {
-                root.zoom-term-font(root.active-tab-id, 1, false);
-                accept
-            } else if (e.modifiers.control && (e.text == "-" || e.text == "\u{001f}")) {
-                root.zoom-term-font(root.active-tab-id, -1, false);
-                accept
-            } else if (e.modifiers.control && e.text == "0") {
-                root.zoom-term-font(root.active-tab-id, 0, false);
-                accept
-            // Zen (focus) mode: Ctrl+Alt+Z toggles, same as the terminal
-            // branch below (#zen).
-            } else if (e.modifiers.control && e.modifiers.alt
-                    && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
+            } else if (act == "zen") {
                 root.toggle-zen-key();
                 accept
-            // Terminal fullscreen: Alt+Enter toggles (#495). Same key as the
-            // terminal branch; this catches it when focus sits elsewhere.
-            } else if (e.modifiers.alt && !e.modifiers.control && !e.modifiers.shift
-                    && (e.text == Key.Return || e.text == "\u{000d}")) {
+            } else if (act == "fullscreen") {
                 root.toggle-term-fullscreen();
                 accept
             } else {
@@ -1996,6 +2087,9 @@ export component AppWindow inherits Window {
                         delete-group(name) => { root.delete-group(name); }
                         remove-session(id) => { root.remove-session(id); }
                         cycle-tab(reverse) => { root.cycle-tab(reverse); }
+                        match-shortcut(t, c, m, a, s, alt-screen) => {
+                            return root.match-shortcut(t, c, m, a, s, alt-screen);
+                        }
                     }
 
                     // Terminal tabs — one TerminalView per terminal state. Only
@@ -2105,6 +2199,9 @@ export component AppWindow inherits Window {
                             root.diagnose-key-event(term.id, key, control, meta, alt, shift);
                         }
                         cycle-tab(reverse) => { root.cycle-tab(reverse); }
+                        match-shortcut(t, c, m, a, s, alt-screen) => {
+                            return root.match-shortcut(t, c, m, a, s, alt-screen);
+                        }
                         new-window-key() => { root.new-window-clicked(); }
                         zoom-key(direction, window-wide) => { root.zoom-term-font(term.id, direction, window-wide); }
                         zen-key() => { root.toggle-zen-key(); }
@@ -4236,15 +4333,24 @@ export component AppWindow inherits Window {
         is-open: root.shortcuts-open;
         is-mac: root.is-mac;
         covered: root.active-modal != ModalKind.shortcuts;
-        cancel-requested => { root.shortcuts-open = false; }
+        // While recording, Tab / Shift+Tab are part of the chord being
+        // captured, and Esc cancels the recording instead of the dialog.
+        raw-keys: root.shortcut-recording != "";
+        cancel-requested => {
+            if (root.shortcut-recording != "") {
+                root.shortcut-recording = "";
+            } else {
+                root.shortcuts-open = false;
+            }
+        }
         background: #00000080;
         dismiss-on-backdrop: true;
 
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: 424px;
-            height: 432px;
+            width: min(480px, parent.width - 32px);
+            height: min(560px, parent.height - 32px);
             background: Theme.popup-bg;
             border-radius: Theme.radius-md;
             border-width: 1px;
@@ -4286,31 +4392,32 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         spacing: 5px;
 
-                Text { text: root.lang-en ? "Tabs" : "标签页";
-                       color: Theme.text-muted; font-size: Theme.fs-xs; }
-                ShortcutRow { keys: root.is-mac ? "⌃Tab" : "Ctrl+Tab"; desc: root.lang-en ? "Next tab" : "下一个标签页"; }
-                ShortcutRow { keys: root.is-mac ? "⌃⇧Tab" : "Ctrl+Shift+Tab"; desc: root.lang-en ? "Previous tab" : "上一个标签页"; }
+                // Rebindable actions, grouped by section (rows from Rust).
+                for b[bi] in root.shortcut-bindings : VerticalLayout {
+                    spacing: 5px;
+                    if b.header != "" && bi > 0 : Rectangle { height: 6px; }
+                    if b.header != "" : Text {
+                        text: b.header;
+                        color: Theme.text-muted; font-size: Theme.fs-xs;
+                    }
+                    EditableShortcutRow {
+                        keys: b.keys;
+                        desc: b.desc;
+                        is-default: b.is-default;
+                        recording: root.shortcut-recording == b.id;
+                        lang-en: root.lang-en;
+                        start-record => {
+                            root.shortcut-status = "";
+                            root.shortcut-recording = b.id;
+                            sc-recorder.focus();
+                        }
+                        reset => { root.shortcut-reset(b.id); }
+                    }
+                }
 
                 Rectangle { height: 6px; }
-                Text { text: root.lang-en ? "Window" : "窗口";
+                Text { text: root.lang-en ? "Mouse" : "鼠标";
                        color: Theme.text-muted; font-size: Theme.fs-xs; }
-                ShortcutRow { keys: root.is-mac ? "⌘⇧N" : "Ctrl+Shift+N"; desc: root.lang-en ? "New window" : "新建窗口"; }
-                ShortcutRow { keys: root.is-mac ? "⌘⌥Z" : "Ctrl+Alt+Z"; desc: root.lang-en ? "Toggle zen (focus) mode" : "切换专注模式"; }
-                ShortcutRow { keys: root.is-mac ? "⌥↩" : "Alt+Enter"; desc: root.lang-en ? "Toggle terminal fullscreen" : "切换终端全屏"; }
-
-                Rectangle { height: 6px; }
-                Text { text: root.lang-en ? "Terminal" : "终端";
-                       color: Theme.text-muted; font-size: Theme.fs-xs; }
-                ShortcutRow { keys: root.is-mac ? "⌘C" : "Ctrl+Shift+C"; desc: root.lang-en ? "Copy selection" : "复制选中内容"; }
-                ShortcutRow { keys: root.is-mac ? "⌘V" : "Ctrl+V"; desc: root.lang-en ? "Paste" : "粘贴"; }
-                ShortcutRow { keys: root.is-mac ? "⌘F" : "Ctrl+F"; desc: root.lang-en ? "Find in terminal" : "查找"; }
-                ShortcutRow { keys: root.is-mac ? "⌘⇧R" : "Ctrl+Shift+R"; desc: root.lang-en ? "Jump to command history search" : "跳到命令历史搜索"; }
-                ShortcutRow { keys: root.is-mac ? "⌘=" : "Ctrl+="; desc: root.lang-en ? "Enlarge terminal font (this session)" : "放大终端字体（当前会话）"; }
-                ShortcutRow { keys: root.is-mac ? "⌘-" : "Ctrl+-"; desc: root.lang-en ? "Shrink terminal font (this session)" : "缩小终端字体（当前会话）"; }
-                ShortcutRow { keys: root.is-mac ? "⌘0" : "Ctrl+0"; desc: root.lang-en ? "Reset terminal font size (this session)" : "重置终端字体大小（当前会话）"; }
-                ShortcutRow { keys: root.is-mac ? "⌘⌥=" : "Ctrl+Alt+="; desc: root.lang-en ? "Enlarge terminal font (all sessions in window)" : "放大终端字体（本窗口所有会话）"; }
-                ShortcutRow { keys: root.is-mac ? "⌘⌥-" : "Ctrl+Alt+-"; desc: root.lang-en ? "Shrink terminal font (all sessions in window)" : "缩小终端字体（本窗口所有会话）"; }
-                ShortcutRow { keys: root.is-mac ? "⌘⌥0" : "Ctrl+Alt+0"; desc: root.lang-en ? "Reset terminal font size (all sessions in window)" : "重置终端字体大小（本窗口所有会话）"; }
                 ShortcutRow { keys: root.lang-en ? "Drag" : "鼠标拖动"; desc: root.lang-en ? "Select text" : "选择文本"; }
                 ShortcutRow { keys: root.lang-en ? "Wheel / Scrollbar" : "滚轮 / 滚动条"; desc: root.lang-en ? "Scroll history" : "滚动历史"; }
 
@@ -4326,6 +4433,57 @@ export component AppWindow inherits Window {
                 ShortcutRow { keys: root.is-mac ? "⌃K" : "Ctrl+K"; desc: root.lang-en ? "Delete to end of line" : "删除到行尾"; }
                 ShortcutRow { keys: root.is-mac ? "⌃U" : "Ctrl+U"; desc: root.lang-en ? "Delete to start of line" : "删除到行首"; }
                         Rectangle { height: 2px; }
+                    }
+                }
+
+                // Result of the last recording: a rejection (conflict / no
+                // modifier) in red, or a side-effect note in amber.
+                if root.shortcut-status != "" : Text {
+                    text: root.shortcut-status;
+                    color: root.shortcut-status-error ? Theme.danger : Theme.warning;
+                    font-size: Theme.fs-xs;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    padding-top: 6px;
+                    Text {
+                        text: root.shortcut-recording != ""
+                            ? (root.lang-en ? "Press the new shortcut, or Esc to cancel."
+                                            : "按下新的快捷键，或按 Esc 取消。")
+                            : (root.lang-en ? "Click a shortcut to change it. Changes are saved automatically."
+                                            : "点击快捷键即可修改，更改会自动保存。");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    GhostButton {
+                        text: root.lang-en ? "Reset all" : "全部恢复默认";
+                        clicked => {
+                            root.shortcut-recording = "";
+                            root.shortcut-reset-all();
+                        }
+                    }
+                }
+            }
+
+            // Captures the next chord while a row is recording. Stays enabled
+            // for the dialog's lifetime so focus never falls out of the modal.
+            sc-recorder := FocusScope {
+                width: 0px; height: 0px;
+                enabled: root.shortcuts-open;
+                focus-on-click: false;
+                key-pressed(e) => {
+                    if (root.shortcut-recording == "") {
+                        reject
+                    } else {
+                        root.shortcut-record(root.shortcut-recording, e.text,
+                            e.modifiers.control, e.modifiers.meta,
+                            e.modifiers.alt, e.modifiers.shift);
+                        accept
                     }
                 }
             }
