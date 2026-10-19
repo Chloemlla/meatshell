@@ -1274,6 +1274,7 @@ export component AppWindow inherits Window {
     callback sftp-remove-bookmark(string /* tab-id */, string /* path */);
     callback sftp-clear-recent(string /* tab-id */);
     callback sftp-places-refresh(string /* tab-id */);
+    callback sftp-drag-out(string /* tab-id */, int /* row */);   // to Explorer (#504)
     callback sftp-download-selected(string /* tab-id */);              // (#100)
     callback sftp-delete-selected(string /* tab-id */);               // (#100)
     callback sftp-copy-to-target(string /* tab-id */, string /* remote-path */, string /* target-tab-id */);
@@ -2230,6 +2231,7 @@ export component AppWindow inherits Window {
                         sftp-remove-bookmark(path) => { root.sftp-remove-bookmark(term.id, path); }
                         sftp-clear-recent() => { root.sftp-clear-recent(term.id); }
                         sftp-places-refresh() => { root.sftp-places-refresh(term.id); }
+                        sftp-drag-out(row) => { root.sftp-drag-out(term.id, row); }
                         sftp-download-selected() => { root.sftp-download-selected(term.id); }
                         sftp-copy-to-target(path, target) => { root.sftp-copy-to-target(term.id, path, target); }
                         sftp-copy-selected-to-target(target) => { root.sftp-copy-selected-to-target(term.id, target); }

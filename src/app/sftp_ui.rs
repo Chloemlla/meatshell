@@ -173,6 +173,32 @@ pub(super) fn collect_sftp_selected(
     paths
 }
 
+/// What a drag starting on `row` carries (#504): every checked entry when the
+/// row is one of several checked ones, otherwise just that row.
+pub(super) fn drag_out_paths(w: &AppWindow, tab_id: &str, row: i32) -> Vec<String> {
+    let terminals = w.get_terminals();
+    let Some(tm) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
+        return Vec::new();
+    };
+    let Some(term) = (0..tm.row_count())
+        .filter_map(|i| tm.row_data(i))
+        .find(|t| t.id.as_str() == tab_id)
+    else {
+        return Vec::new();
+    };
+    let Some(entry) = usize::try_from(row)
+        .ok()
+        .and_then(|i| term.sftp_entries.row_data(i))
+    else {
+        return Vec::new();
+    };
+    if entry.selected && term.sftp_selected_count > 1 {
+        collect_sftp_selected(tm, tab_id)
+    } else {
+        vec![entry.full_path.to_string()]
+    }
+}
+
 /// Shift+click range selection: make the checked set exactly the rows between
 /// `from` and `to` inclusive (either order, clamped to the list). Only rows
 /// whose state changes are written back, so large listings don't re-render

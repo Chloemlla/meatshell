@@ -7,5 +7,6 @@ mod transfer;
 
 pub(crate) use sftp::*;
 pub(crate) use transfer::{
-    DownloadConflict, SftpCommand, SftpHandle, SftpHandles, SftpLastCwd,
+    DownloadConflict, DragTransfer, ExportEntry, SftpCommand, SftpHandle, SftpHandles,
+    SftpLastCwd,
 };

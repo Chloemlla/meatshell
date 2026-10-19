@@ -417,6 +417,7 @@ export component TerminalView inherits Rectangle {
     callback sftp-remove-bookmark(string);
     callback sftp-clear-recent();
     callback sftp-places-refresh();
+    callback sftp-drag-out(int);                    // drag rows to Explorer (#504)
     callback sftp-download-selected();              // download checked entries (#100)
     callback sftp-delete-selected();                // delete checked entries (#100)
     callback sftp-copy-to-target(string, string);
@@ -2270,6 +2271,7 @@ export component TerminalView inherits Rectangle {
             remove-bookmark(p)  => { root.sftp-remove-bookmark(p); }
             clear-recent()      => { root.sftp-clear-recent(); }
             places-refresh()    => { root.sftp-places-refresh(); }
+            drag-out(i)         => { root.sftp-drag-out(i); }
             download-selected() => { root.sftp-download-selected(); }
             delete-selected()   => { root.sftp-delete-selected(); }
             copy-to-target(path, target) => { root.sftp-copy-to-target(path, target); }

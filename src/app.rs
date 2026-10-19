@@ -10,6 +10,7 @@ mod auth_dialogs;
 mod aux_windows;
 pub(crate) mod core;
 mod dock_stacks;
+mod drag_out;
 mod editor_host;
 mod editor_tabs;
 mod file_drop;

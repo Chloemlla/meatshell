@@ -437,6 +437,38 @@ pub(super) fn wire_sftp_callbacks(
             }
         });
     }
+    // Drag rows out of the file list into the OS file manager (#504).
+    // Windows only for now; elsewhere the gesture is ignored.
+    if cfg!(windows) {
+        let sftp_handles = sftp_handles.clone();
+        let weak = window.as_weak();
+        window.on_sftp_drag_out(move |tab_id: SharedString, row: i32| {
+            let Some(w) = weak.upgrade() else { return };
+            let roots = drag_out_paths(&w, tab_id.as_str(), row);
+            let commands = sftp_handles
+                .lock()
+                .ok()
+                .and_then(|h| h.get(tab_id.as_str()).map(|h| h.commands.clone()));
+            let Some(commands) = commands.filter(|_| !roots.is_empty()) else {
+                return;
+            };
+            // Start the OS drag on a fresh event-loop turn rather than inside
+            // Slint's pointer-move dispatch: DoDragDrop runs its own modal loop.
+            let weak = w.as_weak();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                super::drag_out::start(commands, roots);
+                // The OS drag consumed the button-up; release Slint's pointer
+                // grab so the row doesn't stay "pressed". Off-window, so it
+                // never counts as a click.
+                if let Some(w) = weak.upgrade() {
+                    w.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                        position: slint::LogicalPosition::new(-1.0, -1.0),
+                        button: slint::platform::PointerEventButton::Left,
+                    });
+                }
+            });
+        });
+    }
     // SFTP multi-select: download all checked entries into one folder (#100).
     {
         let sftp_handles = sftp_handles.clone();
