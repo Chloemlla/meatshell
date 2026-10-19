@@ -222,33 +222,31 @@ component IconBtn inherits Rectangle {
     // active = the picture's dominant colour) so the pulse reads as the
     // toolbar accent instead of an alert strobe, and follows the active theme.
     //
-    // WHY `visible` + `opacity` binding instead of `if root.breathe {…}`:
-    //   Slint's `animate` only fires on a *property change of an already-alive
-    //   element*. An element created by `if` appears with its initial opacity
-    //   already set, which is NOT a change, so the looping animation never
-    //   starts — that is exactly why "有传输任务却看不到脉冲" happened (the
-    //   layer was a static 0.5 square, never animating). Keeping the layer
-    //   always alive and flipping `visible` + `opacity` from false→true makes
-    //   opacity go 0 → 0.55, which *is* a change and starts the loop.
-    //   `visible: root.breathe` then hides it again when there is no transfer
-    //   so the (now-invisible) loop can't show through. Geometry is identical
-    //   to static-bg (Layer 1) so the pulse footprint equals the hover
-    //   footprint (#breathe-size-match).
+    // WHY `animation-tick()` instead of `animate opacity { iteration-count: -1 }`
+    // (#499): an infinite `animate` never finishes. Every later change of the
+    // property — including breathe → false at the end of a transfer — just
+    // restarts it with the same infinite settings, so after the first
+    // transfer the hidden layer kept the animation driver requesting a new
+    // frame forever. With the GPU renderer every frame is a full-window
+    // repaint, so CPU stayed high until the app was closed (seen after
+    // "Edit externally", whose download/re-upload are transfers).
+    // `animation-tick()` only drives frames while the binding actually reads
+    // it: once `breathe` is false the conditional below stops reading it and
+    // the window goes back to idle with zero redraws.
+    // Geometry is identical to static-bg (Layer 1) so the pulse footprint
+    // equals the hover footprint (#breathe-size-match).
     breathe-layer := Rectangle {
         x: 0px; y: 0px;
         width: 100%; height: 100%;
         border-radius: Theme.radius-sm;
         background: Theme.accent;
         visible: root.breathe;
-        opacity: root.breathe ? 0.55 : 0;
-        // 0.55 keeps the "low" end of the pulse unmistakably tinted without
-        // ever hitting full-saturation accent; direction: alternate ping-pongs
-        // 0 ↔ 0.55 → reads as a gentle breath, not a strobe (#v8-accent-breathe).
-        animate opacity {
-            duration: 1400ms;
-            iteration-count: -1;
-            direction: alternate;
-        }
+        // Smooth 0 ↔ 0.55 ping-pong, 1.4 s each way: a gentle breath, not a
+        // strobe; 0.55 keeps the peak short of full-saturation accent
+        // (#v8-accent-breathe).
+        opacity: root.breathe
+            ? 0.275 - 0.275 * cos(animation-tick() / 1400ms * 180deg)
+            : 0;
     }
     ta := TouchArea {
         mouse-cursor: pointer;
