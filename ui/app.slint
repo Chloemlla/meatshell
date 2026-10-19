@@ -1155,6 +1155,7 @@ export component AppWindow inherits Window {
     callback sftp-tree-expand(string /* tab-id */, string /* path */);
     callback sftp-delete(string /* tab-id */, string /* path */);
     callback sftp-toggle-select(string /* tab-id */, int /* row */);   // (#100)
+    callback sftp-select-range(string /* tab-id */, int /* from */, int /* to */); // Shift+click
     callback sftp-download-selected(string /* tab-id */);              // (#100)
     callback sftp-delete-selected(string /* tab-id */);               // (#100)
     callback sftp-copy-to-target(string /* tab-id */, string /* remote-path */, string /* target-tab-id */);
@@ -2117,6 +2118,7 @@ export component AppWindow inherits Window {
                         sftp-refresh(path) => { root.sftp-refresh(term.id, path); }
                         sftp-tree-expand(path) => { root.sftp-tree-expand(term.id, path); }
                         sftp-toggle-select(i) => { root.sftp-toggle-select(term.id, i); }
+                        sftp-select-range(a, b) => { root.sftp-select-range(term.id, a, b); }
                         sftp-download-selected() => { root.sftp-download-selected(term.id); }
                         sftp-copy-to-target(path, target) => { root.sftp-copy-to-target(term.id, path, target); }
                         sftp-copy-selected-to-target(target) => { root.sftp-copy-selected-to-target(term.id, target); }

@@ -141,6 +141,12 @@ export component SftpPanel inherits Rectangle {
     property <bool> show-group-col: root.show-group && root.fit-group;
     property <int> selected-row: -1;       // clicked/highlighted file-list row (#70)
     in property <int> selected-count;      // number of checked entries (#100)
+    // Shift+click range selection: the anchor is the last row plainly clicked
+    // or toggled; a Shift+click checks every row from the anchor to the
+    // clicked one. `shift-click-pending` lets the `clicked` handler skip its
+    // normal action when `pointer-event` already handled a Shift+press.
+    property <int> select-anchor: -1;
+    property <bool> shift-click-pending: false;
     // Panel-level right-click context menu (#84). One menu for the whole list:
     // an empty `menu-target` means the click landed on whitespace, which greys
     // out the item-specific actions (download/rename/…) but keeps new/refresh.
@@ -183,6 +189,7 @@ export component SftpPanel inherits Rectangle {
     callback tree-expand(string);   // toggle expand/collapse + navigate
     callback delete(string);        // remove a remote file/dir
     callback toggle-select(int);    // toggle a row's multi-select checkbox (#100)
+    callback select-range(int /* from */, int /* to */); // Shift+click: check exactly rows from..to
     callback download-selected();   // download all checked entries (#100)
     callback delete-selected();     // delete all checked entries (#100)
     callback copy-to-target(string /* path */, string /* target tab */);
@@ -219,6 +226,7 @@ export component SftpPanel inherits Rectangle {
         path-input.text = root.current-path;
         compact-path-input.text = root.current-path;
         root.selected-row = -1;
+        root.select-anchor = -1;
     }
 
     // Drag empty space to re-dock; interactive widgets (file list, tree, toolbar
@@ -959,7 +967,14 @@ export component SftpPanel inherits Rectangle {
 
                                 row-ta := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.selected-row = i; }
+                                    clicked => {
+                                        root.selected-row = i;
+                                        if (root.shift-click-pending) {
+                                            root.shift-click-pending = false;
+                                        } else {
+                                            root.select-anchor = i;
+                                        }
+                                    }
                                     double-clicked => {
                                         if (entry.is-dir) {
                                             root.navigate(entry.full-path);
@@ -968,6 +983,13 @@ export component SftpPanel inherits Rectangle {
                                         }
                                     }
                                     pointer-event(ev) => {
+                                        if (ev.kind == PointerEventKind.down
+                                                && ev.button == PointerEventButton.left
+                                                && ev.modifiers.shift) {
+                                            root.shift-click-pending = true;
+                                            root.select-range(root.select-anchor < 0 ? i : root.select-anchor, i);
+                                            if (root.select-anchor < 0) { root.select-anchor = i; }
+                                        }
                                         if (ev.kind == PointerEventKind.down
                                                 && ev.button == PointerEventButton.right) {
                                             root.selected-row = i;
@@ -997,7 +1019,23 @@ export component SftpPanel inherits Rectangle {
                                         background: entry.selected ? Theme.accent : transparent;
                                         cb-ta := TouchArea {
                                             mouse-cursor: pointer;
-                                            clicked => { root.toggle-select(i); }
+                                            clicked => {
+                                                if (root.shift-click-pending) {
+                                                    root.shift-click-pending = false;
+                                                } else {
+                                                    root.toggle-select(i);
+                                                    root.select-anchor = i;
+                                                }
+                                            }
+                                            pointer-event(ev) => {
+                                                if (ev.kind == PointerEventKind.down
+                                                        && ev.button == PointerEventButton.left
+                                                        && ev.modifiers.shift) {
+                                                    root.shift-click-pending = true;
+                                                    root.select-range(root.select-anchor < 0 ? i : root.select-anchor, i);
+                                                    if (root.select-anchor < 0) { root.select-anchor = i; }
+                                                }
+                                            }
                                         }
                                         if entry.selected : Text {
                                             text: "\u{E5CA}"; // check
