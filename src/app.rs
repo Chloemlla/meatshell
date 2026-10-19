@@ -36,6 +36,7 @@ mod session_runtime;
 mod session_trigger;
 mod settings_callbacks;
 mod sftp_callbacks;
+mod sftp_places;
 mod sftp_ui;
 mod shortcuts;
 mod sidebar;

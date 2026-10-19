@@ -706,6 +706,7 @@ pub(super) fn open_window(
         sftp_handles.clone(),
         sftp_last_cwd.clone(),
     );
+    super::sftp_places::wire_sftp_places(&window, store.clone(), tab_statuses.clone());
     wire_editor_tabs(
         &window,
         EditorTabModels {

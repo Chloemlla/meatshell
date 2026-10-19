@@ -732,3 +732,18 @@ msgstr "Save session"
 
 msgid "Create session"
 msgstr "Create session"
+
+msgid "Bookmarks"
+msgstr "Bookmarks"
+
+msgid "None yet. Click ☆ to bookmark the current folder."
+msgstr "None yet. Click ☆ to bookmark the current folder."
+
+msgid "Recent"
+msgstr "Recent"
+
+msgid "Folders you open will show up here."
+msgstr "Folders you open will show up here."
+
+msgid "Clear recent"
+msgstr "Clear recent"

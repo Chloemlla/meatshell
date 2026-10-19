@@ -1307,6 +1307,15 @@ pub(super) fn wire_session_callbacks(
                 sftp_sort_key: "".into(),
                 sftp_sort_dir: 0,
                 sftp_available: has_sftp,
+                sftp_bookmarks: {
+                    let places = store.borrow().sftp_places(&id);
+                    super::sftp_places::string_model(&places.bookmarks)
+                },
+                sftp_recent: {
+                    let places = store.borrow().sftp_places(&id);
+                    super::sftp_places::string_model(&places.recent)
+                },
+                sftp_bookmarked: false,
                 font_size: 0,
                 tunnels: ModelRc::from(std::rc::Rc::new(VecModel::<TunnelInfo>::default())),
                 sftp_collapsed: !has_sftp || sftp_collapsed_default,

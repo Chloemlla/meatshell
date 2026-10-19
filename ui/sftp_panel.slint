@@ -76,6 +76,180 @@ component SftpMenuItem inherits Rectangle {
     }
 }
 
+// One folder in the places menu: click jumps there; bookmarks also get a
+// remove button (#500).
+component SftpPlaceRow inherits Rectangle {
+    in property <string> path;
+    in property <string> icon;
+    in property <bool> current;      // the folder the panel is showing
+    in property <bool> removable;
+    callback go();
+    callback remove();
+    height: 26px;
+    border-radius: Theme.radius-sm;
+    background: row-ta.has-hover ? Theme.bg-hover : transparent;
+    row-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.go(); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 4px;
+        spacing: 6px;
+        Text {
+            width: 16px;
+            text: root.icon;
+            font-family: "Material Icons";
+            color: root.current ? Theme.accent : Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.path;
+            color: root.current ? Theme.accent : Theme.text-primary;
+            font-size: Theme.fs-sm;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.removable && row-ta.has-hover : Rectangle {
+            width: 20px;
+            border-radius: Theme.radius-sm;
+            background: rm-ta.has-hover ? Theme.bg-active : transparent;
+            rm-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.remove(); }
+            }
+            Text {
+                text: "\u{E5CD}"; // close
+                font-family: "Material Icons";
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// Toolbar button that opens the path bookmarks + recent folders menu (#500).
+// Used by both the wide and the compact toolbar layouts.
+component SftpPlacesButton inherits Rectangle {
+    in property <[string]> bookmarks;
+    in property <[string]> recent;
+    in property <string> current-path;
+    callback opened();
+    callback navigate(string);
+    callback remove-bookmark(string);
+    callback clear-recent();
+    // Menu geometry: section headers 22px, rows 26px + 1px spacing.
+    property <length> rows-h:
+        22px + max(1, root.bookmarks.length) * 27px
+        + 8px
+        + 22px + max(1, root.recent.length) * 27px
+        + (root.recent.length > 0 ? 27px : 0px);
+    width: 24px; height: 22px;
+    border-radius: Theme.radius-sm;
+    background: places-ta.has-hover ? Theme.bg-hover : transparent;
+    places-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.opened();
+            places-menu.show();
+        }
+    }
+    Text { text: "\u{E889}"; // history
+           font-family: "Material Icons";
+           color: Theme.text-secondary; font-size: Theme.fs-sm;
+           horizontal-alignment: center; vertical-alignment: center; }
+    places-menu := PopupWindow {
+        x: min(0px, root.width - self.width);
+        y: root.height + 2px;
+        width: 320px;
+        height: min(380px, root.rows-h + 8px);
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: #00000060;
+            ScrollView {
+                VerticalLayout {
+                    padding: 4px;
+                    spacing: 1px;
+                    Text {
+                        height: 22px;
+                        text: @tr("Bookmarks");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    if root.bookmarks.length == 0 : Text {
+                        height: 26px;
+                        text: @tr("None yet. Click ☆ to bookmark the current folder.");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    for b in root.bookmarks : SftpPlaceRow {
+                        path: b;
+                        icon: "\u{E838}"; // star
+                        current: b == root.current-path;
+                        removable: true;
+                        go => { root.navigate(b); }
+                        remove => { root.remove-bookmark(b); }
+                    }
+                    Rectangle { height: 8px; }
+                    Text {
+                        height: 22px;
+                        text: @tr("Recent");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    if root.recent.length == 0 : Text {
+                        height: 26px;
+                        text: @tr("Folders you open will show up here.");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    for r in root.recent : SftpPlaceRow {
+                        path: r;
+                        icon: "\u{E889}"; // history
+                        current: r == root.current-path;
+                        go => { root.navigate(r); }
+                    }
+                    if root.recent.length > 0 : SftpMenuItem {
+                        label: @tr("Clear recent");
+                        icon: "\u{E0B8}"; // clear_all
+                        clicked => { root.clear-recent(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Star toggle: bookmark / un-bookmark the folder the panel is showing (#500).
+component SftpStarButton inherits Rectangle {
+    in property <bool> bookmarked;
+    callback toggled();
+    width: 24px; height: 22px;
+    border-radius: Theme.radius-sm;
+    background: star-ta.has-hover ? Theme.bg-hover : transparent;
+    star-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+    Text { text: root.bookmarked ? "\u{E838}" : "\u{E83A}"; // star / star_border
+           font-family: "Material Icons";
+           color: root.bookmarked ? Theme.warning : Theme.text-secondary;
+           font-size: Theme.fs-sm;
+           horizontal-alignment: center; vertical-alignment: center; }
+}
+
 // ---------------------------------------------------------------------------
 // SftpPanel — left directory tree + right file listing
 // ---------------------------------------------------------------------------
@@ -190,6 +364,14 @@ export component SftpPanel inherits Rectangle {
     callback delete(string);        // remove a remote file/dir
     callback toggle-select(int);    // toggle a row's multi-select checkbox (#100)
     callback select-range(int /* from */, int /* to */); // Shift+click: check exactly rows from..to
+    // Path bookmarks + recent folders for this session (#500).
+    in property <[string]> bookmarks;
+    in property <[string]> recent;
+    in property <bool> bookmarked;      // current-path is bookmarked
+    callback toggle-bookmark(string);
+    callback remove-bookmark(string);
+    callback clear-recent();
+    callback places-refresh();
     callback download-selected();   // download all checked entries (#100)
     callback delete-selected();     // delete all checked entries (#100)
     callback copy-to-target(string /* path */, string /* target tab */);
@@ -402,6 +584,23 @@ export component SftpPanel inherits Rectangle {
                         single-line: true;
                         accepted => { root.navigate(self.text); }
                     }
+                }
+
+                // Bookmark the current folder / open bookmarks + recent (#500).
+                SftpStarButton {
+                    visible: root.panel-mode == "files" && !root.narrow-toolbar;
+                    bookmarked: root.bookmarked;
+                    toggled => { root.toggle-bookmark(root.current-path); }
+                }
+                SftpPlacesButton {
+                    visible: root.panel-mode == "files" && !root.narrow-toolbar;
+                    bookmarks: root.bookmarks;
+                    recent: root.recent;
+                    current-path: root.current-path;
+                    opened => { root.places-refresh(); }
+                    navigate(p) => { root.navigate(p); }
+                    remove-bookmark(p) => { root.remove-bookmark(p); }
+                    clear-recent => { root.clear-recent(); }
                 }
 
                 // Copy the current path to the clipboard.
@@ -647,6 +846,19 @@ export component SftpPanel inherits Rectangle {
                             single-line: true;
                             accepted => { root.navigate(self.text); }
                         }
+                    }
+                    SftpStarButton {
+                        bookmarked: root.bookmarked;
+                        toggled => { root.toggle-bookmark(root.current-path); }
+                    }
+                    SftpPlacesButton {
+                        bookmarks: root.bookmarks;
+                        recent: root.recent;
+                        current-path: root.current-path;
+                        opened => { root.places-refresh(); }
+                        navigate(p) => { root.navigate(p); }
+                        remove-bookmark(p) => { root.remove-bookmark(p); }
+                        clear-recent => { root.clear-recent(); }
                     }
                 }
             }

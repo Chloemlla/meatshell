@@ -194,6 +194,10 @@ pub struct ConfigFile {
     /// clearing the map.
     #[serde(default)]
     pub keybindings: std::collections::BTreeMap<String, String>,
+    /// SFTP path bookmarks + recent folders, keyed by session id (#500).
+    /// Sessions with nothing saved are pruned.
+    #[serde(default)]
+    pub sftp_places: std::collections::BTreeMap<String, super::SftpPlaces>,
     /// Open SFTP text files in a panel docked inside the main window instead of
     /// the detached editor window. Defaults to false (#494).
     #[serde(default)]

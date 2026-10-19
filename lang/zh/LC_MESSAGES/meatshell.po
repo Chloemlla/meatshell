@@ -729,3 +729,18 @@ msgstr "保存会话"
 
 msgid "Create session"
 msgstr "创建会话"
+
+msgid "Bookmarks"
+msgstr "书签"
+
+msgid "None yet. Click ☆ to bookmark the current folder."
+msgstr "暂无书签，点击 ☆ 收藏当前目录。"
+
+msgid "Recent"
+msgstr "最近访问"
+
+msgid "Folders you open will show up here."
+msgstr "打开过的目录会显示在这里。"
+
+msgid "Clear recent"
+msgstr "清除最近访问"
