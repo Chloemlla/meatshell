@@ -208,6 +208,13 @@ jobs:
             # Package with ditto (Apple's tool) — it preserves the bundle's
             # signature and metadata. Plain `zip` mangles them and re-breaks the
             # signature, which would reintroduce the "damaged" error.
+            #
+            # ⚠ KEEP THIS .zip (meatshell-<tag>-macos-<arch>.zip). Builds from
+            # v0.7.8 until the .dmg-aware updater download exactly this file
+            # name; newer builds prefer the .dmg below and fall back to it
+            # (src/update/inplace.rs `asset_names`). Retire it only once the
+            # zip's download count shows those older builds are gone.
+            # tests/update/inplace.rs guards this.
             ditto -c -k --keepParent "$APP" "${STAGE}.zip"
             echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
 
@@ -250,11 +257,50 @@ jobs:
           cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "meatshell-$VERSION-windows-x86_64.msi"
           echo "MSI=meatshell-$VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
 
+      # Drag-to-Applications disk image (#503): the download for manual
+      # installs, and the package dmg-aware builds prefer for one-click
+      # updates (they fall back to the .zip above, which stays for older
+      # builds). Installing into /Applications also keeps the app out of App
+      # Translocation, so one-click updates can replace it in place.
+      # Best-effort like the MSI: a hdiutil hiccup must not block the release.
+      - name: Build DMG (macOS)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          DMG="meatshell-${VERSION}-${{ matrix.name }}.dmg"
+          ROOT="$(mktemp -d)/meatshell"
+          mkdir -p "$ROOT"
+          # ditto keeps the ad-hoc signature from the Package step intact.
+          ditto meatshell.app "$ROOT/meatshell.app"
+          ln -s /Applications "$ROOT/Applications"
+          # hdiutil on hosted runners intermittently fails with
+          # "Resource busy"; retry a few times before giving up.
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "meatshell" -srcfolder "$ROOT" \
+                -fs HFS+ -format UDZO -ov "$DMG"; then
+              break
+            fi
+            [ "$attempt" = 3 ] && exit 1
+            sleep 5
+          done
+          hdiutil verify "$DMG"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: ${{ env.ASSET }}
+
+      - name: Upload DMG artifact
+        if: runner.os == 'macOS' && env.DMG != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-dmg
+          path: ${{ env.DMG }}
 
       - name: Upload AppImage artifact
         if: matrix.name == 'linux-x86_64'
@@ -307,6 +353,14 @@ jobs:
         with:
           prerelease: ${{ contains(github.ref_name, '-remote.') }}
           files: ${{ env.MSI }}
+          fail_on_unmatched_files: false
+
+      - name: Attach DMG to GitHub Release
+        if: runner.os == 'macOS' && env.DMG != '' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-remote.') }}
+          files: ${{ env.DMG }}
           fail_on_unmatched_files: false
 
   build-flatpak:
