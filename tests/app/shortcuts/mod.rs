@@ -40,8 +40,10 @@ fn storage_round_trips() {
 #[test]
 fn default_terminal_behaviour_is_preserved_on_windows() {
     let km = pc();
-    // Ctrl+C still goes to the shell (interrupt); Ctrl+Shift+C copies.
-    assert_eq!(km.match_event(&ev(false, "c", true, false, false, false), false, true), None);
+    // Ctrl+C interrupts (sends ^C, also inside vim); Ctrl+Shift+C copies.
+    let ctrl_c = ev(false, "c", true, false, false, false);
+    assert_eq!(km.match_event(&ctrl_c, false, true), Some("interrupt"));
+    assert_eq!(km.match_event(&ctrl_c, true, true), Some("interrupt"));
     assert_eq!(km.match_event(&ev(false, "C", true, false, false, true), false, true), Some("copy"));
     // Ctrl+V pastes on the normal screen but reaches vim on the alt screen.
     let ctrl_v = ev(false, "v", true, false, false, false);
@@ -71,7 +73,8 @@ fn mac_uses_cmd_for_app_shortcuts_and_physical_ctrl_for_tabs() {
     let km = mac();
     // Slint: control = ⌘, meta = physical Ctrl.
     assert_eq!(km.match_event(&ev(true, "c", true, false, false, false), false, true), Some("copy"));
-    assert_eq!(km.match_event(&ev(true, "c", false, true, false, false), false, true), None);
+    // Physical Ctrl+C interrupts; ⌘C copies.
+    assert_eq!(km.match_event(&ev(true, "c", false, true, false, false), false, true), Some("interrupt"));
     assert_eq!(km.match_event(&ev(true, "\t", false, true, false, false), false, true), Some("next-tab"));
     assert_eq!(km.match_event(&ev(true, "v", true, false, false, false), true, true), Some("paste"));
     assert_eq!(Chord::parse("Alt+Shift+Cmd+K").unwrap().display(true), "⌥⇧⌘K");
@@ -92,9 +95,22 @@ fn overrides_rebind_and_free_the_old_chord() {
     o.insert("copy".to_string(), "Ctrl+C".to_string());
     o.insert("find".to_string(), "garbage".to_string()); // ignored → default
     let km = Keymap::resolve(&o, false);
+    // The user's custom Ctrl+C wins; Interrupt's default is left unbound.
     assert_eq!(km.match_event(&ev(false, "c", true, false, false, false), false, true), Some("copy"));
     assert_eq!(km.match_event(&ev(false, "C", true, false, false, true), false, true), None);
     assert_eq!(km.chord("find").unwrap().to_storage(), "Ctrl+F");
+    assert!(km.chord("interrupt").is_none());
+    let rows = binding_rows(&km, true);
+    let interrupt = rows.iter().find(|r| r.id == "interrupt").unwrap();
+    assert_eq!(interrupt.keys.as_str(), "—");
+
+    // Interrupt moved elsewhere: that chord sends ^C, and plain Ctrl+C is
+    // no longer a shortcut (it still reaches the shell as a raw key).
+    let mut o = BTreeMap::new();
+    o.insert("interrupt".to_string(), "Ctrl+Shift+X".to_string());
+    let km = Keymap::resolve(&o, false);
+    assert_eq!(km.match_event(&ev(false, "X", true, false, false, true), false, true), Some("interrupt"));
+    assert_eq!(km.match_event(&ev(false, "c", true, false, false, false), false, true), None);
 }
 
 #[test]
@@ -108,8 +124,17 @@ fn record_validates_conflicts_modifiers_and_warns_about_ctrl_letters() {
     assert!(matches!(record(&km, "copy", &plain, true), RecordOutcome::Rejected(_)));
     // F-keys alone are fine.
     assert!(matches!(record(&km, "find", &Chord::parse("F3").unwrap(), true), RecordOutcome::Bound { warning: None, .. }));
-    // Ctrl+C for copy: allowed, with a warning that ^C won't reach the shell.
-    match record(&km, "copy", &Chord::parse("Ctrl+C").unwrap(), true) {
+    // Ctrl+C is Interrupt's by default, so Copy can't take it directly...
+    let ctrl_c = Chord::parse("Ctrl+C").unwrap();
+    assert!(matches!(record(&km, "copy", &ctrl_c, true), RecordOutcome::Rejected(m) if m.contains("Interrupt")));
+    // ...and Interrupt keeping Ctrl+C is not warned about.
+    assert_eq!(record(&km, "interrupt", &ctrl_c, true), RecordOutcome::Bound { override_value: None, warning: None });
+    // Once Interrupt moves away, Copy may take Ctrl+C, with a warning that
+    // ^C won't reach the shell.
+    let mut o = BTreeMap::new();
+    o.insert("interrupt".to_string(), "Ctrl+Shift+X".to_string());
+    let km = Keymap::resolve(&o, false);
+    match record(&km, "copy", &ctrl_c, true) {
         RecordOutcome::Bound { override_value, warning } => {
             assert_eq!(override_value.as_deref(), Some("Ctrl+C"));
             assert!(warning.unwrap().contains("^C"));

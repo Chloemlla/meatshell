@@ -1233,6 +1233,11 @@ export component TerminalView inherits Rectangle {
                             act == "zoom-in-all" || act == "zoom-out-all"
                                 || act == "zoom-reset-all");
                         accept
+                    // ^C to the PTY — the same bytes as the physical Ctrl+C,
+                    // whichever chord the user bound it to.
+                    } else if (act == "interrupt") {
+                        root.send-key("c", true, false, false);
+                        accept
                     } else if (act == "copy") {
                         root.copy-terminal-text();
                         accept

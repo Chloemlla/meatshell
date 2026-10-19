@@ -78,6 +78,10 @@ pub(crate) const ACTIONS: &[ActionDef] = &[
         default_pc: "Ctrl+Alt+Z", default_mac: "Alt+Cmd+Z" },
     ActionDef { id: "fullscreen", section: Section::Window, en: "Toggle terminal fullscreen", zh: "切换终端全屏",
         default_pc: "Alt+Enter", default_mac: "Alt+Enter" },
+    // Sends ^C exactly like the physical key. Listing it makes Ctrl+C visible
+    // and rebindable; an unbound Ctrl+C still reaches the shell as usual.
+    ActionDef { id: "interrupt", section: Section::Terminal, en: "Interrupt running command (send ^C)", zh: "中断当前命令（发送 ^C）",
+        default_pc: "Ctrl+C", default_mac: "Ctrl+C" },
     ActionDef { id: "copy", section: Section::Terminal, en: "Copy selection", zh: "复制选中内容",
         default_pc: "Ctrl+Shift+C", default_mac: "Cmd+C" },
     ActionDef { id: "paste", section: Section::Terminal, en: "Paste", zh: "粘贴",
@@ -322,21 +326,31 @@ impl Chord {
 #[derive(Clone, Debug)]
 pub(crate) struct Keymap {
     pub is_mac: bool,
-    /// Parallel to `ACTIONS`.
-    pub chords: Vec<Chord>,
+    /// Parallel to `ACTIONS`. `None` = unbound: the action's default chord
+    /// is taken by a user override of another action.
+    pub chords: Vec<Option<Chord>>,
 }
 
 impl Keymap {
     /// Defaults with the user's overrides applied. An unparsable override
-    /// (hand-edited config) falls back to the default.
+    /// (hand-edited config) falls back to the default. A user's explicit
+    /// choice always wins over a default: a default that collides with an
+    /// override is left unbound (e.g. Copy rebound to Ctrl+C before the
+    /// Interrupt action existed keeps copying).
     pub(crate) fn resolve(overrides: &BTreeMap<String, String>, is_mac: bool) -> Keymap {
+        let custom: Vec<Option<Chord>> = ACTIONS
+            .iter()
+            .map(|a| overrides.get(a.id).and_then(|s| Chord::parse(s)))
+            .collect();
         let chords = ACTIONS
             .iter()
-            .map(|a| {
-                overrides
-                    .get(a.id)
-                    .and_then(|s| Chord::parse(s))
-                    .unwrap_or_else(|| a.default_chord(is_mac))
+            .zip(&custom)
+            .map(|(a, c)| match c {
+                Some(c) => Some(c.clone()),
+                None => {
+                    let d = a.default_chord(is_mac);
+                    (!custom.iter().flatten().any(|o| *o == d)).then_some(d)
+                }
             })
             .collect();
         Keymap { is_mac, chords }
@@ -344,13 +358,16 @@ impl Keymap {
 
     #[cfg(test)]
     pub(crate) fn chord(&self, id: &str) -> Option<&Chord> {
-        ACTIONS.iter().position(|a| a.id == id).map(|i| &self.chords[i])
+        ACTIONS
+            .iter()
+            .position(|a| a.id == id)
+            .and_then(|i| self.chords[i].as_ref())
     }
 
     fn lookup(&self, chord: &Chord) -> Option<&'static str> {
         self.chords
             .iter()
-            .position(|c| c == chord)
+            .position(|c| c.as_ref() == Some(chord))
             .map(|i| ACTIONS[i].id)
     }
 
@@ -450,7 +467,7 @@ pub(crate) fn record(keymap: &Keymap, id: &str, chord: &Chord, en: bool) -> Reco
         .chords
         .iter()
         .zip(ACTIONS)
-        .find(|(c, a)| *c == chord && a.id != id)
+        .find(|(c, a)| c.as_ref() == Some(chord) && a.id != id)
         .map(|(_, a)| a)
     {
         return RecordOutcome::Rejected(if en {
@@ -461,8 +478,10 @@ pub(crate) fn record(keymap: &Keymap, id: &str, chord: &Chord, en: bool) -> Reco
     }
     // Ctrl+<letter> is a terminal control key (^C interrupt, ^V literal-next…);
     // binding it means the shell never sees it.
-    // (Paste on Windows/Linux is exempt: it yields to full-screen programs.)
+    // (Paste on Windows/Linux is exempt: it yields to full-screen programs.
+    // Interrupt is exempt: it sends ^C itself.)
     let warning = (chord.ctrl && !chord.alt && !chord.cmd && !chord.shift && chord.is_letter()
+        && def.id != "interrupt"
         && !(def.id == "paste" && !keymap.is_mac))
         .then(|| {
             let caret = format!("^{}", chord.key.to_ascii_uppercase());
@@ -521,8 +540,12 @@ pub(crate) fn binding_rows(keymap: &Keymap, en: bool) -> Vec<ShortcutBinding> {
                 id: a.id.into(),
                 header: header.into(),
                 desc: a.desc(en).into(),
-                keys: c.display(keymap.is_mac).into(),
-                is_default: *c == a.default_chord(keymap.is_mac),
+                keys: match c {
+                    Some(c) => c.display(keymap.is_mac),
+                    None => "—".to_string(), // default taken by a custom binding
+                }
+                .into(),
+                is_default: c.as_ref().is_none_or(|c| *c == a.default_chord(keymap.is_mac)),
             }
         })
         .collect()
