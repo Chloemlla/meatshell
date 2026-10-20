@@ -175,7 +175,11 @@ pub(super) fn collect_sftp_selected(
 
 /// What a drag starting on `row` carries (#504): every checked entry when the
 /// row is one of several checked ones, otherwise just that row.
-pub(super) fn drag_out_paths(w: &AppWindow, tab_id: &str, row: i32) -> Vec<String> {
+pub(super) fn drag_out_items(
+    w: &AppWindow,
+    tab_id: &str,
+    row: i32,
+) -> Vec<super::drag_out::DragItem> {
     let terminals = w.get_terminals();
     let Some(tm) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
         return Vec::new();
@@ -193,9 +197,24 @@ pub(super) fn drag_out_paths(w: &AppWindow, tab_id: &str, row: i32) -> Vec<Strin
         return Vec::new();
     };
     if entry.selected && term.sftp_selected_count > 1 {
+        // macOS needs to know folders up front (the drag's file types).
+        let dirs: std::collections::HashSet<String> = (0..term.sftp_entries.row_count())
+            .filter_map(|i| term.sftp_entries.row_data(i))
+            .filter(|e| e.is_dir)
+            .map(|e| e.full_path.to_string())
+            .collect();
         collect_sftp_selected(tm, tab_id)
+            .into_iter()
+            .map(|remote| super::drag_out::DragItem {
+                is_dir: dirs.contains(&remote),
+                remote,
+            })
+            .collect()
     } else {
-        vec![entry.full_path.to_string()]
+        vec![super::drag_out::DragItem {
+            remote: entry.full_path.to_string(),
+            is_dir: entry.is_dir,
+        }]
     }
 }
 

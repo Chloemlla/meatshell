@@ -438,35 +438,49 @@ pub(super) fn wire_sftp_callbacks(
         });
     }
     // Drag rows out of the file list into the OS file manager (#504).
-    // Windows only for now; elsewhere the gesture is ignored.
-    if cfg!(windows) {
+    // Windows and macOS; on Linux the gesture is ignored.
+    if super::drag_out::SUPPORTED {
         let sftp_handles = sftp_handles.clone();
         let weak = window.as_weak();
         window.on_sftp_drag_out(move |tab_id: SharedString, row: i32| {
             let Some(w) = weak.upgrade() else { return };
-            let roots = drag_out_paths(&w, tab_id.as_str(), row);
+            let items = drag_out_items(&w, tab_id.as_str(), row);
             let commands = sftp_handles
                 .lock()
                 .ok()
                 .and_then(|h| h.get(tab_id.as_str()).map(|h| h.commands.clone()));
-            let Some(commands) = commands.filter(|_| !roots.is_empty()) else {
+            let Some(commands) = commands.filter(|_| !items.is_empty()) else {
                 return;
             };
-            // Start the OS drag on a fresh event-loop turn rather than inside
-            // Slint's pointer-move dispatch: DoDragDrop runs its own modal loop.
-            let weak = w.as_weak();
-            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-                super::drag_out::start(commands, roots);
-                // The OS drag consumed the button-up; release Slint's pointer
-                // grab so the row doesn't stay "pressed". Off-window, so it
-                // never counts as a click.
+            // The OS drag consumed the button-up; release Slint's pointer
+            // grab so the row doesn't stay "pressed". Off-window, so it
+            // never counts as a click.
+            let release = |weak: slint::Weak<AppWindow>| {
                 if let Some(w) = weak.upgrade() {
                     w.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
                         position: slint::LogicalPosition::new(-1.0, -1.0),
                         button: slint::platform::PointerEventButton::Left,
                     });
                 }
-            });
+            };
+            let weak = w.as_weak();
+            if cfg!(target_os = "macos") {
+                // AppKit starts the session from the mouse event being
+                // handled right now and returns at once; the drag then runs
+                // on its own.
+                if super::drag_out::start(w.window(), commands, items) {
+                    slint::Timer::single_shot(std::time::Duration::ZERO, move || release(weak));
+                }
+            } else {
+                // Start on a fresh event-loop turn rather than inside Slint's
+                // pointer-move dispatch: DoDragDrop runs its own modal loop.
+                slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                    if let Some(w) = weak.upgrade() {
+                        super::drag_out::start(w.window(), commands, items);
+                    }
+                    release(weak);
+                });
+            }
         });
     }
     // SFTP multi-select: download all checked entries into one folder (#100).

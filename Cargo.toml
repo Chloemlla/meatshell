@@ -169,6 +169,19 @@ jemallocator = "0.5"
 # import library at link time when using the MSVC toolchain (#224).
 [target.'cfg(target_os = "macos")'.dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["renderer-skia"] }
+# SFTP drag-out to Finder with file promises (#504, src/app/drag_out_mac.rs).
+# Same versions already in Cargo.lock; only the features used are enabled.
+objc2 = "0.6.4"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "NSArray", "NSError", "NSGeometry", "NSOperation",
+    "NSProcessInfo", "NSString", "NSURL",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "NSApplication", "NSDragging", "NSDraggingItem",
+    "NSDraggingSession", "NSEvent", "NSFilePromiseProvider", "NSGraphicsContext",
+    "NSImage", "NSPasteboard", "NSResponder", "NSView", "NSWindow", "NSWorkspace",
+] }
 
 # Official MCP HTTP transport and externally issued OAuth JWT verification.
 [dependencies.rmcp]
