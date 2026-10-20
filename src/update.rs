@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 pub mod inplace;
+pub mod linux;
 #[cfg(windows)]
 pub mod windows;
 
@@ -51,6 +52,16 @@ pub fn newer_release(body: &str, current: &str) -> Result<Option<Release>> {
     let current = version(current.split('-').next().unwrap_or(current))
         .context("Invalid installed version")?;
     Ok((latest > current).then_some(release))
+}
+
+/// True if `version` (e.g. `0.7.10`, from a package repository) is at least
+/// release `tag` (e.g. `v0.7.10`). Unparseable versions count as caught up, so
+/// a format change never hides an update.
+pub fn caught_up(version: &str, tag: &str) -> bool {
+    match (self::version(version), self::version(tag)) {
+        (Some(version), Some(tag)) => version >= tag,
+        _ => true,
+    }
 }
 
 pub fn check() -> Result<Option<Release>> {

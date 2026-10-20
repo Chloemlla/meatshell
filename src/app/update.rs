@@ -20,6 +20,8 @@ enum Package {
     #[cfg(windows)]
     Msi(crate::update::windows::Download),
     InPlace(inplace::Prepared),
+    /// The AUR helper ran in a terminal tab; only a restart is left.
+    Restart,
 }
 
 fn method(core: &Rc<AppCore>) -> Method {
@@ -34,7 +36,7 @@ fn one_click(method: &Method) -> bool {
     match method {
         #[cfg(windows)]
         Method::Msi(_) => true,
-        Method::InPlace(_) => true,
+        Method::InPlace(_) | Method::Aur => true,
         _ => false,
     }
 }
@@ -75,6 +77,7 @@ fn check(core: &Rc<AppCore>, manual: bool) {
         return;
     }
     let package_manager = method(core) == Method::PackageManager;
+    let aur = method(core) == Method::Aur;
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
@@ -83,7 +86,20 @@ fn check(core: &Rc<AppCore>, manual: bool) {
     }
     publish(core);
     std::thread::spawn(move || {
-        let result = crate::update::check();
+        let mut result = crate::update::check();
+        // The AUR package follows the GitHub release by a little while; offer
+        // the update once the AUR has it, or paru would find nothing to do.
+        let mut aur_behind = None;
+        if let (true, Ok(Some(release))) = (aur, &result) {
+            match crate::update::linux::aur_version() {
+                Ok(version) if !crate::update::caught_up(&version, &release.tag_name) => {
+                    aur_behind = Some(release.tag_name.clone());
+                    result = Ok(None);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!("update: AUR check failed: {error:#}"),
+            }
+        }
         on_ui(move |core| {
             {
                 let mut state = core.update.borrow_mut();
@@ -104,6 +120,15 @@ fn check(core: &Rc<AppCore>, manual: bool) {
                             (None, _) => t("当前已是最新版本", "You are up to date"),
                         }
                         .into();
+                        if let Some(tag) = &aur_behind {
+                            state.status = format!(
+                                "{tag} {}",
+                                t(
+                                    "已发布，AUR 软件包更新后即可升级",
+                                    "is out; it can be installed once the AUR package is updated",
+                                )
+                            );
+                        }
                         state.release = release;
                     }
                     Err(error) => {
@@ -213,7 +238,22 @@ fn install(core: &Rc<AppCore>, weak: &slint::Weak<AppWindow>) {
     let msi = matches!(core.update.borrow().package, Some(Package::Msi(_)));
     #[cfg(not(windows))]
     let msi = false;
-    let description = if msi {
+    let (restart_only, admin) = match &core.update.borrow().package {
+        Some(Package::Restart) => (true, false),
+        Some(Package::InPlace(prepared)) => (false, prepared.needs_admin()),
+        _ => (false, false),
+    };
+    let description = if restart_only {
+        t(
+            "将关闭所有 MeatShell 窗口和连接并重新打开程序。请确认终端标签页中的更新已经完成，并先保存编辑中的文件。",
+            "All MeatShell windows and connections will close and the app will reopen. Make sure the update in the terminal tab has finished, and save any files you are editing first.",
+        )
+    } else if admin {
+        t(
+            "将安装新版本，系统会要求输入管理员密码。安装完成后关闭所有 MeatShell 窗口和连接并重新打开程序。请先保存编辑中的文件。",
+            "The new version will be installed; your system will ask for an administrator password. All MeatShell windows and connections then close and the app reopens. Save any files you are editing first.",
+        )
+    } else if msi {
         t(
             "将关闭所有 MeatShell 窗口和连接，然后安装更新并重新打开程序。请先保存编辑中的文件。Windows 可能要求管理员授权。",
             "All MeatShell windows and connections will close. The update will be installed and the app reopened. Save any files you are editing first. Windows may request administrator permission.",
@@ -239,7 +279,12 @@ fn install(core: &Rc<AppCore>, weak: &slint::Weak<AppWindow>) {
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
-        state.status = t("正在准备安装…", "Preparing installation…").into();
+        state.status = if admin {
+            t("正在安装，请在系统对话框中授权…", "Installing — approve the system password prompt…")
+        } else {
+            t("正在准备安装…", "Preparing installation…")
+        }
+        .into();
         state.error = false;
     }
     publish(core);
@@ -247,7 +292,47 @@ fn install(core: &Rc<AppCore>, weak: &slint::Weak<AppWindow>) {
         #[cfg(windows)]
         Package::Msi(package) => install_msi(package),
         Package::InPlace(prepared) => install_in_place(prepared),
+        Package::Restart => restart_app(core),
     }
+}
+
+/// After the AUR helper replaced `/usr/bin/meatshell`: start it and close.
+fn restart_app(core: &Rc<AppCore>) {
+    // Once the package replaced the binary, Linux reports this process's
+    // executable as "<path> (deleted)"; the new file is at <path>.
+    let result = std::env::current_exe()
+        .map(|exe| {
+            let replaced = exe
+                .to_str()
+                .and_then(|p| p.strip_suffix(" (deleted)"))
+                .map(std::path::PathBuf::from);
+            replaced.unwrap_or(exe)
+        })
+        .map_err(anyhow::Error::from)
+        .and_then(|exe| inplace::relaunch(&inplace::Relaunch::Path(exe)));
+    match result {
+        Ok(()) => shut_down(core),
+        Err(error) => {
+            core.update.borrow_mut().package = Some(Package::Restart);
+            failed(core, t("无法重新启动", "Could not restart"), error);
+        }
+    }
+}
+
+/// AUR: run the user's AUR helper in a new terminal tab, then offer a restart.
+fn update_in_terminal(core: &Rc<AppCore>, window: &AppWindow) {
+    window.invoke_connect_session(crate::update::linux::AUR_SESSION_ID.into());
+    {
+        let mut state = core.update.borrow_mut();
+        state.error = false;
+        state.package = Some(Package::Restart);
+        state.status = t(
+            "请在终端标签页中完成更新，然后点击“重启”",
+            "Finish the update in the terminal tab, then click Restart",
+        )
+        .into();
+    }
+    publish(core);
 }
 
 #[cfg(windows)]
@@ -317,6 +402,7 @@ fn failed(core: &Rc<AppCore>, message: &str, error: anyhow::Error) {
 
 pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
     window.set_update_install_supported(one_click(&method(core)));
+    window.set_update_via_terminal(method(core) == Method::Aur);
     {
         let core = core.clone();
         window.on_check_for_updates(move || check(&core, true));
@@ -329,6 +415,8 @@ pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
             if window.get_update_install_supported() {
                 if core.update.borrow().package.is_some() {
                     install(&core, &weak);
+                } else if method(&core) == Method::Aur {
+                    update_in_terminal(&core, &window);
                 } else {
                     download(&core);
                 }

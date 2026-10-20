@@ -938,8 +938,14 @@ export component AppWindow inherits Window {
     in property <bool> update-ready;
     in property <bool> update-error;
     in property <bool> update-install-supported;
+    // AUR installs: the update runs in a terminal tab, then MeatShell restarts.
+    in property <bool> update-via-terminal;
     in property <string> update-status;
-    property <string> update-action-label: root.update-ready
+    property <string> update-action-label: root.update-via-terminal
+        ? (root.update-ready
+            ? (root.lang-en ? "Restart" : "重启")
+            : (root.lang-en ? "Update in terminal" : "在终端中更新"))
+        : root.update-ready
         ? (root.lang-en ? "Install and restart" : "安装并重启")
         : root.update-install-supported
             ? (root.lang-en ? "Download update" : "下载更新")
@@ -5164,6 +5170,7 @@ export component AppWindow inherits Window {
                     update-busy: root.update-busy;
                     update-error: root.update-error;
                     update-install-supported: root.update-install-supported;
+                    update-via-terminal: root.update-via-terminal;
                     update-status: root.update-status;
                     update-action-label: root.update-action-label;
                     check-for-updates => { root.check-for-updates(); }
