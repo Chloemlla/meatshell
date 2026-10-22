@@ -1,4 +1,6 @@
-//! Connects the shared update state to each window's existing update controls.
+//! Connects the shared update state to each window's update controls: the
+//! toolbar Updates button (red dot when a newer release exists) and the
+//! Settings → Updates page.
 
 use super::*;
 use crate::update::inplace::{self, Method};
