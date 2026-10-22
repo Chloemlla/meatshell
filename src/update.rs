@@ -4,7 +4,8 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod inplace;
 pub mod linux;
@@ -13,6 +14,27 @@ pub mod windows;
 
 pub const RELEASE_PAGE: &str = "https://github.com/yituorou/meatshell/releases/latest";
 const RELEASE_API: &str = "https://api.github.com/repos/yituorou/meatshell/releases/latest";
+const RELEASE_MANIFEST: &str =
+    "https://github.com/yituorou/meatshell/releases/latest/download/latest.json";
+static API_RETRY_AT: Mutex<Option<SystemTime>> = Mutex::new(None);
+
+#[derive(Debug)]
+pub struct RateLimited {
+    pub retry_at: SystemTime,
+}
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let time: chrono::DateTime<chrono::Local> = self.retry_at.into();
+        write!(
+            f,
+            "GitHub API rate limit reached; retry after {}",
+            time.format("%H:%M:%S")
+        )
+    }
+}
+
+impl std::error::Error for RateLimited {}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Release {
@@ -65,13 +87,77 @@ pub fn caught_up(version: &str, tag: &str) -> bool {
 }
 
 pub fn check() -> Result<Option<Release>> {
-    let body = ureq::get(RELEASE_API)
+    check_release(RELEASE_MANIFEST, RELEASE_API, &API_RETRY_AT)
+}
+
+fn request(url: &str) -> std::result::Result<ureq::Response, ureq::Error> {
+    ureq::get(url)
         .set("User-Agent", "meatshell-update-check")
         .timeout(Duration::from_secs(15))
         .call()
-        .context("Could not check GitHub releases")?
-        .into_string()?;
+}
+
+fn check_release(
+    manifest_url: &str,
+    api_url: &str,
+    api_retry_at: &Mutex<Option<SystemTime>>,
+) -> Result<Option<Release>> {
+    // Release assets do not consume the anonymous REST API quota shared by an IP.
+    let response = match request(manifest_url) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(404, _)) => {
+            // Older releases have no manifest. Only this path needs the API.
+            if let Some(retry_at) = *api_retry_at.lock().unwrap() {
+                if retry_at > SystemTime::now() {
+                    return Err(RateLimited { retry_at }.into());
+                }
+            }
+            match request(api_url) {
+                Err(ureq::Error::Status(status, response)) if status == 403 || status == 429 => {
+                    if let Some(limit) = rate_limit(&response, SystemTime::now()) {
+                        *api_retry_at.lock().unwrap() = Some(limit.retry_at);
+                        return Err(limit.into());
+                    }
+                    return Err(ureq::Error::Status(status, response))
+                        .context("Could not check GitHub releases");
+                }
+                result => result.context("Could not check GitHub releases")?,
+            }
+        }
+        Err(error) => return Err(error).context("Could not read the update manifest"),
+    };
+    let body = response.into_string()?;
     newer_release(&body, env!("CARGO_PKG_VERSION"))
+}
+
+fn rate_limit(response: &ureq::Response, now: SystemTime) -> Option<RateLimited> {
+    let retry_after = response.header("Retry-After");
+    let exhausted = response.header("X-RateLimit-Remaining") == Some("0");
+    if response.status() != 429 && retry_after.is_none() && !exhausted {
+        return None;
+    }
+    let retry_at = retry_after
+        .and_then(|value| {
+            value
+                .parse::<u64>()
+                .ok()
+                .and_then(|seconds| now.checked_add(Duration::from_secs(seconds)))
+                .or_else(|| {
+                    chrono::DateTime::parse_from_rfc2822(value)
+                        .ok()
+                        .map(SystemTime::from)
+                })
+        })
+        .or_else(|| {
+            exhausted
+                .then(|| response.header("X-RateLimit-Reset"))
+                .flatten()
+                .and_then(|value| value.parse::<u64>().ok())
+                .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds)))
+        })
+        .filter(|time| *time > now)
+        .unwrap_or(now + Duration::from_secs(60));
+    Some(RateLimited { retry_at })
 }
 
 impl Release {

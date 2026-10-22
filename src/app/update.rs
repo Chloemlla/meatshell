@@ -134,10 +134,27 @@ fn check(core: &Rc<AppCore>, manual: bool) {
                     Err(error) => {
                         state.error = manual;
                         state.status = if manual {
-                            format!(
-                                "{}: {error:#}",
-                                t("检查失败，请重试", "Update check failed; please retry")
-                            )
+                            if let Some(limit) = error.downcast_ref::<crate::update::RateLimited>()
+                            {
+                                let time: chrono::DateTime<chrono::Local> = limit.retry_at.into();
+                                format!(
+                                    "{} {}{}",
+                                    t(
+                                        "GitHub 版本查询达到限额，请在",
+                                        "GitHub API rate limit reached; retry after"
+                                    ),
+                                    time.format("%H:%M:%S"),
+                                    t(
+                                        " 后重试，或打开发布页面下载",
+                                        "; or download from the release page"
+                                    ),
+                                )
+                            } else {
+                                format!(
+                                    "{}: {error:#}",
+                                    t("检查失败，请重试", "Update check failed; please retry")
+                                )
+                            }
                         } else {
                             String::new()
                         };
