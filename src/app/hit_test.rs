@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// Width of a left/right-docked SFTP panel as terminal_view.slint lays it out:
+/// never narrower than 300px, whatever width was saved (#505).
+fn side_sftp_width(saved: f32) -> f32 {
+    saved.max(300.0)
+}
+
 /// The active terminal tab's current SFTP directory ("" if unknown).
 pub(super) fn active_sftp_path(win: &AppWindow, tab_id: &str) -> String {
     let model = win.get_terminals();
@@ -46,7 +52,7 @@ pub(super) fn terminal_wheel_hit(
     let sftp_take = if term_state.sftp_collapsed {
         36.0
     } else if sftp_dock == "left" || sftp_dock == "right" {
-        term_state.sftp_panel_width + 4.0
+        side_sftp_width(term_state.sftp_panel_width) + 4.0
     } else {
         term_state.sftp_panel_height + 4.0
     };
@@ -273,7 +279,7 @@ pub(super) fn active_sftp_file_list_rect(win: &AppWindow) -> Option<LogicalRect>
         x: dock_region.x,
         y: dock_region.y,
         w: if dock == "left" || dock == "right" {
-            term_state.sftp_panel_width
+            side_sftp_width(term_state.sftp_panel_width)
         } else {
             dock_region.w
         },
