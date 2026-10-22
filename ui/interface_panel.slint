@@ -19,6 +19,16 @@ export struct OutputRuleItem {
     enabled: bool,
 }
 
+// One download source on Settings → Updates (GitHub first, then mirrors).
+// `level`: 0 untested/testing, 1 fast, 2 medium, 3 slow, 4 failed.
+export struct UpdateMirrorRow {
+    url: string,
+    ping: string,
+    level: int,
+    fastest: bool,
+    removable: bool,
+}
+
 export struct WslProfileInfo {
     id: string,
     name: string,
@@ -416,6 +426,15 @@ export component InterfacePanel inherits Rectangle {
     callback check-for-updates();
     callback update-action();
     callback open-update-url();
+    in property <[UpdateMirrorRow]> update-mirrors;
+    in property <bool> update-mirrors-testing;
+    in property <bool> update-china-tz;
+    in property <string> update-mirror-error;
+    callback add-update-mirror(string);
+    callback remove-update-mirror(string);
+    callback reset-update-mirrors();
+    callback test-update-mirrors();
+    property <string> new-mirror;
     in-out property <bool> mcp-enabled: true;
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
@@ -1852,6 +1871,9 @@ export component InterfacePanel inherits Rectangle {
                 padding-left: 20px;
                 padding-right: 20px;
                 padding-top: 14px;
+                // Room below the mirror buttons so they scroll fully into view
+                // above the card's bottom edge / resize grip.
+                padding-bottom: 28px;
                 spacing: 0;
                 alignment: start;
                 SectionHeader { text: root.lang-en ? "UPDATES" : "软件更新"; height: 24px; }
@@ -1917,6 +1939,116 @@ export component InterfacePanel inherits Rectangle {
                     color: Theme.text-muted;
                     font-size: Theme.fs-sm;
                     wrap: word-wrap;
+                }
+
+                // Download mirrors — Chinese UI only. Rust uses them only in a
+                // mainland China time zone, racing them against GitHub.
+                if !root.lang-en : VerticalLayout {
+                    spacing: 6px;
+                    // Speed-test every source each time the section appears.
+                    init => { root.test-update-mirrors(); }
+                    Rectangle { height: 14px; }
+                    HorizontalLayout {
+                        SectionHeader { text: "下载镜像"; height: 24px; horizontal-stretch: 1; }
+                        GhostButton {
+                            text: root.update-mirrors-testing ? "测速中…" : "重新测速";
+                            clicked => { if (!root.update-mirrors-testing) { root.test-update-mirrors(); } }
+                        }
+                    }
+                    Text {
+                        text: root.update-china-tz
+                            ? "一键更新前会对以下下载源测速，自动选择最快的；失败时依次换用下一个。所有下载均按 GitHub 发布的 SHA-256 校验。"
+                            : "当前系统时区不在中国大陆，镜像不会启用，更新将直接从 GitHub 下载。";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                    for mirror in root.update-mirrors : Rectangle {
+                        height: 30px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.bg-hover;
+                        border-width: mirror.fastest ? 1px : 0px;
+                        border-color: #4caf50;
+                        HorizontalLayout {
+                            padding-left: 10px; padding-right: 4px; spacing: 8px;
+                            Text {
+                                text: mirror.removable ? mirror.url : mirror.url + "（官方源）";
+                                color: mirror.removable ? Theme.text-primary : Theme.text-secondary;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            if mirror.fastest : Text {
+                                text: "最快";
+                                color: #4caf50;
+                                font-size: Theme.fs-xs;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                min-width: 64px;
+                                text: mirror.ping;
+                                color: mirror.level == 1 ? #4caf50
+                                     : mirror.level == 2 ? #e0a040
+                                     : mirror.level >= 3 ? #e57373
+                                     : Theme.text-muted;
+                                font-size: Theme.fs-sm;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            // Keeps the ping column aligned on the GitHub row.
+                            if !mirror.removable : Rectangle { width: 22px; }
+                            if mirror.removable : Rectangle {
+                                width: 22px; height: 22px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: Theme.radius-sm;
+                                background: mirror-del-ta.has-hover ? Theme.bg-root : transparent;
+                                mirror-del-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.remove-update-mirror(mirror.url); }
+                                }
+                                Text {
+                                    text: "\u{E5CD}";   // close
+                                    font-family: "Material Icons";
+                                    color: mirror-del-ta.has-hover ? #e57373 : Theme.text-muted;
+                                    font-size: Theme.fs-sm;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                    LabeledInput {
+                        label: "添加镜像（加在 GitHub 下载地址前的前缀）";
+                        placeholder: "https://v4.gh-proxy.org/";
+                        value <=> root.new-mirror;
+                        accepted => {
+                            root.add-update-mirror(root.new-mirror);
+                            if (root.update-mirror-error == "") { root.new-mirror = ""; }
+                        }
+                    }
+                    if root.update-mirror-error != "" : Text {
+                        text: root.update-mirror-error;
+                        color: #e57373;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        PrimaryButton {
+                            text: "添加";
+                            disabled: root.new-mirror == "";
+                            clicked => {
+                                root.add-update-mirror(root.new-mirror);
+                                if (root.update-mirror-error == "") { root.new-mirror = ""; }
+                            }
+                        }
+                        GhostButton {
+                            text: "恢复默认";
+                            clicked => { root.reset-update-mirrors(); }
+                        }
+                    }
                 }
             }
 

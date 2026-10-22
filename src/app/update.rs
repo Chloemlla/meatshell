@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::update::inplace::{self, Method};
-use crate::update::Release;
+use crate::update::{mirror, Release};
 
 #[derive(Default)]
 pub struct State {
@@ -15,6 +15,10 @@ pub struct State {
     /// How this build updates; detected once (it probes folder permissions).
     method: Option<Method>,
     package: Option<Package>,
+    /// Settings speed test: latest result per source prefix (`""` = GitHub).
+    pings: std::collections::HashMap<String, Ping>,
+    /// Bumped per speed test so a stale result never overwrites a newer one.
+    ping_generation: u64,
 }
 
 /// A verified update waiting for "Install and restart".
@@ -162,22 +166,37 @@ fn download(core: &Rc<AppCore>) {
     if !one_click(&method) {
         return;
     }
+    // Chinese UI in a mainland China time zone: race the mirrors against GitHub.
+    let sources = if mirror::applies(crate::i18n::is_en()) {
+        mirror::Sources::with_mirrors(&core.store.borrow().update_mirrors())
+    } else {
+        mirror::Sources::github()
+    };
     {
         let mut state = core.update.borrow_mut();
         state.busy = true;
         state.error = false;
-        state.status = t("正在下载更新…", "Downloading update…").into();
+        state.status = if sources.has_mirrors() {
+            t("正在测速下载源…", "Testing download mirrors…")
+        } else {
+            t("正在下载更新…", "Downloading update…")
+        }
+        .into();
     }
     publish(core);
     std::thread::spawn(move || {
-        let mut last_percent = 0;
-        let progress = move |received: u64, size: u64| {
+        let mut last = (String::new(), -1);
+        let progress = move |source: &str, received: u64, size: u64| {
             let percent = (received.saturating_mul(100) / size.max(1)) as i32;
-            if percent != last_percent {
-                last_percent = percent;
+            if percent != last.1 || source != last.0 {
+                last = (source.to_string(), percent);
+                let source = source.to_string();
                 on_ui(move |core| {
-                    core.update.borrow_mut().status =
-                        format!("{} {percent}%", t("正在下载", "Downloading"));
+                    core.update.borrow_mut().status = if crate::i18n::is_en() {
+                        format!("Downloading from {source} {percent}%")
+                    } else {
+                        format!("正在从 {source} 下载 {percent}%")
+                    };
                     publish(core);
                 });
             }
@@ -185,10 +204,11 @@ fn download(core: &Rc<AppCore>) {
         let result = match method {
             #[cfg(windows)]
             Method::Msi(_) => release.windows_installer().and_then(|asset| {
-                crate::update::windows::Download::fetch(asset, progress).map(Package::Msi)
+                crate::update::windows::Download::fetch(asset, &sources, progress)
+                    .map(Package::Msi)
             }),
             Method::InPlace(target) => {
-                inplace::prepare(&release, &target, progress).map(Package::InPlace)
+                inplace::prepare(&release, &target, &sources, progress).map(Package::InPlace)
             }
             _ => unreachable!("download is offered only for one-click updates"),
         };
@@ -402,9 +422,185 @@ fn failed(core: &Rc<AppCore>, message: &str, error: anyhow::Error) {
     publish(core);
 }
 
+/// Speed-test result for one download source in Settings → Updates.
+#[derive(Clone, Copy)]
+pub enum Ping {
+    Testing,
+    /// Milliseconds to fetch the probe, or `None` if the source failed.
+    Done(Option<u128>),
+}
+
+/// GitHub (`""`) and the user's valid, distinct mirror prefixes.
+fn mirror_prefixes(core: &Rc<AppCore>) -> Vec<String> {
+    let mut prefixes = vec![String::new()];
+    for mirror in core.store.borrow().update_mirrors() {
+        if let Ok(prefix) = mirror::normalize(&mirror) {
+            if !prefixes.contains(&prefix) {
+                prefixes.push(prefix);
+            }
+        }
+    }
+    prefixes
+}
+
+/// Push the source rows (GitHub first, then mirrors, each with its latest
+/// speed-test result) and the last add error to every window.
+fn publish_mirrors(core: &Rc<AppCore>, error: &str) {
+    let mirrors = core.store.borrow().update_mirrors();
+    let state = core.update.borrow();
+    let fastest = state
+        .pings
+        .values()
+        .filter_map(|ping| match ping {
+            Ping::Done(Some(ms)) => Some(*ms),
+            _ => None,
+        })
+        .min();
+    let testing = state.pings.values().any(|ping| matches!(ping, Ping::Testing));
+    let row = |url: &str, key: &str, removable: bool| {
+        let (ping, level, is_fastest) = match state.pings.get(key) {
+            None => (String::new(), 0, false),
+            Some(Ping::Testing) => (t("测速中…", "Testing…").to_string(), 0, false),
+            Some(Ping::Done(None)) => (t("失败", "Failed").to_string(), 4, false),
+            Some(Ping::Done(Some(ms))) => (
+                format!("{ms} ms"),
+                match ms {
+                    0..=999 => 1,
+                    1000..=2999 => 2,
+                    _ => 3,
+                },
+                Some(*ms) == fastest,
+            ),
+        };
+        UpdateMirrorRow {
+            url: url.into(),
+            ping: ping.into(),
+            level,
+            fastest: is_fastest,
+            removable,
+        }
+    };
+    let mut rows = vec![row("https://github.com/", "", false)];
+    for mirror in &mirrors {
+        let key = mirror::normalize(mirror).unwrap_or_else(|_| mirror.clone());
+        rows.push(row(mirror, &key, true));
+    }
+    drop(state);
+    core.registry.for_each(|weak| {
+        if let Some(window) = weak.upgrade() {
+            window.set_update_mirrors(slint::ModelRc::new(slint::VecModel::from(rows.clone())));
+            window.set_update_mirror_error(error.into());
+            window.set_update_mirrors_testing(testing);
+        }
+    });
+}
+
+/// Speed-test GitHub and every mirror with the same probe a one-click update
+/// uses (the first 64 KiB of a real release file), in the background.
+fn test_mirrors(core: &Rc<AppCore>) {
+    let prefixes = mirror_prefixes(core);
+    // The newest known release, else this build's own (which is published).
+    let tag = core
+        .update
+        .borrow()
+        .release
+        .as_ref()
+        .map(|release| release.tag_name.clone())
+        .unwrap_or_else(|| {
+            let version = env!("CARGO_PKG_VERSION");
+            format!("v{}", version.split('-').next().unwrap_or(version))
+        });
+    let generation = {
+        let mut state = core.update.borrow_mut();
+        state.ping_generation += 1;
+        state.pings = prefixes.iter().map(|p| (p.clone(), Ping::Testing)).collect();
+        state.ping_generation
+    };
+    publish_mirrors(core, "");
+    std::thread::spawn(move || {
+        let times = mirror::probe_all(&prefixes, &mirror::speed_test_url(&tag), u64::MAX);
+        on_ui(move |core| {
+            {
+                let mut state = core.update.borrow_mut();
+                // A newer test (or a list edit) superseded this one.
+                if state.ping_generation != generation {
+                    return;
+                }
+                for (prefix, time) in prefixes.into_iter().zip(times) {
+                    state
+                        .pings
+                        .insert(prefix, Ping::Done(time.map(|t| t.as_millis())));
+                }
+            }
+            publish_mirrors(core, "");
+        });
+    });
+}
+
+fn save_mirrors(core: &Rc<AppCore>, mirrors: Option<Vec<String>>) {
+    {
+        let mut store = core.store.borrow_mut();
+        store.set_update_mirrors(mirrors);
+        let _ = store.save();
+    }
+    test_mirrors(core);
+}
+
+fn wire_mirrors(core: &Rc<AppCore>, window: &AppWindow) {
+    window.set_update_china_tz(mirror::china_time_zone());
+    {
+        let core = core.clone();
+        window.on_add_update_mirror(move |text| match mirror::normalize(&text) {
+            Ok(prefix) => {
+                let mut list = core.store.borrow().update_mirrors();
+                let known = list
+                    .iter()
+                    .any(|m| mirror::normalize(m).ok().as_deref() == Some(prefix.as_str()));
+                if !known {
+                    list.push(prefix);
+                }
+                save_mirrors(&core, Some(list));
+            }
+            Err(_) => publish_mirrors(
+                &core,
+                t(
+                    "地址无效：须以 https:// 开头，且不含 ?、# 或账号密码",
+                    "Invalid address: use an https:// prefix without ?, # or a user name",
+                ),
+            ),
+        });
+    }
+    {
+        // Removing keeps the other results; no new speed test needed.
+        let core = core.clone();
+        window.on_remove_update_mirror(move |url| {
+            let mut list = core.store.borrow().update_mirrors();
+            list.retain(|m| m.as_str() != url.as_str());
+            {
+                let mut store = core.store.borrow_mut();
+                store.set_update_mirrors(Some(list));
+                let _ = store.save();
+            }
+            let key = mirror::normalize(&url).unwrap_or_else(|_| url.to_string());
+            core.update.borrow_mut().pings.remove(&key);
+            publish_mirrors(&core, "");
+        });
+    }
+    {
+        let core = core.clone();
+        window.on_reset_update_mirrors(move || save_mirrors(&core, None));
+    }
+    {
+        let core = core.clone();
+        window.on_test_update_mirrors(move || test_mirrors(&core));
+    }
+}
+
 pub(super) fn wire(core: &Rc<AppCore>, window: &AppWindow) {
     window.set_update_install_supported(one_click(&method(core)));
     window.set_update_via_terminal(method(core) == Method::Aur);
+    wire_mirrors(core, window);
+    publish_mirrors(core, "");
     {
         let core = core.clone();
         window.on_check_for_updates(move || check(&core, true));

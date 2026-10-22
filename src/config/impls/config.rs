@@ -1400,6 +1400,19 @@ impl ConfigStore {
     pub fn set_update_check_enabled(&mut self, enabled: bool) {
         self.cache.update_check_disabled = !enabled;
     }
+    /// Update download mirrors; the built-in list until the user edits it.
+    pub fn update_mirrors(&self) -> Vec<String> {
+        self.cache.update_mirrors.clone().unwrap_or_else(|| {
+            crate::update::mirror::DEFAULT_MIRRORS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        })
+    }
+    /// `None` restores the built-in list.
+    pub fn set_update_mirrors(&mut self, mirrors: Option<Vec<String>>) {
+        self.cache.update_mirrors = mirrors;
+    }
     pub fn mcp_enabled(&self) -> bool {
         self.cache.mcp_enabled
     }

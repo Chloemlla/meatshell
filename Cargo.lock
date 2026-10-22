@@ -3622,6 +3622,7 @@ dependencies = [
  "glob",
  "hmac",
  "i-slint-backend-winit",
+ "iana-time-zone",
  "icu_provider",
  "image",
  "jemallocator",

@@ -312,6 +312,11 @@ pub struct ConfigFile {
     /// it on stops the GitHub releases query and the banner.
     #[serde(default)]
     pub update_check_disabled: bool,
+    /// Download mirror prefixes for one-click updates, raced against GitHub.
+    /// Used only with the Chinese UI in a mainland China time zone.
+    /// `None` = the built-in list (`update::mirror::DEFAULT_MIRRORS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_mirrors: Option<Vec<String>>,
     /// Enable the local stdio MCP server (`meatshell mcp serve`).
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_enabled: bool,

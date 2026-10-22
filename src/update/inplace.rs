@@ -284,7 +284,8 @@ pub struct Prepared {
 pub fn prepare(
     release: &Release,
     target: &Target,
-    mut progress: impl FnMut(u64, u64),
+    sources: &mirror::Sources,
+    mut progress: impl FnMut(&str, u64, u64),
 ) -> Result<Prepared> {
     let names = asset_names(
         target,
@@ -295,7 +296,7 @@ pub fn prepare(
     let candidates = usable_assets(release, &names)?;
     let last = candidates.len() - 1;
     for (i, (asset, name)) in candidates.into_iter().enumerate() {
-        match prepare_from(target, asset, name.ends_with(".dmg"), &mut progress) {
+        match prepare_from(target, asset, name.ends_with(".dmg"), sources, &mut progress) {
             Ok(prepared) => return Ok(prepared),
             Err(error) if i < last => {
                 tracing::warn!("update: {name} failed ({error:#}); trying the next package");
@@ -310,12 +311,13 @@ fn prepare_from(
     target: &Target,
     asset: &Asset,
     disk_image: bool,
-    progress: impl FnMut(u64, u64),
+    sources: &mirror::Sources,
+    progress: impl FnMut(&str, u64, u64),
 ) -> Result<Prepared> {
     let mut prepared = Prepared::stage(target)?;
     let part = prepared.work.join("package.part");
     let mut output = File::create(&part).context("Could not save the update")?;
-    asset.download(&mut output, progress)?;
+    asset.download(&mut output, sources, progress)?;
     output.sync_all()?;
     drop(output);
     let package = prepared.work.join("package");

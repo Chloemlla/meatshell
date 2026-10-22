@@ -133,6 +133,9 @@ dark-light = "1"
 # HTTPS release checks and installer downloads run on background threads.
 # rustls provides TLS without requiring a system OpenSSL installation.
 ureq = { version = "2", features = ["tls"] }
+# Update mirrors apply only in a mainland China time zone; this reads the IANA
+# zone name on every OS. Already in the tree through chrono.
+iana-time-zone = "0.1"
 # Unpack the Linux .tar.gz release for one-click in-place updates (#390).
 # Both were already in the dependency tree.
 flate2 = "1"

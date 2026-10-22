@@ -28,12 +28,12 @@ import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
 import { EditorWindow } from "editor_window.slint";
 import { EditorPane, EditorFindResult, EditorDoc } from "editor_pane.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo, UpdateMirrorRow } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
-export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo, CustomAgentInfo }
+export { SessionInfo, LaunchItem, SessionDraft, JumpHop, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo, CustomAgentInfo, UpdateMirrorRow }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -967,6 +967,15 @@ export component AppWindow inherits Window {
     callback check-for-updates();
     callback update-action();
     callback open-update-url();
+    // Download mirrors (Chinese UI only; used in a mainland China time zone).
+    in property <[UpdateMirrorRow]> update-mirrors;
+    in property <bool> update-mirrors-testing;
+    in property <bool> update-china-tz;
+    in property <string> update-mirror-error;
+    callback add-update-mirror(string);
+    callback remove-update-mirror(string);
+    callback reset-update-mirrors();
+    callback test-update-mirrors();
 
     // --- Editor tabs (#70, #494) ------------------------------------------
     // Settings → SFTP: open text files as tabs in this window (true) or in the
@@ -5151,6 +5160,14 @@ export component AppWindow inherits Window {
                     check-for-updates => { root.check-for-updates(); }
                     update-action => { root.update-action(); }
                     open-update-url => { root.open-update-url(); }
+                    update-mirrors: root.update-mirrors;
+                    update-mirrors-testing: root.update-mirrors-testing;
+                    update-china-tz: root.update-china-tz;
+                    update-mirror-error: root.update-mirror-error;
+                    add-update-mirror(url) => { root.add-update-mirror(url); }
+                    remove-update-mirror(url) => { root.remove-update-mirror(url); }
+                    reset-update-mirrors => { root.reset-update-mirrors(); }
+                    test-update-mirrors => { root.test-update-mirrors(); }
                     mcp-enabled <=> root.mcp-enabled;
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;

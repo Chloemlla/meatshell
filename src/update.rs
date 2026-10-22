@@ -8,6 +8,7 @@ use std::time::Duration;
 
 pub mod inplace;
 pub mod linux;
+pub mod mirror;
 #[cfg(windows)]
 pub mod windows;
 
@@ -126,22 +127,48 @@ impl Asset {
         Ok(digest)
     }
 
-    pub fn download(&self, output: impl Write, progress: impl FnMut(u64, u64)) -> Result<()> {
-        let response = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(15))
-            .timeout_read(Duration::from_secs(60))
-            .build()
-            .get(&self.browser_download_url)
-            .set("User-Agent", "meatshell-updater")
-            .call()
-            .context("Could not download the installer")?;
-        copy_verified(
-            response.into_reader(),
-            output,
-            self.size,
-            self.sha256()?,
-            progress,
-        )
+    /// Download into `output` from the fastest of `sources`, falling back to
+    /// the next source (GitHub last) when one fails or fails verification.
+    /// `progress` receives the source's host, bytes received and total size.
+    pub fn download(
+        &self,
+        output: &mut std::fs::File,
+        sources: &mirror::Sources,
+        mut progress: impl FnMut(&str, u64, u64),
+    ) -> Result<()> {
+        use std::io::{Seek, SeekFrom};
+        let digest = self.sha256()?;
+        let mut last_error = None;
+        for (label, url) in sources.ranked(&self.browser_download_url, self.size) {
+            output.set_len(0)?;
+            output.seek(SeekFrom::Start(0))?;
+            tracing::info!("update: downloading from {label}");
+            let result = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(15))
+                .timeout_read(Duration::from_secs(60))
+                .build()
+                .get(&url)
+                .set("User-Agent", "meatshell-updater")
+                .call()
+                .with_context(|| format!("Could not download the installer from {label}"))
+                .and_then(|response| {
+                    copy_verified(
+                        response.into_reader(),
+                        &mut *output,
+                        self.size,
+                        digest,
+                        |received, size| progress(&label, received, size),
+                    )
+                });
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::warn!("update: {label} failed: {error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No download source")))
     }
 }
 
