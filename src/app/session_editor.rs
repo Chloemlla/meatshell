@@ -83,6 +83,13 @@ pub(super) fn jump_rows(ids: Vec<String>, choices: &ModelRc<SharedString>) -> Mo
     )))
 }
 
+/// The row after the user picks `choice` (whose session id is `id`). A new
+/// row stays a placeholder only while nothing is picked.
+fn picked_hop(row: &JumpHop, id: SharedString, choice: i32) -> JumpHop {
+    let placeholder = row.placeholder && id.trim().is_empty();
+    JumpHop { id, choice, placeholder }
+}
+
 fn update_rows(window: &AppWindow, update: impl FnOnce(&mut Vec<JumpHop>)) {
     let mut rows = window.get_dialog_jumps().iter().collect::<Vec<_>>();
     update(&mut rows);
@@ -126,18 +133,16 @@ pub(super) fn register(
             let Some(id) = w.get_jump_ids().row_data(choice.max(0) as usize) else {
                 return;
             };
-            update_rows(&w, |rows| {
-                if index >= 0 {
-                    if let Some(row) = rows.get_mut(index as usize) {
-                        let placeholder = row.placeholder && id.trim().is_empty();
-                        *row = JumpHop {
-                            id,
-                            choice,
-                            placeholder,
-                        };
-                    }
-                }
-            });
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            // Update the row in place: replacing the model would destroy the
+            // row whose dropdown popup is still closing (#509).
+            let rows = w.get_dialog_jumps();
+            if let Some(row) = rows.row_data(index) {
+                rows.set_row_data(index, picked_hop(&row, id, choice));
+                w.set_dialog_test_status("".into());
+            }
         }
     });
     let weak = window.as_weak();
@@ -225,6 +230,23 @@ mod tests {
         draft.jumps = ModelRc::default();
         let session = session_from_draft(&draft, Some(&saved), vec![], vec![]);
         assert!(session.jump_session_ids.is_empty());
+    }
+
+    #[test]
+    fn picking_a_hop_fills_the_placeholder_and_is_saved() {
+        let added = JumpHop { placeholder: true, ..JumpHop::default() };
+        let picked = picked_hop(&added, "pve".into(), 2);
+        assert_eq!((picked.id.as_str(), picked.choice, picked.placeholder), ("pve", 2, false));
+        // Picking "select a jump host" again leaves an unsaved placeholder.
+        let cleared = picked_hop(&added, "".into(), 0);
+        assert!(cleared.placeholder);
+
+        let rows = ModelRc::from(Rc::new(VecModel::from(vec![picked])));
+        let mut draft = SessionDraft::default();
+        draft.kind = "ssh".into();
+        draft.jumps = rows;
+        let session = session_from_draft(&draft, None, vec![], vec![]);
+        assert_eq!(session.jump_session_ids, ["pve"]);
     }
 
     #[test]
