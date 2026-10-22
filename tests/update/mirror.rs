@@ -72,6 +72,31 @@ fn fastest_first_failed_mirrors_dropped_github_kept() {
 }
 
 #[test]
+fn a_picked_source_goes_first_without_probing() {
+    let mirrors = vec!["https://a.example/".to_string(), "https://b.example/".to_string()];
+    let urls = |sources: Sources| -> Vec<String> {
+        // Picked sources never probe, so this needs no network.
+        sources.ranked(URL, 1).into_iter().map(|(label, _)| label).collect()
+    };
+    // A mirror: it, the other mirrors in list order, then GitHub.
+    let picked = Sources::with_mirrors(&mirrors).prefer(Some("https://b.example"));
+    assert!(!picked.will_probe());
+    assert_eq!(urls(picked), ["b.example", "a.example", "github.com"]);
+    // GitHub: it, then the mirrors as fallbacks.
+    let github = Sources::with_mirrors(&mirrors).prefer(Some(""));
+    assert_eq!(urls(github), ["github.com", "a.example", "b.example"]);
+}
+
+#[test]
+fn a_stale_pick_falls_back_to_automatic() {
+    let mirrors = vec!["https://a.example/".to_string()];
+    for choice in [None, Some("https://removed.example/"), Some("not a url")] {
+        let sources = Sources::with_mirrors(&mirrors).prefer(choice);
+        assert!(sources.will_probe(), "{choice:?}");
+    }
+}
+
+#[test]
 fn labels_show_hosts() {
     assert_eq!(label(""), "github.com");
     assert_eq!(label("https://v4.gh-proxy.org/"), "v4.gh-proxy.org");

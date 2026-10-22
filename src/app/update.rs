@@ -166,9 +166,12 @@ fn download(core: &Rc<AppCore>) {
     if !one_click(&method) {
         return;
     }
-    // Chinese UI in a mainland China time zone: race the mirrors against GitHub.
+    // Chinese UI in a mainland China time zone: the picked source first, or
+    // race the mirrors against GitHub when the choice is automatic.
     let sources = if mirror::applies(crate::i18n::is_en()) {
-        mirror::Sources::with_mirrors(&core.store.borrow().update_mirrors())
+        let store = core.store.borrow();
+        mirror::Sources::with_mirrors(&store.update_mirrors())
+            .prefer(store.update_mirror_choice().as_deref())
     } else {
         mirror::Sources::github()
     };
@@ -176,7 +179,7 @@ fn download(core: &Rc<AppCore>) {
         let mut state = core.update.borrow_mut();
         state.busy = true;
         state.error = false;
-        state.status = if sources.has_mirrors() {
+        state.status = if sources.will_probe() {
             t("正在测速下载源…", "Testing download mirrors…")
         } else {
             t("正在下载更新…", "Downloading update…")
@@ -443,19 +446,41 @@ fn mirror_prefixes(core: &Rc<AppCore>) -> Vec<String> {
     prefixes
 }
 
+/// The user's picked source if it is still in the list (`None` = automatic).
+fn valid_choice(core: &Rc<AppCore>) -> Option<String> {
+    let choice = core.store.borrow().update_mirror_choice()?;
+    let choice = if choice.is_empty() { choice } else { mirror::normalize(&choice).ok()? };
+    mirror_prefixes(core).contains(&choice).then_some(choice)
+}
+
+fn save_choice(core: &Rc<AppCore>, choice: Option<String>) {
+    let mut store = core.store.borrow_mut();
+    store.set_update_mirror_choice(choice);
+    let _ = store.save();
+}
+
 /// Push the source rows (GitHub first, then mirrors, each with its latest
-/// speed-test result) and the last add error to every window.
+/// speed-test result and which one is selected) and the last add error to
+/// every window. Automatic choice selects the fastest tested source.
 fn publish_mirrors(core: &Rc<AppCore>, error: &str) {
     let mirrors = core.store.borrow().update_mirrors();
+    let choice = valid_choice(core);
+    let auto = choice.is_none();
     let state = core.update.borrow();
-    let fastest = state
+    let fastest_key = state
         .pings
-        .values()
-        .filter_map(|ping| match ping {
-            Ping::Done(Some(ms)) => Some(*ms),
+        .iter()
+        .filter_map(|(key, ping)| match ping {
+            Ping::Done(Some(ms)) => Some((*ms, key.clone())),
             _ => None,
         })
-        .min();
+        .min()
+        .map(|(_, key)| key);
+    let fastest = fastest_key.as_ref().and_then(|key| match state.pings.get(key) {
+        Some(Ping::Done(Some(ms))) => Some(*ms),
+        _ => None,
+    });
+    let selected = choice.or_else(|| fastest_key.clone());
     let testing = state.pings.values().any(|ping| matches!(ping, Ping::Testing));
     let row = |url: &str, key: &str, removable: bool| {
         let (ping, level, is_fastest) = match state.pings.get(key) {
@@ -474,9 +499,11 @@ fn publish_mirrors(core: &Rc<AppCore>, error: &str) {
         };
         UpdateMirrorRow {
             url: url.into(),
+            key: key.into(),
             ping: ping.into(),
             level,
             fastest: is_fastest,
+            selected: selected.as_deref() == Some(key),
             removable,
         }
     };
@@ -491,6 +518,7 @@ fn publish_mirrors(core: &Rc<AppCore>, error: &str) {
             window.set_update_mirrors(slint::ModelRc::new(slint::VecModel::from(rows.clone())));
             window.set_update_mirror_error(error.into());
             window.set_update_mirrors_testing(testing);
+            window.set_update_mirror_auto(auto);
         }
     });
 }
@@ -583,12 +611,46 @@ fn wire_mirrors(core: &Rc<AppCore>, window: &AppWindow) {
             }
             let key = mirror::normalize(&url).unwrap_or_else(|_| url.to_string());
             core.update.borrow_mut().pings.remove(&key);
+            // Removing the picked mirror goes back to automatic choice.
+            if valid_choice(&core).is_none() {
+                save_choice(&core, None);
+            }
             publish_mirrors(&core, "");
         });
     }
     {
         let core = core.clone();
-        window.on_reset_update_mirrors(move || save_mirrors(&core, None));
+        window.on_reset_update_mirrors(move || {
+            save_choice(&core, None);
+            save_mirrors(&core, None);
+        });
+    }
+    {
+        // Clicking a row makes it the fixed choice (automatic turns off).
+        let core = core.clone();
+        window.on_select_update_mirror(move |key| {
+            save_choice(&core, Some(key.to_string()));
+            publish_mirrors(&core, "");
+        });
+    }
+    {
+        // On: follow the fastest source. Off: keep the currently selected one.
+        let core = core.clone();
+        let weak = window.as_weak();
+        window.on_set_update_mirror_auto(move |auto| {
+            use slint::Model;
+            let choice = if auto {
+                None
+            } else {
+                // Nothing tested yet: fall back to GitHub ("").
+                let selected = weak.upgrade().and_then(|w| {
+                    w.get_update_mirrors().iter().find(|r| r.selected).map(|r| r.key.to_string())
+                });
+                Some(selected.unwrap_or_default())
+            };
+            save_choice(&core, choice);
+            publish_mirrors(&core, "");
+        });
     }
     {
         let core = core.clone();

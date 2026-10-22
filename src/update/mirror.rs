@@ -88,11 +88,28 @@ pub fn normalize(input: &str) -> Result<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sources {
     prefixes: Vec<String>,
+    /// The source the user picked; tried first, without a speed test.
+    preferred: Option<String>,
 }
 
 impl Sources {
     pub fn github() -> Self {
-        Self { prefixes: vec![String::new()] }
+        Self { prefixes: vec![String::new()], preferred: None }
+    }
+
+    /// Try `choice` (a prefix, `""` = GitHub) first. Ignored if it is not
+    /// one of these sources, e.g. a mirror removed since it was picked.
+    pub fn prefer(mut self, choice: Option<&str>) -> Self {
+        self.preferred = choice
+            .map(|c| if c.is_empty() { Ok(String::new()) } else { normalize(c) })
+            .and_then(Result::ok)
+            .filter(|p| self.prefixes.contains(p));
+        self
+    }
+
+    /// True when the download will speed-test the sources first.
+    pub fn will_probe(&self) -> bool {
+        self.has_mirrors() && self.preferred.is_none()
     }
 
     /// GitHub plus every valid, distinct mirror; invalid entries are skipped.
@@ -112,10 +129,13 @@ impl Sources {
         self.prefixes.len() > 1
     }
 
-    /// `(label, url)` pairs to try for `url`, fastest first. With no mirrors
-    /// nothing is probed. GitHub is always kept as the last resort.
+    /// `(label, url)` pairs to try for `url`. A picked source comes first and
+    /// the rest follow in list order; otherwise sources are probed and tried
+    /// fastest first. GitHub is always kept as the last resort.
     pub fn ranked(&self, url: &str, size: u64) -> Vec<(String, String)> {
-        let prefixes = if self.has_mirrors() {
+        let prefixes = if let Some(preferred) = &self.preferred {
+            preferred_order(&self.prefixes, preferred)
+        } else if self.has_mirrors() {
             let timings: Vec<(String, Option<Duration>)> = self
                 .prefixes
                 .iter()
@@ -170,6 +190,21 @@ pub fn label(prefix: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_else(|| prefix.to_string())
+}
+
+/// The picked source, then the other mirrors in list order, then GitHub.
+fn preferred_order(prefixes: &[String], preferred: &str) -> Vec<String> {
+    let mut order = vec![preferred.to_string()];
+    order.extend(
+        prefixes
+            .iter()
+            .filter(|p| !p.is_empty() && p.as_str() != preferred)
+            .cloned(),
+    );
+    if !preferred.is_empty() {
+        order.push(String::new());
+    }
+    order
 }
 
 /// Responding sources by speed; failed mirrors are dropped, GitHub never is.

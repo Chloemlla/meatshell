@@ -1413,6 +1413,13 @@ impl ConfigStore {
     pub fn set_update_mirrors(&mut self, mirrors: Option<Vec<String>>) {
         self.cache.update_mirrors = mirrors;
     }
+    /// The picked download source (`""` = GitHub); `None` = fastest, automatically.
+    pub fn update_mirror_choice(&self) -> Option<String> {
+        self.cache.update_mirror_choice.clone()
+    }
+    pub fn set_update_mirror_choice(&mut self, choice: Option<String>) {
+        self.cache.update_mirror_choice = choice;
+    }
     pub fn mcp_enabled(&self) -> bool {
         self.cache.mcp_enabled
     }

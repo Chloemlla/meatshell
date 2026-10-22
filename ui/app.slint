@@ -976,6 +976,9 @@ export component AppWindow inherits Window {
     callback remove-update-mirror(string);
     callback reset-update-mirrors();
     callback test-update-mirrors();
+    in property <bool> update-mirror-auto: true;
+    callback select-update-mirror(string);
+    callback set-update-mirror-auto(bool);
 
     // --- Editor tabs (#70, #494) ------------------------------------------
     // Settings → SFTP: open text files as tabs in this window (true) or in the
@@ -5168,6 +5171,9 @@ export component AppWindow inherits Window {
                     remove-update-mirror(url) => { root.remove-update-mirror(url); }
                     reset-update-mirrors => { root.reset-update-mirrors(); }
                     test-update-mirrors => { root.test-update-mirrors(); }
+                    update-mirror-auto: root.update-mirror-auto;
+                    select-update-mirror(key) => { root.select-update-mirror(key); }
+                    set-update-mirror-auto(v) => { root.set-update-mirror-auto(v); }
                     mcp-enabled <=> root.mcp-enabled;
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;

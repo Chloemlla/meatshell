@@ -317,6 +317,10 @@ pub struct ConfigFile {
     /// `None` = the built-in list (`update::mirror::DEFAULT_MIRRORS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_mirrors: Option<Vec<String>>,
+    /// The download source the user picked (a mirror prefix, `""` = GitHub).
+    /// `None` = automatic: use the fastest source at download time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_mirror_choice: Option<String>,
     /// Enable the local stdio MCP server (`meatshell mcp serve`).
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_enabled: bool,

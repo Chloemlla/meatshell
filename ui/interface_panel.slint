@@ -20,12 +20,16 @@ export struct OutputRuleItem {
 }
 
 // One download source on Settings → Updates (GitHub first, then mirrors).
+// `key` is the normalised prefix ("" = GitHub). `selected` is the source a
+// one-click update will use first (the user's pick, or the fastest in auto).
 // `level`: 0 untested/testing, 1 fast, 2 medium, 3 slow, 4 failed.
 export struct UpdateMirrorRow {
     url: string,
+    key: string,
     ping: string,
     level: int,
     fastest: bool,
+    selected: bool,
     removable: bool,
 }
 
@@ -434,6 +438,9 @@ export component InterfacePanel inherits Rectangle {
     callback remove-update-mirror(string);
     callback reset-update-mirrors();
     callback test-update-mirrors();
+    in property <bool> update-mirror-auto: true;
+    callback select-update-mirror(string /* key */);
+    callback set-update-mirror-auto(bool);
     property <string> new-mirror;
     in-out property <bool> mcp-enabled: true;
     in-out property <bool> mcp-use-saved-credentials: true;
@@ -1957,20 +1964,51 @@ export component InterfacePanel inherits Rectangle {
                     }
                     Text {
                         text: root.update-china-tz
-                            ? "一键更新前会对以下下载源测速，自动选择最快的；失败时依次换用下一个。所有下载均按 GitHub 发布的 SHA-256 校验。"
+                            ? "一键更新优先使用选中的下载源，失败时依次换用其他源。所有下载均按 GitHub 发布的 SHA-256 校验。"
                             : "当前系统时区不在中国大陆，镜像不会启用，更新将直接从 GitHub 下载。";
                         color: Theme.text-muted;
                         font-size: Theme.fs-sm;
                         wrap: word-wrap;
                     }
+                    SettingRow {
+                        label: "自动选择最快的下载源";
+                        desc: root.update-mirror-auto
+                            ? "每次更新前重新测速并使用最快的源。点击下方任一行可改为固定使用该源。"
+                            : "已固定使用选中的源，失败时再依次换用其他源。打开此开关恢复自动选择。";
+                        show-divider: false;
+                        Switch {
+                            on: root.update-mirror-auto;
+                            toggled(v) => { root.set-update-mirror-auto(v); }
+                        }
+                    }
                     for mirror in root.update-mirrors : Rectangle {
                         height: 30px;
                         border-radius: Theme.radius-sm;
-                        background: Theme.bg-hover;
-                        border-width: mirror.fastest ? 1px : 0px;
-                        border-color: #4caf50;
+                        background: mirror-row-ta.has-hover && !mirror.selected
+                            ? Theme.bg-hover.brighter(0.15) : Theme.bg-hover;
+                        border-width: mirror.selected ? 1px : 0px;
+                        border-color: Theme.accent;
+                        // Whole row selects; the ✕ button below sits on top of it.
+                        mirror-row-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.select-update-mirror(mirror.key); }
+                        }
                         HorizontalLayout {
                             padding-left: 10px; padding-right: 4px; spacing: 8px;
+                            // Radio dot.
+                            Rectangle {
+                                width: 14px; height: 14px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 7px;
+                                border-width: 1.5px;
+                                border-color: mirror.selected ? Theme.accent : Theme.text-muted;
+                                Rectangle {
+                                    width: 6px; height: 6px;
+                                    border-radius: 3px;
+                                    background: Theme.accent;
+                                    visible: mirror.selected;
+                                }
+                            }
                             Text {
                                 text: mirror.removable ? mirror.url : mirror.url + "（官方源）";
                                 color: mirror.removable ? Theme.text-primary : Theme.text-secondary;
